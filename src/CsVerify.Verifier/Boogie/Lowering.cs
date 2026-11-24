@@ -377,6 +377,7 @@ namespace CsVerify.Verifier.Boogie
             ReadLoopSpecs(cfg, heads);
             LoopFacts(heads);
             ForEachInvariants();
+            TrackedForEachFacts();
             if (_p.IsCtor)
             {
                 Initializers();

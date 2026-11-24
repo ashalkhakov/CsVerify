@@ -155,6 +155,12 @@ operators): `Load(db.Items.Where(t => t.ExternalId == id))` is that query, order
 operators of the whole query (`Include`, `AsNoTracking`, `IgnoreQueryFilters`...) mean the same after a filter, an
 order or a page as before them.
 
+**Each row of a list.** A list a query that keeps each row once makes (a filter, an order, a page) holds a different
+object at each index, tracked or not. A `foreach` over such a list may call EF's `Add`, `Attach`, `Update`, `Remove` and
+`Entry` and still read its elements, since those change no list but navigations. Each element the loop hasn't reached
+yet keeps its tracking (an inferred invariant, kept where it holds), so `Remove` of each row a tracking query listed
+finds the instance its context tracks.
+
 **Compiled queries.** A `static readonly` field made by `EF.CompileQuery`, called in its own file, that gives a value
 (`FirstOrDefault`, `Single`, `Count`, `Any`...) is the query its lambda writes, read and checked as one written there.
 One that gives a sequence, `EF.CompileAsyncQuery`'s, and one declared in another file are library calls.

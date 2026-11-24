@@ -1399,6 +1399,71 @@ public sealed class Store(Db db)
         }
 
         [Fact]
+        public void EachRowATrackedQueryListed_IsTheTrackedInstance()
+        {
+            // (#128: a tracked query's rows are distinct instances, each the one its context tracks; removing one changes
+            // only its own state, so each still tracked where the loop reaches it)
+            var r = VerifyEf(@"public sealed class Item
+{
+    public long Id { get; set; }
+    public Guid ExternalId { get; set; }
+}
+public sealed class Db(DbContextOptions<Db> options) : DbContext(options)
+{
+    protected override void OnModelCreating(ModelBuilder b) => b.Entity<Item>();
+}
+public sealed class Store(Db db)
+{
+    public async Task RemoveOne(long id)
+    {
+        if (await db.Set<Item>().FirstOrDefaultAsync(t => t.Id == id) is { } item)
+        {
+            db.Remove(item);
+        }
+    }
+    public async Task RemoveFound(Guid id)
+    {
+        foreach (var item in await db.Set<Item>().Where(t => t.ExternalId == id).ToListAsync())
+        {
+            db.Remove(item);
+        }
+        await db.SaveChangesAsync();
+    }
+    public async Task UpdateFound(Guid id)
+    {
+        foreach (var item in await db.Set<Item>().Where(t => t.ExternalId == id).ToListAsync())
+        {
+            db.Update(item);
+        }
+    }
+    public async Task RemoveUntracked(Guid id)
+    {
+        foreach (var item in await db.Set<Item>().AsNoTracking().Where(t => t.ExternalId == id).ToListAsync())
+        {
+            db.Remove(item);
+        }
+    }
+    public async Task AttachCopies(Guid id)
+    {
+        foreach (var item in await db.Set<Item>().Where(t => t.ExternalId == id).ToListAsync())
+        {
+            db.Attach(new Item { Id = item.Id });
+        }
+    }
+}");
+            foreach (var ok in new[] { "RemoveOne", "RemoveFound", "UpdateFound" })
+            {
+                Assert.True(r.Errors("Store." + ok).Length == 0, ok + ": " + r.Explain("Store." + ok));
+            }
+            // (rows read without tracking are new objects, which the context may track others of; a new one with a tracked
+            // row's key)
+            foreach (var bad in new[] { "RemoveUntracked", "AttachCopies" })
+            {
+                Assert.True(r.Errors("Store." + bad).Contains("CSV1033"), bad + ": " + r.Explain("Store." + bad));
+            }
+        }
+
+        [Fact]
         public void AKeyAGenericBaseConfigurationSets_IsTheEntitysKey_AndAColumnOnlyWrittenIsDeclared()
         {
             // (#100: HasKey(c => c.Id) over T : IHasId names the entity's Id, which implements IHasId.Id; Provider is

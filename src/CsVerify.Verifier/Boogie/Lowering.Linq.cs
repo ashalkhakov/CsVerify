@@ -1690,6 +1690,7 @@ namespace CsVerify.Verifier.Boogie
                 case "ToArray" when args.Count == 1 && IsArray(callType):
                 {
                     var s = Sequence(args[0].Value);
+                    DistinctRows(args[0].Value, s, at);
                     var t = Declare("t$" + _temps++, callType);
                     Emit(KNew.Of(t, callType, s.Length));
                     Emit(KRow.Of(
@@ -1701,6 +1702,7 @@ namespace CsVerify.Verifier.Boogie
                 case "ToList" when args.Count == 1 && IsList(callType):
                 {
                     var s = Sequence(args[0].Value);
+                    DistinctRows(args[0].Value, s, at);
                     var ctor = ((INamedTypeSymbol)callType).Constructors.FirstOrDefault(c => c.Parameters.Length == 0) ?? throw new NotTranslated("a List without its constructor");
                     var list = Invoke(ctor, null, new IArgumentOperation[0], at, null);
                     var t = Declare("t$" + _temps++, callType);
@@ -2014,6 +2016,21 @@ namespace CsVerify.Verifier.Boogie
             !value.DescendantsAndSelf().OfType<IParameterReferenceOperation>().Any(x => SymbolEqualityComparer.Default.Equals(x.Parameter, p))
                 ? pr.Property
                 : null;
+
+        /// <summary>
+        /// A query that keeps each row of its table once gives a different object at each index, tracked or not: EF
+        /// gives one instance a key, and the database's rows are distinct by key (#128).
+        /// </summary>
+        private void DistinctRows(IOperation source, LSeq s, SyntaxNode at)
+        {
+            if (KernelTypes.Ef == null || TableRows(source) == null)
+            {
+                return;
+            }
+            var i = Atom();
+            var j = Atom();
+            ShapeFact(Over(KLit.Zero, s.Length, i, Over(KLit.Zero, s.Length, j, OrElse(Eq(i, j), Ne(s.Elem.At(i), s.Elem.At(j))))), at);
+        }
 
         /// <summary>
         /// The table a query's source reads, each row of it once: the set, through operators that keep or drop rows

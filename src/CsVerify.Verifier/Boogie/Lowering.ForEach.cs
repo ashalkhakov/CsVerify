@@ -100,7 +100,7 @@ namespace CsVerify.Verifier.Boogie
                 }
                 // (a list: over its model, where the loop changes no list; any other collection, or a list it may change,
                 // through its enumerator, whose MoveNext checks the collection's version)
-                bool enumerated = isCollection && !(IsList(collection.Type) && ChangesNoList(fs.Statement));
+                bool enumerated = isCollection && !(IsList(collection.Type) && ChangesNoList(fs.Statement, QueryList(collection)));
                 bool pairs = CollectionKind(collection.Type) == "Dictionary" && view == null;
                 var element = view != null ? ((INamedTypeSymbol)collection.Type).TypeArguments[view == "Keys" ? 0 : 1]
                             : isString ? _model.Compilation.GetSpecialType(SpecialType.System_Char)
@@ -404,15 +404,42 @@ namespace CsVerify.Verifier.Boogie
                 ArrayAt = fe.At,
             };
 
-        /// <summary>A loop body that calls nothing that may change a list: only specifications, [Pure] members and lists' [Pure] stubs.</summary>
-        private bool ChangesNoList(SyntaxNode body) => body.DescendantNodesAndSelf().Select(n => _model.GetOperation(n)).Where(o => o != null && !InSpec(o.Syntax)).All(o => o switch
+        /// <summary>
+        /// A loop body that calls nothing that may change a list: only specifications, [Pure] members and lists' [Pure] stubs;
+        /// and, over a list a database query made (trackerToo), EF's tracker calls, which change no list but navigations.
+        /// </summary>
+        private bool ChangesNoList(SyntaxNode body, bool trackerToo = false) => body.DescendantNodesAndSelf().Select(n => _model.GetOperation(n)).Where(o => o != null && !InSpec(o.Syntax)).All(o => o switch
         {
-            IInvocationOperation inv => SpecSymbols.IsSpecClass(inv.TargetMethod.ContainingType) || _contractOf?.Invoke(inv.TargetMethod) is Contract c && (c.IsPure || c.IsLemma),
+            IInvocationOperation inv => SpecSymbols.IsSpecClass(inv.TargetMethod.ContainingType) || _contractOf?.Invoke(inv.TargetMethod) is Contract c && (c.IsPure || c.IsLemma) ||
+                                        trackerToo && TracksOnly(inv),
             IObjectCreationOperation oc => !IsCollection(oc.Type) && (oc.Constructor == null || oc.Constructor.DeclaringSyntaxReferences.Length > 0 && _contractOf?.Invoke(oc.Constructor) is Contract cc && cc.IsPure),
             IPropertyReferenceOperation pr => !IsCollection(pr.Instance?.Type) || !(pr.Parent is IAssignmentOperation a && a.Target == pr),
             IAnonymousFunctionOperation _ => false,
             _ => true,
         });
+
+        /// <summary>A context's or a set's Add, Attach, Update, Remove (and their Range forms) or Entry.</summary>
+        private static bool TracksOnly(IInvocationOperation inv) =>
+            KernelTypes.Ef != null && IsEfMethod(inv.TargetMethod) && inv.Instance != null && (KernelTypes.Ef.IsContextType(inv.Instance.Type) || DbSetEntity(inv.Instance.Type) != null) &&
+            inv.TargetMethod.Name is "Add" or "AddRange" or "Attach" or "AttachRange" or "Update" or "UpdateRange" or "Remove" or "RemoveRange" or "Entry";
+
+        /// <summary>
+        /// A list a database query made, which nothing else holds: ToList or ToArray of one (awaited, for the Async
+        /// forms), or a local only its declaration sets to one.
+        /// </summary>
+        private bool QueryList(IOperation op)
+        {
+            op = Unconverted(op);
+            if (op is ILocalReferenceOperation l && Initializer(l) is IOperation init)
+            {
+                op = Unconverted(init);
+            }
+            if (op is IAwaitOperation aw)
+            {
+                op = Unconverted(aw.Operation);
+            }
+            return op is IInvocationOperation to && to.TargetMethod.Name is "ToList" or "ToListAsync" or "ToArray" or "ToArrayAsync" && DatabaseRoot(to, out _) != null;
+        }
 
         /// <summary>The collection's length: an array's or a string's, or a list's Size.</summary>
         private KExpr LengthOf(ForEach fe, bool inSpec = false) => fe.Count != null ? new KVar(fe.Count) : fe.Collection != null
@@ -425,6 +452,36 @@ namespace CsVerify.Verifier.Boogie
                 At = fe.At,
                 ArrayAt = fe.At,
             };
+
+        /// <summary>
+        /// A foreach over a list of entities, where the method uses a change tracker: that each element not yet reached
+        /// that a context tracked where the loop began it still tracks, as Houdini's candidate (#128: removing each row a
+        /// tracked query listed changes only that one's state).
+        /// </summary>
+        private void TrackedForEachFacts()
+        {
+            if (KernelTypes.Ef == null || _failed == null || !_p.Models.ContainsKey(StateMap))
+            {
+                return;
+            }
+            foreach (var fe in _forEachAt.Values.Where(f => f.Collection != null && f.Version == null && f.Mat == null && !f.Opaque && f.View == null &&
+                                                            KernelTypes.Ef.EntityOf(f.Element) != null))
+            {
+                var snap = "fe$st" + _temps++;
+                _p.AddLocal(KLocal.Of(snap, _p.Models[StateMap].Type));
+                _entryValues.Add((fe.Head, snap, new KVar(StateMap)));
+                var c = new KVar("c$fe");
+                var j = new KVar("j$fe");
+                var elem = Sel(ModelOf("Items", fe.Collection).Name, new KVar(fe.Array), j);
+                var fact = KQuant.ForAll("c$fe", "Ref", KQuant.ForAll("j$fe", "int",
+                    Implies(AndAll(new KExpr[] { Le(new KVar(fe.Index), j), Lt(j, LengthOf(fe, true)), Ne(Sel(snap, c, elem), I(EfDetached)) }), Ne(State(c, elem), I(EfDetached)))));
+                if (!_p.Candidates.TryGetValue(fe.Head, out var list))
+                {
+                    _p.Candidates[fe.Head] = list = new List<KSpec>();
+                }
+                list.Add(KSpec.Of(fact, fe.At));
+            }
+        }
 
         /// <summary>A foreach's index stays within its collection: the loop's first invariant (it holds by itself).</summary>
         private void ForEachInvariants()
