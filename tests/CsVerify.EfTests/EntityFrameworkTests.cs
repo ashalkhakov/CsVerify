@@ -1544,6 +1544,85 @@ public sealed class Store(Db db)
         }
 
         [Fact]
+        public void AQueryHelperOfStatements_IsReadAtItsCall()
+        {
+            // (#129's review: a private helper of declarations, ifs that return, loops that set fields, awaits and a return is
+            // read where it's awaited; a correlated subquery in a projection is a value of its row; LoadAsync tracks what it
+            // reads; a list ToListAsync made keeps its rows across an await)
+            var r = VerifyEf(@"public sealed class Owner { public long Id { get; set; } }
+public sealed class Item
+{
+    public long Id { get; set; }
+    public Guid ExternalId { get; set; }
+    public DateTime CreatedAt { get; set; }
+    public long? OwnerId { get; set; }
+    public Owner? Owner { get; set; }
+    public string? Note { get; set; }
+}
+public sealed class Db(DbContextOptions<Db> options) : DbContext(options)
+{
+    protected override void OnModelCreating(ModelBuilder b)
+    {
+        b.Entity<Owner>();
+        b.Entity<Item>().HasIndex(x => x.ExternalId).IsUnique();
+    }
+}
+public sealed class Store(Db db)
+{
+    public async Task<Item?> ThroughLongHelper(Guid id) =>
+        (await LoadMore(db.Set<Item>().Where(t => t.ExternalId == id))).SingleOrDefault();
+    public async Task<Item?> ThroughProjection(Guid id) =>
+        (await WithNotes(db.Set<Item>().Where(t => t.ExternalId == id))).SingleOrDefault();
+    public async Task<Item?> LongByColumn(DateTime at) =>
+        (await LoadMore(db.Set<Item>().Where(t => t.CreatedAt == at))).SingleOrDefault();
+    public async Task<Item?> NotEveryWay(Guid id) =>
+        (await Halfway(db.Set<Item>().Where(t => t.ExternalId == id))).SingleOrDefault();
+    public async Task LoadedThenAttached(long id)
+    {
+        await db.Set<Owner>().Where(o => o.Id == id).LoadAsync();
+        db.Attach(new Owner { Id = id });
+    }
+    private async Task<IReadOnlyList<Item>> LoadMore(IQueryable<Item> query)
+    {
+        var items = await query.Include(t => t.Owner).OrderBy(t => t.CreatedAt).ThenBy(t => t.Id).ToListAsync();
+        if (items.Count == 0)
+        {
+            return items;
+        }
+        var owners = items.Where(t => t.OwnerId != null).Select(t => t.OwnerId!.Value).Distinct().ToList();
+        await db.Set<Owner>().Where(o => owners.Contains(o.Id)).LoadAsync();
+        return items;
+    }
+    private async Task<IReadOnlyList<Item>> WithNotes(IQueryable<Item> query)
+    {
+        var rows = await query.Select(t => new { Item = t, Owner = db.Set<Owner>().Where(o => o.Id == t.OwnerId).Select(o => o.Id).FirstOrDefault() }).ToListAsync();
+        foreach (var row in rows)
+        {
+            row.Item.Note = row.Owner.ToString();
+        }
+        return rows.Select(r => r.Item).ToList();
+    }
+    private async Task<List<Item>> Halfway(IQueryable<Item> query)
+    {
+        var items = await query.ToListAsync();
+        if (items.Count > 0)
+        {
+            items.Add(items[0]);
+        }
+        return items;
+    }
+}");
+            foreach (var ok in new[] { "ThroughLongHelper", "ThroughProjection", "LoadMore", "WithNotes", "Halfway" })
+            {
+                Assert.True(r.Errors("Store." + ok).Length == 0, ok + ": " + r.Explain("Store." + ok));
+            }
+            // (a column no index makes unique; a helper that adds a row; a row LoadAsync tracked, met again)
+            Assert.True(r.Errors("Store.LongByColumn").SequenceEqual(new[] { "CSV1001" }), r.Explain("Store.LongByColumn"));
+            Assert.True(r.Errors("Store.NotEveryWay").SequenceEqual(new[] { "CSV1001" }), r.Explain("Store.NotEveryWay"));
+            Assert.True(r.Errors("Store.LoadedThenAttached").SequenceEqual(new[] { "CSV1033" }), r.Explain("Store.LoadedThenAttached"));
+        }
+
+        [Fact]
         public void AKeyAGenericBaseConfigurationSets_IsTheEntitysKey_AndAColumnOnlyWrittenIsDeclared()
         {
             // (#100: HasKey(c => c.Id) over T : IHasId names the entity's Id, which implements IHasId.Id; Provider is

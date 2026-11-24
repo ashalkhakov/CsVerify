@@ -411,7 +411,10 @@ namespace CsVerify.Verifier.Boogie
         private bool ChangesNoList(SyntaxNode body, bool trackerToo = false) => body.DescendantNodesAndSelf().Select(n => _model.GetOperation(n)).Where(o => o != null && !InSpec(o.Syntax)).All(o => o switch
         {
             IInvocationOperation inv => SpecSymbols.IsSpecClass(inv.TargetMethod.ContainingType) || _contractOf?.Invoke(inv.TargetMethod) is Contract c && (c.IsPure || c.IsLemma) ||
-                                        trackerToo && TracksOnly(inv),
+                                        trackerToo && TracksOnly(inv) ||
+                                        // (a library member of a number, a bool, a char or a string, of such arguments: it reaches no list, #129)
+                                        inv.TargetMethod.DeclaringSyntaxReferences.Length == 0 && inv.Instance?.Type is ITypeSymbol it && it.SpecialType != SpecialType.None &&
+                                        inv.Arguments.All(a => a.Value.Type is ITypeSymbol at && (Scalar(at) || IsString(at))),
             IObjectCreationOperation oc => !IsCollection(oc.Type) && (oc.Constructor == null || oc.Constructor.DeclaringSyntaxReferences.Length > 0 && _contractOf?.Invoke(oc.Constructor) is Contract cc && cc.IsPure),
             IPropertyReferenceOperation pr => !IsCollection(pr.Instance?.Type) || !(pr.Parent is IAssignmentOperation a && a.Target == pr),
             IAnonymousFunctionOperation _ => false,

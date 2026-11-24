@@ -148,15 +148,21 @@ EF Core applies the left side's query filters to the joined rows, which drops th
 And so are the `By` forms (`DistinctBy`...), `SequenceEqual`, `CountBy` and `AggregateBy`, which EF doesn't translate.
 In a query's lambda, `Contains` of a list passed in compares as the database does too: strings by its collation.
 
-**Query helpers.** A method that takes a query (`IQueryable<T>`) is translated: of the rows of the query passed in,
-only what its specification says is known. A private one of the same file whose body is one expression, with no
-contract, is read where it is awaited instead, on the query its caller passes (a table and Queryable's and EF's
-operators): `Load(db.Items.Where(t => t.ExternalId == id))` is that query, ordered and listed as `Load` does. EF's
+**Query helpers.** A method that takes a query (`IQueryable<T>`) is translated: of the rows of the query passed in
+(not null, where their type isn't nullable), only what its specification says is known. A private one of the same
+file with no contract is read where it is awaited instead, on the query its caller passes (a table and Queryable's
+and EF's operators): `Load(db.Items.Where(t => t.ExternalId == id))` is that query, ordered and listed as `Load` does.
+Its body may declare locals, run statements (awaits among them), return early from an `if`, and set fields in a
+`foreach` (each field it sets is some value after; an entity tracked stays tracked); every way ends in a `return`.
+Its obligations are proved where it is verified. EF's
 operators of the whole query (`Include`, `AsNoTracking`, `IgnoreQueryFilters`...) mean the same after a filter, an
 order or a page as before them. A private method of the type without parameters that returns a query in one
 expression (`IQueryable<Item> Items() => db.Items.Include(i => i.Owner)`, a table written once with its includes) is
 read where a query is built on it. A query as a value is an object, not null; what it reads is read where it runs.
-A helper of more than one statement is read by its contract, which can't yet relate its rows to the query's.
+In a query's lambda, a subquery of a scalar correlated by the row
+(`Owner = db.Owners.Where(o => o.Id == t.OwnerId).Select(o => o.Id).FirstOrDefault()`) is a value of the row not known.
+`LoadAsync` of a query reads it, tracked: its rows are tracked from there on. A list `ToListAsync` (or LINQ's `ToList`)
+made is the method's own: an `await` leaves its rows as they were, where the method gives it only to LINQ's operators.
 
 **Each row of a list.** A list a query that keeps each row once makes (a filter, an order, a page) holds a different
 object at each index, tracked or not. A `foreach` over such a list may call EF's `Add`, `Attach`, `Update`, `Remove` and

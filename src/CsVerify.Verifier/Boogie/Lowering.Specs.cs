@@ -19,6 +19,12 @@ namespace CsVerify.Verifier.Boogie
         /// <summary>A specification: mathematics, its array reads, lengths, divisions and functions' calls kept for Checks' well-definedness.</summary>
         private KExpr Spec(IOperation e, IParameterSymbol result)
         {
+            // (in a database query's lambda, a correlated subquery of a scalar: a value of its row not known, #129)
+            if (e is IInvocationOperation sq && (sq.Type?.IsValueType == true || IsString(sq.Type)) && (IsQueryableMethod(sq.TargetMethod) || IsEfMethod(sq.TargetMethod)) &&
+                DatabaseRoot(sq, out _) != null && SubqueryLambda(sq) != null)
+            {
+                return SubqueryValue(sq);
+            }
             // (ObjSet.Empty: no objects)
             if ((e is IFieldReferenceOperation { Field.Name: "Empty", Instance: null } || e is IPropertyReferenceOperation { Property.Name: "Empty", Instance: null }) && IsObjSet(e.Type))
             {

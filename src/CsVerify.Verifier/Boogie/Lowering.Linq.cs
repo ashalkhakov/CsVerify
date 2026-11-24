@@ -128,7 +128,9 @@ namespace CsVerify.Verifier.Boogie
             {
                 return null;
             }
-            foreach (var op in body.DescendantsAndSelf())
+            // (a database query's scalar in it, a correlated subquery: SQL's, not code that runs, #129)
+            var subqueries = body.DescendantsAndSelf().OfType<IInvocationOperation>().Where(s => Subquery(s, fn)).ToList();
+            foreach (var op in body.DescendantsAndSelf().Where(o => !subqueries.Any(s => s == o || s.Descendants().Contains(o))))
             {
                 switch (op)
                 {
@@ -150,6 +152,40 @@ namespace CsVerify.Verifier.Boogie
                 }
             }
             return (body, fn.Symbol.Parameters.ElementAtOrDefault(0), fn.Symbol.Parameters.ElementAtOrDefault(1));
+        }
+
+        /// <summary>
+        /// A database query of a scalar in a database query's lambda, correlated by the lambda's row (its only parameter
+        /// of it): of a value type, or a string, and none of the lambda's other parameters.
+        /// </summary>
+        private bool Subquery(IInvocationOperation s, IAnonymousFunctionOperation fn) =>
+            KernelTypes.Ef != null && fn.Symbol.Parameters.Length == 1 && KernelTypes.Ef.EntityOf(fn.Symbol.Parameters[0].Type) != null &&
+            (s.Type?.IsValueType == true || IsString(s.Type)) && InSubset(s.Type) && (IsQueryableMethod(s.TargetMethod) || IsEfMethod(s.TargetMethod)) &&
+            DatabaseRoot(s, out _) != null &&
+            !s.Descendants().OfType<IParameterReferenceOperation>().Any(r => r.Parameter.ContainingSymbol is IMethodSymbol { MethodKind: MethodKind.AnonymousFunction } pm &&
+                                                                           !SymbolEqualityComparer.Default.Equals(pm, fn.Symbol) && !s.Descendants().OfType<IAnonymousFunctionOperation>().Any(f => SymbolEqualityComparer.Default.Equals(f.Symbol, pm)));
+
+        /// <summary>
+        /// A correlated subquery's value (Subquery), where its lambda is applied: of its row, a value not known (a map
+        /// fresh at each application).
+        /// </summary>
+        private KExpr SubqueryValue(IInvocationOperation s) =>
+            Sel(LinqMap("[Ref]" + TypeOf(s.Type)), new KVar("q$" + (SubqueryLambda(s) ?? throw new NotTranslated("a subquery outside its lambda")).Symbol.Parameters[0].Name));
+
+        /// <summary>The lambda of a Queryable or EF operator a subquery is in (an expression tree EF translates), where it is one (Subquery).</summary>
+        private IAnonymousFunctionOperation SubqueryLambda(IInvocationOperation s)
+        {
+            IAnonymousFunctionOperation fn = null;
+            for (var up = s.Parent; up != null && fn == null; up = up.Parent)
+            {
+                fn = up as IAnonymousFunctionOperation;
+            }
+            IOperation arg = fn;
+            while (arg?.Parent is IConversionOperation or IDelegateCreationOperation or IParenthesizedOperation)
+            {
+                arg = arg.Parent;
+            }
+            return fn != null && Subquery(s, fn) && arg?.Parent is IArgumentOperation { Parent: IInvocationOperation q } && (IsQueryableMethod(q.TargetMethod) || IsEfMethod(q.TargetMethod)) ? fn : null;
         }
 
         /// <summary>
@@ -356,6 +392,12 @@ namespace CsVerify.Verifier.Boogie
                 if (IsLinqGroup(type))
                 {
                     ShapeFact(Lt(KLit.Zero, new KVar(n)), src.Syntax);
+                }
+                // (a query's rows of a non-nullable type aren't null, as C#'s nullable analysis has it, as a list's elements)
+                if (IsQueryHandle(type) && elem.IsReferenceType && NotNullable(elem))
+                {
+                    var j = Atom();
+                    ShapeFact(Over(KLit.Zero, new KVar(n), j, NotNull(Sel(items, j))), src.Syntax);
                 }
                 var i = Atom();
                 return new LSeq

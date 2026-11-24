@@ -139,7 +139,8 @@ namespace CsVerify.Verifier
             {
                 return t.SpecialType != SpecialType.System_String;
             }
-            var modeled = _engine.Models.Select(x => (x.Parameters[0].Type as INamedTypeSymbol)?.OriginalDefinition).Where(x => x != null);
+            // (a model of any object, Tracker.Unshared(object): of no type in particular, #129)
+            var modeled = _engine.Models.Select(x => (x.Parameters[0].Type as INamedTypeSymbol)?.OriginalDefinition).Where(x => x != null && x.SpecialType != SpecialType.System_Object);
             if (modeled.Any(x => DataTypes.Derives(t, x) || DataTypes.Derives(x, t)))
             {
                 return true;

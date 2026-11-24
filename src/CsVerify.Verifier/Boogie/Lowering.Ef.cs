@@ -1,6 +1,7 @@
 using System.Collections.Generic;
 using System.Linq;
 using Microsoft.CodeAnalysis;
+using CsVerify.Analyzers;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.FlowAnalysis;
 using Microsoft.CodeAnalysis.Operations;
@@ -1694,7 +1695,7 @@ namespace CsVerify.Verifier.Boogie
         /// what it returns, the query passed in for its query parameter and its other arguments for theirs. Else null.
         /// (#126: a repository's helper that orders, includes and lists the query its callers filter.)
         /// </summary>
-        private IOperation QueryHelper(IInvocationOperation call)
+        private IBlockOperation QueryHelper(IInvocationOperation call)
         {
             var m = call.TargetMethod;
             if (KernelTypes.Ef == null || _inlined >= 3 || m.DeclaredAccessibility != Accessibility.Private || m.MethodKind != MethodKind.Ordinary ||
@@ -1704,7 +1705,9 @@ namespace CsVerify.Verifier.Boogie
                 !(m.IsStatic || call.Instance is IInstanceReferenceOperation && !_m.IsStatic && SymbolEqualityComparer.Default.Equals(m.ContainingType, _m.ContainingType)) ||
                 m.DeclaringSyntaxReferences.Length != 1 || m.DeclaringSyntaxReferences[0].GetSyntax() is not Microsoft.CodeAnalysis.CSharp.Syntax.MethodDeclarationSyntax decl ||
                 decl.SyntaxTree != _decl.SyntaxTree || _model.GetOperation(decl) is not IMethodBodyOperation body ||
-                (body.ExpressionBody ?? body.BlockBody) is not { Operations: [IReturnOperation { ReturnedValue: { } value }] })
+                (body.ExpressionBody ?? body.BlockBody) is not IBlockOperation block || !Inlinable(block.Operations) ||
+                decl.DescendantNodes().Any(n => n is Microsoft.CodeAnalysis.CSharp.Syntax.InvocationExpressionSyntax inv &&
+                                                _model.GetSymbolInfo(inv).Symbol is IMethodSymbol s && SpecSymbols.IsSpecClass(s.ContainingType)))
             {
                 return null;
             }
@@ -1716,7 +1719,50 @@ namespace CsVerify.Verifier.Boogie
                     return null;
                 }
             }
-            return value;
+            return block;
+        }
+
+        /// <summary>
+        /// Statements a query helper may be read of where it's called: declarations, expression statements, blocks and
+        /// ifs, each way ending in a return or neither, and a return last.
+        /// </summary>
+        private static bool Inlinable(IEnumerable<IOperation> statements)
+        {
+            var list = statements.ToList();
+            for (int k = 0; k < list.Count; k++)
+            {
+                switch (list[k])
+                {
+                    case IReturnOperation { Kind: OperationKind.Return, ReturnedValue: not null }:
+                        return k == list.Count - 1;
+                    case IVariableDeclarationGroupOperation g when g.Declarations.All(d => d.Declarators.All(x => x.Initializer != null || d.Initializer != null)) &&
+                                                                 g.Syntax is not Microsoft.CodeAnalysis.CSharp.Syntax.LocalDeclarationStatementSyntax { UsingKeyword.RawKind: not 0 }:
+                    case IExpressionStatementOperation:
+                        continue;
+                    case IForEachLoopOperation f when !f.IsAsynchronous && LoopWrites(f) != null:
+                        continue;
+                    case IBlockOperation b when Inlinable(b.Operations.Append(null)):
+                        continue;
+                    case IConditionalOperation c when Ends(c.WhenTrue) is bool t && (c.WhenFalse == null ? (bool?)false : Ends(c.WhenFalse)) is bool f && (t || !f):
+                        continue;
+                    case null when k == list.Count - 1:
+                        return true;
+                    default:
+                        return false;
+                }
+            }
+            return false;
+
+            // (a branch: whether it ends in a return, or null where it isn't one of those)
+            static bool? Ends(IOperation s)
+            {
+                var ops = s is IBlockOperation b ? b.Operations.ToList() : new List<IOperation> { s };
+                if (ops.Count > 0 && ops[^1] is IReturnOperation)
+                {
+                    return Inlinable(ops) ? true : null;
+                }
+                return Inlinable(ops.Append(null)) ? false : null;
+            }
         }
 
         /// <summary>Calls of Queryable's and EF's operators down to a context's set (its lambdas aside): nothing else runs.</summary>
@@ -1742,7 +1788,7 @@ namespace CsVerify.Verifier.Boogie
         }
 
         /// <summary>A query helper's call (QueryHelper): its arguments read in order, then what it returns, here.</summary>
-        private KExpr InlineQueryHelper(IInvocationOperation call, IOperation value)
+        private KExpr InlineQueryHelper(IInvocationOperation call, IBlockOperation body)
         {
             var bound = new List<IParameterSymbol>();
             foreach (var a in call.Arguments.OrderBy(a => a.Parameter.Ordinal))
@@ -1761,19 +1807,152 @@ namespace CsVerify.Verifier.Boogie
                 bound.Add(p);
             }
             _inlined++;
+            _inlinedBodies.Add(body.Syntax);
+            _confined = null;
             try
             {
-                return Expr(value);
+                var r = Declare("h$r" + _temps++, call.Type is INamedTypeSymbol { TypeArguments: [var rt] } ? rt : call.Type);
+                InlineStatements(body.Operations.ToList(), 0, r);
+                return new KVar(r);
             }
             finally
             {
                 _inlined--;
+                _inlinedBodies.RemoveAt(_inlinedBodies.Count - 1);
+                _confined = null;
                 foreach (var p in bound)
                 {
                     _queryArgs.Remove(p);
                     _assigned.Remove(p);
                 }
             }
+        }
+
+        /// <summary>
+        /// A query helper's foreach whose body only sets fields, of values that run nothing (a number's ToString aside):
+        /// those fields. Else null. (Its obligations are the helper's, proved where it's verified; here, what it changes.)
+        /// </summary>
+        private static List<ISymbol> LoopWrites(IForEachLoopOperation f)
+        {
+            var writes = new List<ISymbol>();
+            foreach (var s in f.Body is IBlockOperation b ? b.Operations : ImmutableArrayOf(f.Body))
+            {
+                if (s is not IExpressionStatementOperation { Operation: ISimpleAssignmentOperation { Target: IMemberReferenceOperation { Member: var member } target, Value: var value } } ||
+                    !IsField(member) || member.IsStatic ||
+                    !new IOperation[] { ((IMemberReferenceOperation)target).Instance, value }.All(x => x != null && x.DescendantsAndSelf().All(Quiet)))
+                {
+                    return null;
+                }
+                writes.Add(member.OriginalDefinition);
+            }
+            return writes;
+
+            static bool Quiet(IOperation x) => x switch
+            {
+                IInvocationOperation inv => inv.TargetMethod.DeclaringSyntaxReferences.Length == 0 && inv.Instance?.Type is ITypeSymbol it && it.SpecialType != SpecialType.None &&
+                                            inv.Arguments.All(a => a.Value.Type is ITypeSymbol at && (at.IsValueType || at.SpecialType == SpecialType.System_String)),
+                IObjectCreationOperation or IAssignmentOperation or IIncrementOrDecrementOperation or IAwaitOperation or IAnonymousFunctionOperation or IDelegateCreationOperation => false,
+                _ => true,
+            };
+        }
+
+        private static IEnumerable<IOperation> ImmutableArrayOf(IOperation op) => new[] { op };
+
+        /// <summary>The bodies of the query helpers being read where they're called (Confined reads their locals too).</summary>
+        private readonly List<SyntaxNode> _inlinedBodies = new List<SyntaxNode>();
+
+        /// <summary>
+        /// A query helper's statements from k, lowered here: what it returns into r. An if whose way ends in a return
+        /// goes on, the other way, with what follows. Whether this way returned.
+        /// </summary>
+        private bool InlineStatements(List<IOperation> list, int k, string r)
+        {
+            for (; k < list.Count; k++)
+            {
+                switch (list[k])
+                {
+                    case IReturnOperation ret:
+                        Emit(KAssign.Of(r, Expr(ret.ReturnedValue)));
+                        return true;
+                    case IVariableDeclarationGroupOperation g:
+                        foreach (var d in g.Declarations)
+                        {
+                            foreach (var x in d.Declarators)
+                            {
+                                var local = Declare(Local(x.Symbol), x.Symbol.Type);
+                                Emit(KAssign.Of(local, Expr((x.Initializer ?? d.Initializer).Value)));
+                            }
+                        }
+                        continue;
+                    case IExpressionStatementOperation es:
+                        Statement(es);
+                        continue;
+                    // (a loop setting fields: its collection read, it may throw, and each field it sets is some value after;
+                    // an entity it sets a column of, tracked, still is)
+                    case IForEachLoopOperation f:
+                    {
+                        var collection = Expr(f.Collection is IConversionOperation cv ? cv.Operand : f.Collection);
+                        Emit(KCheck.Of(NotNull(collection), "CSV1013", f.Collection.Syntax, $"'{f.Collection.Syntax}' might be null"));
+                        if (_cfgBlock != null && ThrowTarget(_cfgBlock.EnclosingRegion) is string lt)
+                        {
+                            Emit(new KFork
+                            {
+                                Overflow = KLit.False,
+                                Target = lt,
+                                Exception = null,
+                            });
+                        }
+                        var writes = LoopWrites(f);
+                        bool columns = _failed != null && writes.Any(w => KernelTypes.Ef.EntityOf(w.ContainingType) != null);
+                        var states = columns ? new KVar(LinqMap("[Ref][Ref]int")) : null;
+                        if (columns)
+                        {
+                            Emit(KAssign.Of(states.Name, new KVar(StateMap)));
+                        }
+                        foreach (var w in writes.Distinct(SymbolEqualityComparer.Default))
+                        {
+                            _p.AddField(w);
+                            Emit(KRow.Of(FieldMap(w), null, new KVar(LinqMap("[Ref]" + TypeOf(FieldType(w))))));
+                        }
+                        if (columns)
+                        {
+                            SetStatesWhole(new KVar(LinqMap("[Ref][Ref]int")));
+                            Emit(KRow.Of(UnsavedMap, null, new KVar(LinqMap("[Ref]bool"))));
+                            ShapeFact(KQuant.ForAll("c$", "Ref", KQuant.ForAll("o$", "Ref",
+                                Eq(Eq(Sel(states, new KVar("c$"), new KVar("o$")), I(EfDetached)), Eq(State(new KVar("c$"), new KVar("o$")), I(EfDetached))))), f.Syntax);
+                        }
+                        continue;
+                    }
+                    case IBlockOperation b:
+                        if (InlineStatements(b.Operations.ToList(), 0, r))
+                        {
+                            return true;
+                        }
+                        continue;
+                    case IConditionalOperation c:
+                    {
+                        var branch = If(Expr(c.Condition));
+                        bool returned = InlineStatements(Statements(c.WhenTrue), 0, r);
+                        Else(branch);
+                        bool rest = c.WhenFalse != null && InlineStatements(Statements(c.WhenFalse), 0, r);
+                        if (returned && !rest)
+                        {
+                            rest = InlineStatements(list, k + 1, r);
+                        }
+                        EndIf(branch);
+                        if (returned)
+                        {
+                            return rest;
+                        }
+                        continue;
+                    }
+                    default:
+                        throw new NotTranslated("a query helper's " + list[k].Kind);
+                }
+            }
+            return false;
+
+            static List<IOperation> Statements(IOperation s) => s is IBlockOperation b ? b.Operations.ToList() : new List<IOperation> { s };
         }
 
         /// <summary>The parameters of a compiled query's lambda being read at its call: locals q$name, its arguments.</summary>

@@ -100,6 +100,7 @@ namespace CsVerify.Verifier.Boogie
         private static KExpr States(KExpr c) => Sel(StateMap, c);
         private static KExpr State(KExpr c, KExpr o) => Sel(StateMap, c, o);
         private void SetStates(KExpr c, KExpr row) => Emit(KRow.Of(StateMap, c, row));
+        private void SetStatesWhole(KExpr all) => Emit(KRow.Of(StateMap, null, all));
         private static KExpr Unsaved(KExpr c) => Sel(UnsavedMap, c);
         private void SetUnsaved(KExpr c, KExpr v) => Emit(KRow.Of(UnsavedMap, c, v));
         private static KExpr InTx(KExpr c) => Sel(InTxMap, c);
