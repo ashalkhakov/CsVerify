@@ -33,6 +33,10 @@ namespace CsVerify.Verifier
             public HashSet<IPropertySymbol> Configured = new HashSet<IPropertySymbol>(SymbolEqualityComparer.Default);
             /// <summary>The columns configured required (IsRequired(), [Required]): NOT NULL, whatever their nullable annotation.</summary>
             public HashSet<IPropertySymbol> Required = new HashSet<IPropertySymbol>(SymbolEqualityComparer.Default);
+            /// <summary>The columns stored by a value converter (HasConversion): compared by their stored values, as scalars are.</summary>
+            public HashSet<IPropertySymbol> Converted = new HashSet<IPropertySymbol>(SymbolEqualityComparer.Default);
+            /// <summary>Shadow columns (Property&lt;T&gt;("Name") of no property of the class): their names and types.</summary>
+            public Dictionary<string, ITypeSymbol> Shadow = new Dictionary<string, ITypeSymbol>();
             /// <summary>Is the column NOT NULL: of a value type not Nullable, annotated not null, or configured required.</summary>
             public bool NotNullColumn(IPropertySymbol p) =>
                 p.Type.IsValueType ? p.Type is not INamedTypeSymbol { OriginalDefinition.SpecialType: SpecialType.System_Nullable_T }
@@ -229,6 +233,11 @@ namespace CsVerify.Verifier
         /// <summary>Each navigation's inverse, where the model says: the one paired with it, or null where it has none (WithMany(), WithOne()).</summary>
         private readonly Dictionary<IPropertySymbol, IPropertySymbol> _inverses = new Dictionary<IPropertySymbol, IPropertySymbol>(SymbolEqualityComparer.Default);
 
+        private readonly HashSet<IPropertySymbol> _oneToOne = new HashSet<IPropertySymbol>(SymbolEqualityComparer.Default);
+
+        /// <summary>Is the navigation an end of a one-to-one (HasOne ... WithOne)?</summary>
+        public bool OneToOne(IPropertySymbol nav) => _oneToOne.Contains(nav.OriginalDefinition);
+
         /// <summary>Does the model say what a navigation's inverse is (null: it has none)?</summary>
         public bool KnownInverse(IPropertySymbol nav, out IPropertySymbol inverse) => _inverses.TryGetValue(nav.OriginalDefinition, out inverse);
 
@@ -254,6 +263,24 @@ namespace CsVerify.Verifier
         /// </summary>
         private void ReadRelationships()
         {
+            // (EF's convention: two entities each with one reference navigation to the other, configured no other way,
+            // are the ends of a one-to-one)
+            foreach (var a in _entities.Values.Where(x => !_unreadEntities.Contains(x.Type)))
+            {
+                foreach (var nav in a.References)
+                {
+                    var b = EntityOf(nav.Type);
+                    var back = b?.References.Where(r => ReferenceEquals(EntityOf(r.Type), a)).ToList();
+                    if (b == null || ReferenceEquals(a, b) || back.Count != 1 || a.References.Count(r => ReferenceEquals(EntityOf(r.Type), b)) != 1 ||
+                        b.Collections.Any(c => ReferenceEquals(EntityOf(NavigationTarget(c.Type, out _)), a)) || a.Collections.Any(c => ReferenceEquals(EntityOf(NavigationTarget(c.Type, out _)), b)) ||
+                        new[] { nav, back[0] }.Any(x => _inverses.ContainsKey(x.OriginalDefinition) || _unreadNavigations.Contains(x) || Has(x, "InversePropertyAttribute")))
+                    {
+                        continue;
+                    }
+                    _oneToOne.Add(nav.OriginalDefinition);
+                    _oneToOne.Add(back[0].OriginalDefinition);
+                }
+            }
             foreach (var d in _entities.Values.Where(x => !_unreadEntities.Contains(x.Type)))
             {
                 foreach (var nav in d.References)
@@ -377,6 +404,14 @@ namespace CsVerify.Verifier
             if (with.call != null && first != null)
             {
                 Pair(first, second);
+            }
+            // (a one-to-one's ends: a row of either has one row of the other at most, by its unique foreign key, #130)
+            if (name == "HasOne" && with.name == "WithOne")
+            {
+                foreach (var end in new[] { first, second }.Where(x => x != null))
+                {
+                    _oneToOne.Add(end.OriginalDefinition);
+                }
             }
             var key = next.FirstOrDefault(x => x.name == "HasForeignKey").call;
             bool unread = first == null && arg != null || next.Any(x => x.name == "HasPrincipalKey") || name == "HasOne" && with.name == "WithOne" ||
@@ -902,16 +937,30 @@ namespace CsVerify.Verifier
                     }
                     break;
                 case "HasIndex":
+                    // (a filtered one, unique among the rows the filter keeps: only a column's IS NOT NULL, which a row a
+                    // value not null fixes meets, #130)
                     if (Called("IsUnique", out var isUnique, next) && !(isUnique.ArgumentList.Arguments.FirstOrDefault()?.Expression is LiteralExpressionSyntax l && l.IsKind(SyntaxKind.FalseLiteralExpression))
-                        && (Properties(argModel, arg, e) ?? Named(compilation, model, inv, e, configuration)) is List<IPropertySymbol> index)
+                        && (Properties(argModel, arg, e) ?? Named(compilation, model, inv, e, configuration)) is List<IPropertySymbol> index &&
+                        (!Called("HasFilter", out var indexFilter, next) || NotNullFilter(indexFilter, index)))
                     {
                         e.AddUnique(index);
                     }
                     break;
                 case "Property":
-                    if (Properties(argModel, arg, e) is List<IPropertySymbol> p && p.Count == 1)
+                    // (a shadow column: Property<T>("Name") of a name the class has no property of)
+                    if (arg is LiteralExpressionSyntax { Token.Value: string shadow } && PropertiesOf(e.Type).All(x => x.Name != shadow) &&
+                        model.GetSymbolInfo(inv).Symbol is IMethodSymbol { TypeArguments: [var shadowType] })
+                    {
+                        e.Shadow[shadow] = shadowType;
+                        break;
+                    }
+                    if ((Properties(argModel, arg, e) ?? Named(compilation, model, inv, e, configuration)) is List<IPropertySymbol> p && p.Count == 1)
                     {
                         e.Configured.Add(p[0].OriginalDefinition);
+                        if (Called("HasConversion", out _, next))
+                        {
+                            e.Converted.Add(p[0].OriginalDefinition);
+                        }
                         if (Called("IsRequired", out var required, next) &&
                             !(required.ArgumentList.Arguments.FirstOrDefault()?.Expression is LiteralExpressionSyntax r && r.IsKind(SyntaxKind.FalseLiteralExpression)))
                         {
@@ -953,6 +1002,12 @@ namespace CsVerify.Verifier
                     break;
             }
         }
+
+        /// <summary>HasFilter("[C] IS NOT NULL") of one of the index's columns (bracketed, quoted or bare).</summary>
+        private static bool NotNullFilter(InvocationExpressionSyntax filter, List<IPropertySymbol> index) =>
+            filter.ArgumentList.Arguments.Count == 1 && filter.ArgumentList.Arguments[0].Expression is LiteralExpressionSyntax { Token.Value: string sql } &&
+            System.Text.RegularExpressions.Regex.Match(sql, @"^\s*[\[""`]?(\w+)[\]""`]?\s+IS\s+NOT\s+NULL\s*$", System.Text.RegularExpressions.RegexOptions.IgnoreCase) is { Success: true } m &&
+            index.Any(c => c.Name == m.Groups[1].Value);
 
         private bool Called(string m, out InvocationExpressionSyntax call, List<(string name, InvocationExpressionSyntax call)> next)
         {

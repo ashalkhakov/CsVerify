@@ -19,6 +19,15 @@ namespace CsVerify.Verifier.Boogie
         /// <summary>A specification: mathematics, its array reads, lengths, divisions and functions' calls kept for Checks' well-definedness.</summary>
         private KExpr Spec(IOperation e, IParameterSymbol result)
         {
+            // (EF's entries: Lowering.EfEntries'; a method of the program a lambda calls: its body, InlinedBody's)
+            if (e is IPropertyReferenceOperation { Instance: { } entry } er && IsEntryType(entry.Type))
+            {
+                return SpecEntryRead(er, result);
+            }
+            if (_applying > 0 && e is IInvocationOperation ic && ic.TargetMethod.DeclaringSyntaxReferences.Length > 0 && InlinedBody(ic) != null)
+            {
+                return SpecInlined(ic, result);
+            }
             // (EF.Property(row, "Name"): a column's value by its name, #129)
             if (e is IInvocationOperation ep && EfProperty(ep) is string column)
             {
@@ -139,6 +148,7 @@ namespace CsVerify.Verifier.Boogie
         {
             switch (e)
             {
+                case IParameterReferenceOperation bp when _boundParams.TryGetValue(bp.Parameter.OriginalDefinition, out var bv): return bv;
                 case IParameterReferenceOperation p when result != null && SymbolEqualityComparer.Default.Equals(p.Parameter, result): return new KVar("result");
                 case IParameterReferenceOperation cp when _capturedIn.ContainsKey(cp.Parameter): return CapturedInSpec(cp.Parameter);
                 case IParameterReferenceOperation pc when IsPrimaryParameter(pc.Parameter) && !_p.IsCtor: return PrimaryRead(pc.Parameter);

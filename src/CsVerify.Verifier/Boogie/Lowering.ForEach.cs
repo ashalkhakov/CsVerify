@@ -408,7 +408,13 @@ namespace CsVerify.Verifier.Boogie
         /// A loop body that calls nothing that may change a list: only specifications, [Pure] members and lists' [Pure] stubs;
         /// and, over a list a database query made (trackerToo), EF's tracker calls, which change no list but navigations.
         /// </summary>
-        private bool ChangesNoList(SyntaxNode body, bool trackerToo = false, CommonForEachStatementSyntax loop = null) => body.DescendantNodesAndSelf().Select(n => _model.GetOperation(n)).Where(o => o != null && !InSpec(o.Syntax)).All(o => o switch
+        private bool ChangesNoList(SyntaxNode body, bool trackerToo = false, CommonForEachStatementSyntax loop = null)
+        {
+            var ops = body.DescendantNodesAndSelf().Select(n => _model.GetOperation(n)).Where(o => o != null && !InSpec(o.Syntax)).ToList();
+            return ops.All(o => ChangesNoList(o, trackerToo, loop));
+        }
+
+        private bool ChangesNoList(IOperation o, bool trackerToo, CommonForEachStatementSyntax loop) => o switch
         {
             IInvocationOperation inv => SpecSymbols.IsSpecClass(inv.TargetMethod.ContainingType) || _contractOf?.Invoke(inv.TargetMethod) is Contract c && (c.IsPure || c.IsLemma) ||
                                         trackerToo && TracksOnly(inv) ||
@@ -419,9 +425,10 @@ namespace CsVerify.Verifier.Boogie
                                         inv.Arguments.All(a => a.Value.Type is ITypeSymbol at && (Scalar(at) || IsString(at))),
             IObjectCreationOperation oc => !IsCollection(oc.Type) && (oc.Constructor == null || oc.Constructor.DeclaringSyntaxReferences.Length > 0 && _contractOf?.Invoke(oc.Constructor) is Contract cc && cc.IsPure || PositionalRecord(oc.Constructor)),
             IPropertyReferenceOperation pr => !IsCollection(pr.Instance?.Type) || !(pr.Parent is IAssignmentOperation a && a.Target == pr),
-            IAnonymousFunctionOperation _ => false,
+            // (the lambda naming an entry's column: an expression tree EF reads)
+            IAnonymousFunctionOperation fn => trackerToo && ColumnLambda(fn),
             _ => true,
-        });
+        };
 
         /// <summary>
         /// A list a loop builds: a local made a new List where it's declared (before the loop), used only as Add's
@@ -506,7 +513,9 @@ namespace CsVerify.Verifier.Boogie
         /// <summary>A context's or a set's Add, Attach, Update, Remove (and their Range forms) or Entry.</summary>
         private static bool TracksOnly(IInvocationOperation inv) =>
             KernelTypes.Ef != null && IsEfMethod(inv.TargetMethod) && inv.Instance != null && (KernelTypes.Ef.IsContextType(inv.Instance.Type) || DbSetEntity(inv.Instance.Type) != null) &&
-            inv.TargetMethod.Name is "Add" or "AddRange" or "Attach" or "AttachRange" or "Update" or "UpdateRange" or "Remove" or "RemoveRange" or "Entry";
+            inv.TargetMethod.Name is "Add" or "AddRange" or "Attach" or "AttachRange" or "Update" or "UpdateRange" or "Remove" or "RemoveRange" or "Entry" ||
+            // (an entry's: Property, Reload)
+            KernelTypes.Ef != null && inv.Instance != null && IsEntryType(inv.Instance.Type);
 
         /// <summary>
         /// A list a database query made, which nothing else holds: ToList or ToArray of one (awaited, for the Async
@@ -556,7 +565,10 @@ namespace CsVerify.Verifier.Boogie
             {
                 op = Unconverted(aw.Operation);
             }
-            return op is IInvocationOperation to && to.TargetMethod.Name is "ToList" or "ToListAsync" or "ToArray" or "ToArrayAsync" && DatabaseRoot(to, out _) != null;
+            // (of a query, a helper's parameter's too: a new list, #130)
+            return op is IInvocationOperation to && to.TargetMethod.Name is "ToList" or "ToListAsync" or "ToArray" or "ToArrayAsync" &&
+                   (DatabaseRoot(to, out _) != null || (to.Instance ?? to.Arguments.OrderBy(a => a.Parameter.Ordinal).FirstOrDefault()?.Value) is IOperation src &&
+                    Unconverted(src).Type is ITypeSymbol st && (st.Name == "IQueryable" || st.AllInterfaces.Any(i => i.Name == "IQueryable")));
         }
 
         /// <summary>The collection's length: an array's or a string's, or a list's Size.</summary>

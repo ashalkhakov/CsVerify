@@ -116,11 +116,17 @@ namespace CsVerify.Analyzers
             {
                 return;
             }
-            if (!SpecSymbols.IsPureCallee(op.TargetMethod) && SpecSymbols.GenericLaw(op, out _) == null && !ContractStubs.For(op.SemanticModel.Compilation).IsPureMember(op.TargetMethod))
+            if (!SpecSymbols.IsPureCallee(op.TargetMethod) && SpecSymbols.GenericLaw(op, out _) == null && !ContractStubs.For(op.SemanticModel.Compilation).IsPureMember(op.TargetMethod) &&
+                !EntryRead(op.TargetMethod))
             {
                 Report(context, op, $"call to '{op.TargetMethod.Name}', which is not a lemma or [Pure]");
             }
         }
+
+        /// <summary>EF's DbContext.Entry and an entry's Property: an entry read, as the verifier models them (Lowering.EfEntries).</summary>
+        private static bool EntryRead(IMethodSymbol m) =>
+            m.Name == "Entry" && m.ContainingType?.ToDisplayString() == "Microsoft.EntityFrameworkCore.DbContext" ||
+            m.Name == "Property" && m.ContainingType is { Name: "EntityEntry" } t && t.ContainingNamespace?.ToDisplayString() == "Microsoft.EntityFrameworkCore.ChangeTracking";
 
         private static void CheckAllocation(OperationAnalysisContext context)
         {

@@ -165,6 +165,10 @@ namespace CsVerify.Verifier.Boogie
             {
                 Emit(KAssume.Of(NotNull(new KVar(r))));
             }
+            if (ValueOfType(new KVar(r), type) is KExpr ofType)
+            {
+                Emit(KAssume.Of(ofType));
+            }
             return new KVar(r);
         }
 
@@ -551,6 +555,19 @@ namespace CsVerify.Verifier.Boogie
                 foreach (var l in Confined())
                 {
                     keep.AddKeep(Declare(Local(l), l.Type));
+                }
+                // (a new object the awaited call is handed, made before it: nobody else has it yet, #130)
+                var called = aw.Operation;
+                while (called is IInvocationOperation ca && ca.TargetMethod.Name == "ConfigureAwait" && ca.Instance != null)
+                {
+                    called = ca.Instance;
+                }
+                foreach (var a in called is IInvocationOperation ci ? ci.Arguments : System.Collections.Immutable.ImmutableArray<IArgumentOperation>.Empty)
+                {
+                    if (Unconverted(a.Value) is IFlowCaptureReferenceOperation made && made.Syntax is ExpressionSyntax ms && Fresh(ms))
+                    {
+                        keep.AddKeep(Capture(made.Id, made.Type));
+                    }
                 }
             }
             var unshared = UnsharedBefore();
@@ -1376,10 +1393,12 @@ namespace CsVerify.Verifier.Boogie
                     switch (id.Parent)
                     {
                         case MemberAccessExpressionSyntax ma when ma.Expression == id && _model.GetSymbolInfo(ma.Name).Symbol is IFieldSymbol or IPropertySymbol: continue;
-                        // (a collection's own member, of its stub, handed nothing that runs code or is another confined object)
+                        // (a collection's own member, of its stub, handed nothing that runs code or is another confined object; an
+                        // Add or Insert stores what it's handed, and runs none of it, #130)
                         case MemberAccessExpressionSyntax cm when cm.Expression == id && IsCollection(l.Type) && cm.Parent is InvocationExpressionSyntax ci &&
                                                                  _model.GetSymbolInfo(ci).Symbol is IMethodSymbol cms && SymbolEqualityComparer.Default.Equals(cms.ContainingType.OriginalDefinition, l.Type.OriginalDefinition) &&
-                                                                 ci.ArgumentList.Arguments.All(a => _model.GetTypeInfo(a.Expression).Type is ITypeSymbol at && (Scalar(at) || IsString(at))): continue;
+                                                                 (cms.Name is "Add" or "Insert" ||
+                                                                  ci.ArgumentList.Arguments.All(a => _model.GetTypeInfo(a.Expression).Type is ITypeSymbol at && (Scalar(at) || IsString(at)))): continue;
                         case ElementAccessExpressionSyntax ea when ea.Expression == id: continue;
                         // (LINQ's operators read it, and change nothing of it: those that may give it back aside, #129)
                         case MemberAccessExpressionSyntax lq when lq.Expression == id && lq.Parent is InvocationExpressionSyntax li && _model.GetSymbolInfo(li).Symbol is IMethodSymbol lm &&
