@@ -1274,6 +1274,131 @@ public sealed class Store(Db db)
         }
 
         [Fact]
+        public void AQueryHelper_IsTranslated_AndReadAtItsCall()
+        {
+            // (#126: a helper taking a query is translated, its query rows nothing is known of; a private one returning one
+            // expression is read where it is awaited, on the query passed in)
+            var r = VerifyEf(@"public sealed class Tag
+{
+    public long Id { get; set; }
+    public long ItemId { get; set; }
+}
+public sealed class Item
+{
+    public long Id { get; set; }
+    public Guid ExternalId { get; set; }
+    public DateTime CreatedAt { get; set; }
+    public List<Tag> Tags { get; set; } = new List<Tag>();
+}
+public sealed class Db(DbContextOptions<Db> options) : DbContext(options)
+{
+    protected override void OnModelCreating(ModelBuilder b) => b.Entity<Item>().HasIndex(x => x.ExternalId).IsUnique();
+}
+public sealed class Store(Db db)
+{
+    public async Task<Item?> Inline(Guid id) =>
+        (await db.Set<Item>().AsNoTracking().Where(t => t.ExternalId == id).OrderBy(t => t.CreatedAt).ThenBy(t => t.Id).ToListAsync()).SingleOrDefault();
+    public async Task<Item?> ThroughHelper(Guid id) =>
+        (await Load(db.Set<Item>().AsNoTracking().Where(t => t.ExternalId == id))).SingleOrDefault();
+    public async Task<Item?> ThroughIncluding(Guid id) =>
+        (await LoadWithTags(db.Set<Item>().Where(t => t.ExternalId == id))).SingleOrDefault();
+    public async Task<Item?> ThroughTaking(Guid id, int n) =>
+        (await LoadSome(db.Set<Item>().Where(t => t.ExternalId == id), n)).SingleOrDefault();
+    public async Task<Item?> ByColumn(DateTime at) =>
+        (await Load(db.Set<Item>().Where(t => t.CreatedAt == at))).SingleOrDefault();
+    public async Task<Item?> ThroughPublic(Guid id) =>
+        (await LoadPublic(db.Set<Item>().Where(t => t.ExternalId == id))).SingleOrDefault();
+    private static async Task<IReadOnlyList<Item>> Load(IQueryable<Item> query) =>
+        await query.OrderBy(t => t.CreatedAt).ThenBy(t => t.Id).ToListAsync();
+    private static async Task<IReadOnlyList<Item>> LoadWithTags(IQueryable<Item> query) =>
+        await query.Include(t => t.Tags).OrderBy(t => t.Id).ToListAsync();
+    private async Task<List<Item>> LoadSome(IQueryable<Item> query, int n)
+    {
+        return await query.OrderBy(t => t.Id).Take(n).ToListAsync();
+    }
+    public static async Task<IReadOnlyList<Item>> LoadPublic(IQueryable<Item> query) =>
+        await query.OrderBy(t => t.Id).ToListAsync();
+}");
+            foreach (var ok in new[] { "Inline", "ThroughHelper", "ThroughIncluding", "ThroughTaking", "Load", "LoadWithTags", "LoadSome", "LoadPublic" })
+            {
+                Assert.True(r.Errors("Store." + ok).Length == 0, ok + ": " + r.Explain("Store." + ok));
+            }
+            // (a column no index makes unique; a public helper is read by its contract, which says nothing of its rows)
+            foreach (var bad in new[] { "ByColumn", "ThroughPublic" })
+            {
+                Assert.True(r.Errors("Store." + bad).SequenceEqual(new[] { "CSV1001" }), bad + ": " + r.Explain("Store." + bad));
+            }
+        }
+
+        [Fact]
+        public void AColumnWrittenOnlyWhenMade_IsKeptAcrossAnAwait()
+        {
+            // (#127: no code writes a private setter's column outside its constructors, nor an init one's after; an await
+            // leaves it as it was, entities let out or not. A public setter's, or one a method assigns, may change)
+            var r = VerifyEf(@"public sealed class Report
+{
+    public Report(string eventId) => EventId = eventId;
+    public long RowId { get; private set; }
+    public string EventId { get; private set; }
+    public int Tries { get; private set; }
+    public int Seen { get; set; }
+    public Guid Batch { get; init; }
+    public void Retry() => Tries++;
+}
+public sealed class Db(DbContextOptions<Db> options) : DbContext(options)
+{
+    protected override void OnModelCreating(ModelBuilder b) => b.Entity<Report>().HasKey(x => x.RowId);
+}
+public sealed class Store(Db db)
+{
+    public void AddNow(Report report)
+    {
+        Spec.Requires(report.RowId == 0);
+        db.Set<Report>().Add(report);
+    }
+    public async Task<bool> AddOnceAsync(Report report)
+    {
+        Spec.Requires(report.RowId == 0);
+        if (await db.Set<Report>().AsNoTracking().AnyAsync(r => r.EventId == report.EventId))
+        {
+            return false;
+        }
+        db.Set<Report>().Add(report);
+        return true;
+    }
+    public async Task KeptInit(Report report, Guid b)
+    {
+        Spec.Requires(report.Batch == b && report.RowId == 0);
+        db.Set<Report>().Add(report);
+        await Task.Yield();
+        Spec.Assert(report.Batch == b);
+    }
+    public async Task Tried(Report report)
+    {
+        Spec.Requires(report.Tries == 0 && report.RowId == 0);
+        db.Set<Report>().Add(report);
+        await Task.Yield();
+        Spec.Assert(report.Tries == 0);
+    }
+    public async Task Public(Report report)
+    {
+        Spec.Requires(report.Seen == 0 && report.RowId == 0);
+        db.Set<Report>().Add(report);
+        await Task.Yield();
+        Spec.Assert(report.Seen == 0);
+    }
+}");
+            foreach (var ok in new[] { "AddNow", "AddOnceAsync", "KeptInit" })
+            {
+                Assert.True(r.Errors("Store." + ok).Length == 0, ok + ": " + r.Explain("Store." + ok));
+            }
+            foreach (var bad in new[] { "Tried", "Public" })
+            {
+                Assert.True(r.Errors("Store." + bad).SequenceEqual(new[] { "CSV1004" }), bad + ": " + r.Explain("Store." + bad));
+            }
+        }
+
+        [Fact]
         public void AKeyAGenericBaseConfigurationSets_IsTheEntitysKey_AndAColumnOnlyWrittenIsDeclared()
         {
             // (#100: HasKey(c => c.Id) over T : IHasId names the entity's Id, which implements IHasId.Id; Provider is

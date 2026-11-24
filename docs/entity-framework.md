@@ -124,6 +124,10 @@ var row = await db.Orders.AsNoTracking().Where(o => o.Id == id)
 - an `Include` by name, or a filtered one (`Include(c => c.Orders.Where(...))`), says nothing of navigations, nor does
   `AsNoTrackingWithIdentityResolution()`, whose navigations EF fixes up from the other rows it loads.
 
+A column that no code writes once its object is made (no setter, an `init` one, or a private one its type assigns only
+in its constructors) is as it was after an `await`, whatever the method lets out: only EF writes it after, when a
+context that tracks the entity saves or reloads it. This assumes no other code's context saves or reloads the same
+instance meanwhile.
 If the method lets none of its entities out (to a field, to a call of the program's or a constructor, to a library call on
 something not local, to a lambda other than a query's), no other code reaches them: an `await` leaves their columns,
 concurrency tokens among them, as they were. Read with
@@ -143,6 +147,13 @@ column) compare as the database does: they are library calls, which say nothing 
 EF Core applies the left side's query filters to the joined rows, which drops the right side's rows that match none.
 And so are the `By` forms (`DistinctBy`...), `SequenceEqual`, `CountBy` and `AggregateBy`, which EF doesn't translate.
 In a query's lambda, `Contains` of a list passed in compares as the database does too: strings by its collation.
+
+**Query helpers.** A method that takes a query (`IQueryable<T>`) is translated: of the rows of the query passed in,
+only what its specification says is known. A private one of the same file whose body is one expression, with no
+contract, is read where it is awaited instead, on the query its caller passes (a table and Queryable's and EF's
+operators): `Load(db.Items.Where(t => t.ExternalId == id))` is that query, ordered and listed as `Load` does. EF's
+operators of the whole query (`Include`, `AsNoTracking`, `IgnoreQueryFilters`...) mean the same after a filter, an
+order or a page as before them.
 
 **Compiled queries.** A `static readonly` field made by `EF.CompileQuery`, called in its own file, that gives a value
 (`FirstOrDefault`, `Single`, `Count`, `Any`...) is the query its lambda writes, read and checked as one written there.

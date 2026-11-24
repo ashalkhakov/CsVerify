@@ -64,6 +64,11 @@ namespace CsVerify.Verifier.Boogie
             {
                 op = nc.Operand;
             }
+            // (a query helper's, #126: its body, here; an async one's await is its own)
+            if (op is IInvocationOperation helper && helper.TargetMethod.IsAsync && QueryHelper(helper) is IOperation helped)
+            {
+                return InlineQueryHelper(helper, helped);
+            }
             var awaited = Awaiting(op, aw);
             OthersRun(aw);
             var value = awaited.ValueAfter != null ? awaited.ValueAfter() : awaited.Value;

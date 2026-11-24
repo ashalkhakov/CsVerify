@@ -199,22 +199,95 @@ namespace CsVerify.Verifier.Boogie
         private static ITypeSymbol ElementOf(ITypeSymbol t) =>
             t is IArrayTypeSymbol a ? a.ElementType : t is INamedTypeSymbol { TypeArguments.Length: >= 1 } n ? n.TypeArguments[n.TypeArguments.Length - 1] : null;
 
+        /// <summary>EF's operators of the whole query met past others (Sequence), each with the table operation it applies to.</summary>
+        private readonly List<(IOperation root, IInvocationOperation mod)> _deferred = new List<(IOperation, IInvocationOperation)>();
+
+        /// <summary>
+        /// The table operation (TableOf's) an EF operator's query reads, through a filter, an order, a page and EF's
+        /// operators, as Sequence unwraps them; else null.
+        /// </summary>
+        private IOperation DeferredRoot(IInvocationOperation mod)
+        {
+            IOperation op = mod.Arguments.OrderBy(a => a.Parameter.Ordinal).First().Value;
+            for (int depth = 0; depth < 64 && op != null; depth++)
+            {
+                op = Unconverted(op);
+                while (op is IFlowCaptureReferenceOperation r && _captured.TryGetValue(r.Id, out var v) || op is IParameterReferenceOperation qp && _queryArgs.ContainsKey(qp.Parameter))
+                {
+                    op = Unconverted(op is IParameterReferenceOperation bp ? _queryArgs[bp.Parameter] : _captured[((IFlowCaptureReferenceOperation)op).Id]);
+                }
+                if (TableOf(op) != null)
+                {
+                    return op;
+                }
+                if (op is not IInvocationOperation c || !(c.TargetMethod.Name is "Where" or "OrderBy" or "OrderByDescending" or "ThenBy" or "ThenByDescending" or "Skip" or "Take" ||
+                                                          IsEfMethod(c.TargetMethod)) || c.Arguments.Length == 0)
+                {
+                    return null;
+                }
+                op = c.Arguments.OrderBy(a => a.Parameter.Ordinal).First().Value;
+            }
+            return null;
+        }
+
+        /// <summary>A query on a query parameter (not an inlined helper's), through Queryable's and EF's operators.</summary>
+        private bool GivenQuery(IInvocationOperation q)
+        {
+            IOperation op = q;
+            for (int depth = 0; depth < 64 && op is IInvocationOperation c && (IsQueryableMethod(c.TargetMethod) || IsEfMethod(c.TargetMethod)) && c.Arguments.Length > 0; depth++)
+            {
+                op = Unconverted(c.Arguments.OrderBy(a => a.Parameter.Ordinal).First().Value);
+            }
+            return op is IParameterReferenceOperation p && IsQueryHandle(p.Type) && !_queryArgs.ContainsKey(p.Parameter);
+        }
+
         /// <summary>A LINQ source as a sequence, read now: a query of the members here, or an array, a List, a list interface.</summary>
         private LSeq Sequence(IOperation op)
         {
             var src = Unconverted(op);
             // (a query the control flow graph captured: what it captured)
             // (and query syntax: the calls it is)
+            // (and an inlined helper's query parameter: the caller's argument)
             while (src is IFlowCaptureReferenceOperation r && _captured.TryGetValue(r.Id, out var v) || src is ITranslatedQueryOperation ||
-                   src is ILocalReferenceOperation lq && _lazyQueries.ContainsKey(lq.Local))
+                   src is ILocalReferenceOperation lq && _lazyQueries.ContainsKey(lq.Local) || src is IParameterReferenceOperation qp && _queryArgs.ContainsKey(qp.Parameter))
             {
                 src = src is ITranslatedQueryOperation tq ? Unconverted(tq.Operation)
                     : src is ILocalReferenceOperation lazy ? Unconverted(_lazyQueries[lazy.Local])
+                    : src is IParameterReferenceOperation bp ? Unconverted(_queryArgs[bp.Parameter])
                     : Unconverted(_captured[((IFlowCaptureReferenceOperation)src).Id]);
+            }
+            // (an EF operator of the whole query written past a filter, an order or a page, Include after Where: applied to
+            // the table its query reads, as EF does)
+            if (src is IInvocationOperation mod && IsEfMethod(mod.TargetMethod) && mod.Arguments.Length >= 1 && TableOf(src) == null &&
+                DeferredRoot(mod) is IOperation root)
+            {
+                _deferred.Add((root, mod));
+                try
+                {
+                    return Sequence(mod.Arguments.OrderBy(a => a.Parameter.Ordinal).First().Value);
+                }
+                finally
+                {
+                    _deferred.RemoveAt(_deferred.Count - 1);
+                }
+            }
+            // (and of a query passed in, whose rows nothing is known of: its source's)
+            if (src is IInvocationOperation onGiven && IsEfMethod(onGiven.TargetMethod) && onGiven.Arguments.Length >= 1 && TableOf(src) == null &&
+                onGiven.TargetMethod.Name is "AsNoTracking" or "AsNoTrackingWithIdentityResolution" or "AsTracking" or "IgnoreQueryFilters" or "AsSplitQuery" or
+                    "AsSingleQuery" or "TagWith" or "TagWithCallSite" or "Include" or "ThenInclude" && GivenQuery(onGiven))
+            {
+                return Sequence(onGiven.Arguments.OrderBy(a => a.Parameter.Ordinal).First().Value);
             }
             // (a table, as the query reads it; Queryable's operators, LINQ to Objects')
             if (TableOf(src) is DbTable table)
             {
+                for (int k = _deferred.Count - 1; k >= 0; k--)
+                {
+                    if (_deferred[k].root == src)
+                    {
+                        table = ModifiedTable(_deferred[k].mod, table) ?? throw new NotTranslated("'" + _deferred[k].mod.TargetMethod.Name + "' past a query's operators");
+                    }
+                }
                 return ReadTable(table);
             }
             // (a context's local view: what it tracks of a type)
@@ -263,10 +336,12 @@ namespace CsVerify.Verifier.Boogie
                 };
             }
             // (a sequence one is given, a lambda's group of a GroupJoin say: some elements, not known)
-            if (elem != null && InSubset(elem) && (IsSequence(type) || IsLinqGroup(type)) && src is IParameterReferenceOperation or ILocalReferenceOperation)
+            // (and a query passed in, #126: rows of which only what the caller's specification says is known)
+            if (elem != null && InSubset(elem) && (IsSequence(type) || IsLinqGroup(type) || IsQueryHandle(type) && src is IParameterReferenceOperation) &&
+                src is IParameterReferenceOperation or ILocalReferenceOperation)
             {
                 var given = Expr(src);
-                if (IsSequence(type))
+                if (IsSequence(type) || IsQueryHandle(type))
                 {
                     Emit(KCheck.Of(NotNull(given), "CSV1013", src.Syntax, $"'{src.Syntax}' might be null: LINQ would throw ArgumentNullException"));
                 }
@@ -1944,7 +2019,7 @@ namespace CsVerify.Verifier.Boogie
         /// The table a query's source reads, each row of it once: the set, through operators that keep or drop rows
         /// (a filter, an order, a page, tracking, includes); else null.
         /// </summary>
-        private static EfModel.Entity TableRows(IOperation op)
+        private EfModel.Entity TableRows(IOperation op)
         {
             for (int depth = 0; depth < 64 && op != null; depth++)
             {
@@ -1962,6 +2037,9 @@ namespace CsVerify.Verifier.Boogie
                         continue;
                     case ILocalReferenceOperation l when Initializer(l) is IOperation init:
                         op = init;
+                        continue;
+                    case IParameterReferenceOperation qp when _queryArgs.TryGetValue(qp.Parameter, out var qa):
+                        op = qa;
                         continue;
                     default:
                         return null;

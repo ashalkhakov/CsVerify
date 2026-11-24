@@ -1,6 +1,7 @@
 using System.Collections.Generic;
 using System.Linq;
 using Microsoft.CodeAnalysis;
+using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.FlowAnalysis;
 using Microsoft.CodeAnalysis.Operations;
 using static CsVerify.Verifier.Boogie.KernelTypes;
@@ -68,9 +69,9 @@ namespace CsVerify.Verifier.Boogie
                 return null;
             }
             op = Unconverted(op);
-            while (op is IFlowCaptureReferenceOperation r && _captured.TryGetValue(r.Id, out var v))
+            while (op is IFlowCaptureReferenceOperation r && _captured.TryGetValue(r.Id, out var v) || op is IParameterReferenceOperation qp && _queryArgs.ContainsKey(qp.Parameter))
             {
-                op = Unconverted(v);
+                op = Unconverted(op is IParameterReferenceOperation bp ? _queryArgs[bp.Parameter] : _captured[((IFlowCaptureReferenceOperation)op).Id]);
             }
             switch (op)
             {
@@ -96,63 +97,72 @@ namespace CsVerify.Verifier.Boogie
                     {
                         return null;
                     }
-                    switch (ef.TargetMethod.Name)
+                    return ModifiedTable(ef, src);
+                }
+                default: return null;
+            }
+        }
+
+        /// <summary>
+        /// What an EF operator that doesn't change which rows a query gives (AsNoTracking, IgnoreQueryFilters, Include...)
+        /// makes of the table it reads; null for another.
+        /// </summary>
+        private DbTable ModifiedTable(IInvocationOperation ef, DbTable src)
+        {
+            switch (ef.TargetMethod.Name)
+            {
+                case "AsNoTracking":
+                    src.NoTracking = true;
+                    return src;
+                case "AsNoTrackingWithIdentityResolution":
+                    src.NoTracking = true;
+                    src.IdentityResolution = true;
+                    return src;
+                case "AsTracking" when ef.Arguments.Length == 1:
+                    src.NoTracking = false;
+                    return src;
+                case "IgnoreQueryFilters":
+                    src.IgnoreFilters = true;
+                    return src;
+                case "AsSplitQuery": case "AsSingleQuery": case "TagWith": case "TagWithCallSite": return src;
+                case "Include": case "ThenInclude":
+                {
+                    // (a navigation of the lambda's parameter; by name, or another lambda: what it loads isn't known)
+                    var lambda = ef.Arguments.FirstOrDefault(a => a.Parameter.Ordinal == 1)?.Value;
+                    var nav = lambda != null && PureLambda(lambda) is var (body, p1, _) && Unconverted(body) is IPropertyReferenceOperation { Instance: IParameterReferenceOperation pr } np &&
+                              SymbolEqualityComparer.Default.Equals(pr.Parameter, p1) ? (IPropertySymbol)np.Property.OriginalDefinition : null;
+                    if (nav == null)
                     {
-                        case "AsNoTracking":
-                            src.NoTracking = true;
-                            return src;
-                        case "AsNoTrackingWithIdentityResolution":
-                            src.NoTracking = true;
-                            src.IdentityResolution = true;
-                            return src;
-                        case "AsTracking" when ef.Arguments.Length == 1:
-                            src.NoTracking = false;
-                            return src;
-                        case "IgnoreQueryFilters":
-                            src.IgnoreFilters = true;
-                            return src;
-                        case "AsSplitQuery": case "AsSingleQuery": case "TagWith": case "TagWithCallSite": return src;
-                        case "Include": case "ThenInclude":
-                        {
-                            // (a navigation of the lambda's parameter; by name, or another lambda: what it loads isn't known)
-                            var lambda = ef.Arguments.FirstOrDefault(a => a.Parameter.Ordinal == 1)?.Value;
-                            var nav = lambda != null && PureLambda(lambda) is var (body, p1, _) && Unconverted(body) is IPropertyReferenceOperation { Instance: IParameterReferenceOperation pr } np &&
-                                      SymbolEqualityComparer.Default.Equals(pr.Parameter, p1) ? (IPropertySymbol)np.Property.OriginalDefinition : null;
-                            if (nav == null)
-                            {
-                                src.UnknownInclude = true;
-                                return src;
-                            }
-                            if (ef.TargetMethod.Name == "Include")
-                            {
-                                src.AddIncludePath(new List<IPropertySymbol> { nav });
-                                src.AddInclude(nav);
-                                src.IncludePath = new List<ITypeSymbol> { src.Entity.Type.OriginalDefinition };
-                            }
-                            else if (src.IncludePaths.Count > 0)
-                            {
-                                src.IncludePaths[src.IncludePaths.Count - 1].Add(nav);
-                            }
-                            else
-                            {
-                                src.UnknownInclude = true;
-                                return src;
-                            }
-                            var to = EfModel.NavigationTarget(nav.Type, out _)?.OriginalDefinition;
-                            if (to == null)
-                            {
-                                src.ClearIncludePath();
-                                return src;
-                            }
-                            if (src.IncludePath.Count > 0 && src.IncludePath.Contains(to, SymbolEqualityComparer.Default))
-                            {
-                                src.Cycle ??= ef.Syntax;
-                            }
-                            src.AddToIncludePath(to);
-                            return src;
-                        }
-                        default: return null;
+                        src.UnknownInclude = true;
+                        return src;
                     }
+                    if (ef.TargetMethod.Name == "Include")
+                    {
+                        src.AddIncludePath(new List<IPropertySymbol> { nav });
+                        src.AddInclude(nav);
+                        src.IncludePath = new List<ITypeSymbol> { src.Entity.Type.OriginalDefinition };
+                    }
+                    else if (src.IncludePaths.Count > 0)
+                    {
+                        src.IncludePaths[src.IncludePaths.Count - 1].Add(nav);
+                    }
+                    else
+                    {
+                        src.UnknownInclude = true;
+                        return src;
+                    }
+                    var to = EfModel.NavigationTarget(nav.Type, out _)?.OriginalDefinition;
+                    if (to == null)
+                    {
+                        src.ClearIncludePath();
+                        return src;
+                    }
+                    if (src.IncludePath.Count > 0 && src.IncludePath.Contains(to, SymbolEqualityComparer.Default))
+                    {
+                        src.Cycle ??= ef.Syntax;
+                    }
+                    src.AddToIncludePath(to);
+                    return src;
                 }
                 default: return null;
             }
@@ -797,13 +807,24 @@ namespace CsVerify.Verifier.Boogie
                     KeepMap(m, _p.Models[m].Type, true, kept);
                 }
             }
+            // (a column of the entities reached that no code writes once its object is made, whole, entities let out or not:
+            // a private or init setter only constructors use; only EF writes it after, when a context saves or reloads it, and
+            // none runs here meanwhile, #127)
+            var reached = ReachedEntities();
+            var made = KernelTypes.Ef.Entities.Where(x => reached.Contains(x.Type.OriginalDefinition)).SelectMany(x => EfModel.PropertiesOf(x.Type))
+                .Where(p => IsField(p) && WrittenOnlyWhenMade(p.OriginalDefinition)).Select(p => p.OriginalDefinition)
+                .Distinct<IPropertySymbol>(SymbolEqualityComparer.Default).ToList();
+            foreach (var p in made)
+            {
+                _p.AddField(p);
+                KeepMap(FieldMap(p), "[Ref]" + TypeOf(FieldType(p)), true, kept);
+            }
             if (_unshared == null)
             {
                 return kept;
             }
             // (of the entities this method's code can reach: a column of another isn't read here, and keeping it is a fact of
             // no use, one per column of the model at every await, #90)
-            var reached = ReachedEntities();
             var columns = KernelTypes.Ef.Entities.Where(x => reached.Contains(x.Type.OriginalDefinition)).SelectMany(x => EfModel.PropertiesOf(x.Type))
                 .Where(IsField).Select(p => p.OriginalDefinition).Distinct<IPropertySymbol>(SymbolEqualityComparer.Default).ToList();
             foreach (var p in columns)
@@ -820,11 +841,89 @@ namespace CsVerify.Verifier.Boogie
             {
                 maps.Add((SizeMap, "[Ref]int"));
             }
-            foreach (var (map, type) in maps.Distinct())
+            foreach (var (map, type) in maps.Distinct().Where(m => !kept.Any(k => k.Item1 == m.Item1)))
             {
                 KeepMap(map, type, false, kept);
             }
             return kept;
+        }
+
+        private readonly Dictionary<IPropertySymbol, bool> _writtenOnlyWhenMade = new Dictionary<IPropertySymbol, bool>(SymbolEqualityComparer.Default);
+
+        /// <summary>
+        /// Does no code write the property once its object is made? Without a setter or with an init one; or with a private
+        /// one its type's code assigns only in its constructors, of the object they make.
+        /// </summary>
+        private bool WrittenOnlyWhenMade(IPropertySymbol p)
+        {
+            if (_writtenOnlyWhenMade.TryGetValue(p, out var known))
+            {
+                return known;
+            }
+            bool result;
+            if (p.IsStatic || p.DeclaringSyntaxReferences.Length == 0)
+            {
+                result = false;
+            }
+            else if (p.SetMethod == null || p.SetMethod.IsInitOnly)
+            {
+                result = true;
+            }
+            else if (p.SetMethod.DeclaredAccessibility != Accessibility.Private)
+            {
+                result = false;
+            }
+            else
+            {
+                result = true;
+                foreach (var r in p.ContainingType.DeclaringSyntaxReferences)
+                {
+                    var node = r.GetSyntax();
+                    var model = _model.Compilation.ModelOf(node.SyntaxTree);
+                    foreach (var target in node.DescendantNodes().Select(Written).Where(x => x != null))
+                    {
+                        if (SymbolEqualityComparer.Default.Equals(model.GetSymbolInfo(target).Symbol?.OriginalDefinition, p) && !InOwnConstructor(target, p.ContainingType, model))
+                        {
+                            result = false;
+                        }
+                    }
+                }
+            }
+            _writtenOnlyWhenMade[p] = result;
+            return result;
+        }
+
+        /// <summary>What a node writes: an assignment's target, an increment's operand, a ref or out argument; else null.</summary>
+        private static Microsoft.CodeAnalysis.CSharp.Syntax.ExpressionSyntax Written(SyntaxNode n) => n switch
+        {
+            Microsoft.CodeAnalysis.CSharp.Syntax.AssignmentExpressionSyntax a => a.Left,
+            Microsoft.CodeAnalysis.CSharp.Syntax.PrefixUnaryExpressionSyntax u when u.IsKind(SyntaxKind.PreIncrementExpression) || u.IsKind(SyntaxKind.PreDecrementExpression) => u.Operand,
+            Microsoft.CodeAnalysis.CSharp.Syntax.PostfixUnaryExpressionSyntax u when u.IsKind(SyntaxKind.PostIncrementExpression) || u.IsKind(SyntaxKind.PostDecrementExpression) => u.Operand,
+            Microsoft.CodeAnalysis.CSharp.Syntax.ArgumentSyntax g when !g.RefKindKeyword.IsKind(SyntaxKind.None) => g.Expression,
+            _ => null,
+        };
+
+        /// <summary>A write of this object's, in an instance constructor of the type, not in a lambda or local function there.</summary>
+        private static bool InOwnConstructor(Microsoft.CodeAnalysis.CSharp.Syntax.ExpressionSyntax target, INamedTypeSymbol type, SemanticModel model)
+        {
+            if (!(target is Microsoft.CodeAnalysis.CSharp.Syntax.IdentifierNameSyntax ||
+                  target is Microsoft.CodeAnalysis.CSharp.Syntax.MemberAccessExpressionSyntax { Expression: Microsoft.CodeAnalysis.CSharp.Syntax.ThisExpressionSyntax }))
+            {
+                return false;
+            }
+            foreach (var up in target.Ancestors())
+            {
+                switch (up)
+                {
+                    case Microsoft.CodeAnalysis.CSharp.Syntax.AnonymousFunctionExpressionSyntax or Microsoft.CodeAnalysis.CSharp.Syntax.LocalFunctionStatementSyntax:
+                        return false;
+                    case Microsoft.CodeAnalysis.CSharp.Syntax.ConstructorDeclarationSyntax ctor:
+                        return !ctor.Modifiers.Any(SyntaxKind.StaticKeyword) && SymbolEqualityComparer.Default.Equals(model.GetDeclaredSymbol(ctor)?.ContainingType, type);
+                    case Microsoft.CodeAnalysis.CSharp.Syntax.MemberDeclarationSyntax:
+                        return false;
+                }
+            }
+            return false;
         }
 
         private HashSet<ITypeSymbol> _reachedEntities;
@@ -1440,7 +1539,7 @@ namespace CsVerify.Verifier.Boogie
             for (IOperation op = fn; op != null; op = op.Parent)
             {
                 if (op is IArgumentOperation { Parameter.Type: INamedTypeSymbol { Name: "Expression" } } a && a.Parent is IInvocationOperation inv &&
-                    (IsQueryableMethod(inv.TargetMethod) || IsEfMethod(inv.TargetMethod)) && DatabaseRoot(inv, out _) != null)
+                    (IsQueryableMethod(inv.TargetMethod) || IsEfMethod(inv.TargetMethod)) && DatabaseRootIn(inv, out _, null) != null)
                 {
                     return true;
                 }
@@ -1459,7 +1558,15 @@ namespace CsVerify.Verifier.Boogie
             return op.Parent is IArgumentOperation { Parent: IInvocationOperation { TargetMethod.Name: "HasConversion" } inv } && IsEfMethod(inv.TargetMethod);
         }
 
-        private static EfModel.Entity DatabaseRoot(IOperation op, out bool noTracking)
+        private EfModel.Entity DatabaseRoot(IOperation op, out bool noTracking) => DatabaseRootIn(op, out noTracking, _queryArgs);
+
+        /// <summary>
+        /// An inlined helper's query parameters (#126), each the caller's argument: what the table walkers read in its
+        /// place.
+        /// </summary>
+        private readonly Dictionary<IParameterSymbol, IOperation> _queryArgs = new Dictionary<IParameterSymbol, IOperation>(SymbolEqualityComparer.Default);
+
+        private static EfModel.Entity DatabaseRootIn(IOperation op, out bool noTracking, Dictionary<IParameterSymbol, IOperation> queryArgs)
         {
             noTracking = false;
             for (int depth = 0; depth < 64 && op != null; depth++)
@@ -1471,6 +1578,10 @@ namespace CsVerify.Verifier.Boogie
                         return e;
                     case IInvocationOperation set when set.TargetMethod.Name == "Set" && DbSetEntity(set.Type) is EfModel.Entity se:
                         return se;
+                    // (an inlined helper's query parameter: the caller's argument)
+                    case IParameterReferenceOperation qp when queryArgs != null && queryArgs.TryGetValue(qp.Parameter, out var qa):
+                        op = qa;
+                        continue;
                     case IInvocationOperation c:
                         if (c.TargetMethod.Name is "AsNoTracking" or "AsNoTrackingWithIdentityResolution")
                         {
@@ -1481,8 +1592,8 @@ namespace CsVerify.Verifier.Boogie
                     // (either branch's table, where both read the same)
                     case IConditionalOperation cond:
                     {
-                        var e = DatabaseRoot(cond.WhenTrue, out bool t);
-                        var f = DatabaseRoot(cond.WhenFalse, out bool u);
+                        var e = DatabaseRootIn(cond.WhenTrue, out bool t, queryArgs);
+                        var f = DatabaseRootIn(cond.WhenFalse, out bool u, queryArgs);
                         noTracking |= t && u;
                         return e != null && e == f ? e : null;
                     }
@@ -1550,6 +1661,93 @@ namespace CsVerify.Verifier.Boogie
                     return true;
                 default:
                     return false;
+            }
+        }
+
+        private int _inlined;
+
+        /// <summary>
+        /// A private helper of this file that takes a database query and returns one expression (no contract), called:
+        /// what it returns, the query passed in for its query parameter and its other arguments for theirs. Else null.
+        /// (#126: a repository's helper that orders, includes and lists the query its callers filter.)
+        /// </summary>
+        private IOperation QueryHelper(IInvocationOperation call)
+        {
+            var m = call.TargetMethod;
+            if (KernelTypes.Ef == null || _inlined >= 3 || m.DeclaredAccessibility != Accessibility.Private || m.MethodKind != MethodKind.Ordinary ||
+                m.IsVirtual || m.IsAbstract || m.IsOverride || m.IsExtern || m.IsGenericMethod || SymbolEqualityComparer.Default.Equals(m.OriginalDefinition, _m.OriginalDefinition) ||
+                !m.Parameters.Any(p => IsQueryHandle(p.Type)) || m.Parameters.Any(p => p.RefKind != RefKind.None) ||
+                call.Arguments.Any(a => a.ArgumentKind != ArgumentKind.Explicit) ||
+                !(m.IsStatic || call.Instance is IInstanceReferenceOperation && !_m.IsStatic && SymbolEqualityComparer.Default.Equals(m.ContainingType, _m.ContainingType)) ||
+                m.DeclaringSyntaxReferences.Length != 1 || m.DeclaringSyntaxReferences[0].GetSyntax() is not Microsoft.CodeAnalysis.CSharp.Syntax.MethodDeclarationSyntax decl ||
+                decl.SyntaxTree != _decl.SyntaxTree || _model.GetOperation(decl) is not IMethodBodyOperation body ||
+                (body.ExpressionBody ?? body.BlockBody) is not { Operations: [IReturnOperation { ReturnedValue: { } value }] })
+            {
+                return null;
+            }
+            // (a query passed in is one on a table, made of Queryable's and EF's operators: built where it is read)
+            foreach (var a in call.Arguments.Where(a => IsQueryHandle(a.Parameter.Type)))
+            {
+                if (DatabaseRoot(a.Value, out _) == null || !QueryChain(a.Value))
+                {
+                    return null;
+                }
+            }
+            return value;
+        }
+
+        /// <summary>Calls of Queryable's and EF's operators down to a context's set (its lambdas aside): nothing else runs.</summary>
+        private static bool QueryChain(IOperation op)
+        {
+            op = Unconverted(op);
+            switch (op)
+            {
+                case IPropertyReferenceOperation pr when DbSetEntity(pr.Type) != null:
+                    return pr.Instance is IInstanceReferenceOperation or IParameterReferenceOperation or ILocalReferenceOperation or IFieldReferenceOperation;
+                case IInvocationOperation set when set.TargetMethod.Name == "Set" && DbSetEntity(set.Type) != null:
+                    return set.Instance is null or IInstanceReferenceOperation or IParameterReferenceOperation or ILocalReferenceOperation or IFieldReferenceOperation;
+                case IInvocationOperation c when IsQueryableMethod(c.TargetMethod) || IsEfMethod(c.TargetMethod):
+                    var args = c.Arguments.OrderBy(a => a.Parameter.Ordinal).ToList();
+                    return args.Count > 0 && QueryChain(args[0].Value) &&
+                           args.Skip(1).All(a => Unconverted(a.Value) is IAnonymousFunctionOperation or IFlowAnonymousFunctionOperation or IDelegateCreationOperation || a.Value.ConstantValue.HasValue ||
+                                                 Unconverted(a.Value) is IParameterReferenceOperation or ILocalReferenceOperation);
+                default:
+                    return false;
+            }
+        }
+
+        /// <summary>A query helper's call (QueryHelper): its arguments read in order, then what it returns, here.</summary>
+        private KExpr InlineQueryHelper(IInvocationOperation call, IOperation value)
+        {
+            var bound = new List<IParameterSymbol>();
+            foreach (var a in call.Arguments.OrderBy(a => a.Parameter.Ordinal))
+            {
+                var p = a.Parameter.OriginalDefinition;
+                if (IsQueryHandle(p.Type))
+                {
+                    _queryArgs[p] = a.Value;
+                }
+                else
+                {
+                    var local = Declare("h$" + _temps++, p.Type);
+                    Emit(KAssign.Of(local, Expr(a.Value)));
+                    _assigned[p] = local;
+                }
+                bound.Add(p);
+            }
+            _inlined++;
+            try
+            {
+                return Expr(value);
+            }
+            finally
+            {
+                _inlined--;
+                foreach (var p in bound)
+                {
+                    _queryArgs.Remove(p);
+                    _assigned.Remove(p);
+                }
             }
         }
 
