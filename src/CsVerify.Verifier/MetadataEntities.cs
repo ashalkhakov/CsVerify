@@ -109,11 +109,15 @@ namespace CsVerify.Verifier
                         continue;
                     }
                     var fields = new HashSet<string>(td.GetFields().Select(f => r.GetString(r.GetFieldDefinition(f).Name)));
+                    bool reference = t.ContainingAssembly.GetAttributes().Any(a => a.AttributeClass?.ToDisplayString() == "System.Runtime.CompilerServices.ReferenceAssemblyAttribute");
                     foreach (var ph in td.GetProperties())
                     {
                         var pd = r.GetPropertyDefinition(ph);
                         var pn = r.GetString(pd.Name);
-                        if (!fields.Contains("<" + pn + ">k__BackingField") || !(t.GetMembers(pn).OfType<IPropertySymbol>().FirstOrDefault(p => !p.IsStatic && !p.IsIndexer) is IPropertySymbol p))
+                        // (an auto-property: its backing field beside it, or, in a reference assembly (a targeting pack's) that has
+                        // no private fields, its accessors the compiler's, #129)
+                        if (!(t.GetMembers(pn).OfType<IPropertySymbol>().FirstOrDefault(p => !p.IsStatic && !p.IsIndexer) is IPropertySymbol p) ||
+                            !(fields.Contains("<" + pn + ">k__BackingField") || reference && CompilerGenerated(p.GetMethod) && (p.SetMethod == null || CompilerGenerated(p.SetMethod))))
                         {
                             continue;
                         }
@@ -126,6 +130,9 @@ namespace CsVerify.Verifier
                 }
             }
         }
+
+        private static bool CompilerGenerated(IMethodSymbol m) =>
+            m != null && m.GetAttributes().Any(a => a.AttributeClass?.ToDisplayString() == "System.Runtime.CompilerServices.CompilerGeneratedAttribute");
 
         private static string MetadataName(INamedTypeSymbol t) =>
             t.ContainingType != null ? MetadataName(t.ContainingType) + "+" + t.MetadataName

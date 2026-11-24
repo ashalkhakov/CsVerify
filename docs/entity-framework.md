@@ -11,7 +11,7 @@ Read from the sources, as EF reads them:
 - **Entity types:** a context's `DbSet<T>` properties, the types its configuration names (`modelBuilder.Entity<T>()`,
   an `IEntityTypeConfiguration<T>`), and what their navigations lead to, in the program or in an assembly it references
   (a domain project's). A referenced entity's auto-properties (the compiler's backing field beside them, read from the
-  assembly) are its fields, as a source class's are, and those with a setter, of any accessibility, its columns; its
+  assembly; in a reference assembly, a targeting pack's that has no private fields, accessors the compiler made) are its fields, as a source class's are, and those with a setter, of any accessibility, its columns; its
   internal members are seen where `InternalsVisibleTo` grants them. A property with code of its own is neither. A derived type has its base classes' properties, and its root's key, query
   filters, unique indexes and concurrency tokens, as EF reads them from the root of the hierarchy. An entity of the
   program's may derive from a library's class (ASP.NET Core Identity's `IdentityUser<TKey>`): that class's

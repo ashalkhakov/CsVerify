@@ -852,6 +852,38 @@ public sealed class Store(Db db)
         }
 
         [Fact]
+        public void ABaseOfAReferenceAssembly_HasItsAutoPropertiesAsColumns()
+        {
+            // (#129's review: a targeting pack's assembly, IdentityUser's under the ASP.NET Core framework reference, has no
+            // backing fields; its auto-properties' accessors are the compiler's, and they are columns. One with code isn't)
+            var r = VerifyEfWithLibrary(@"namespace Lib
+{
+    public class Row<TKey>
+    {
+        public virtual TKey Id { get; set; } = default!;
+        public virtual string? UserName { get; set; }
+        public string Display => UserName + ""!"";
+    }
+}", @"using Lib;
+public class User : Row<long> { }
+public sealed class Db(DbContextOptions<Db> options) : DbContext(options)
+{
+    public DbSet<User> Users => Set<User>();
+}
+public sealed class Users(Db db)
+{
+    public async Task<List<long>> Ids() => await db.Users.AsNoTracking().Select(u => u.Id).ToListAsync();
+    public async Task<List<string?>> Names() => await db.Users.AsNoTracking().Select(u => u.UserName).ToListAsync();
+    public async Task<List<string>> Displays() => await db.Users.AsNoTracking().Select(u => u.Display).ToListAsync();
+}", referenceAssembly: true);
+            foreach (var ok in new[] { "Ids", "Names" })
+            {
+                Assert.True(r.Errors("Users." + ok).Length == 0, ok + ": " + r.Explain("Users." + ok));
+            }
+            Assert.NotEmpty(r.Errors("Users.Displays"));
+        }
+
+        [Fact]
         public void EntitiesOfAReferencedAssembly_AndConfigurationsOfAGenericBase_AreRead()
         {
             // (#82: the entities in a domain assembly; a configuration from a generic base whose key is named by the

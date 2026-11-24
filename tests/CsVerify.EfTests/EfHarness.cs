@@ -33,14 +33,24 @@ namespace CsVerify.Tests
         /// A library compiled to an assembly of its own (a domain project the program references), with its
         /// InternalsVisibleTo granting the program's assembly, "App"; the program is verified under that name.
         /// </summary>
-        public static VerificationResult VerifyEfWithLibrary(string library, string source)
+        public static VerificationResult VerifyEfWithLibrary(string library, string source, bool referenceAssembly = false)
         {
             var path = Path.Combine(Path.GetTempPath(), "CsVerifyEfLib" + Guid.NewGuid().ToString("N") + ".dll");
             var lib = Microsoft.CodeAnalysis.CSharp.CSharpCompilation.Create(Path.GetFileNameWithoutExtension(path),
                 new[] { Microsoft.CodeAnalysis.CSharp.CSharpSyntaxTree.ParseText("[assembly: System.Runtime.CompilerServices.InternalsVisibleTo(\"App\")]\n" + library) },
                 Engine.FrameworkReferences(), new Microsoft.CodeAnalysis.CSharp.CSharpCompilationOptions(Microsoft.CodeAnalysis.OutputKind.DynamicallyLinkedLibrary,
                     nullableContextOptions: Microsoft.CodeAnalysis.NullableContextOptions.Enable));
-            var emit = lib.Emit(path);
+            // (a reference assembly, as a targeting pack's: no private members, its backing fields among them)
+            Microsoft.CodeAnalysis.Emit.EmitResult emit;
+            if (referenceAssembly)
+            {
+                using var file = File.Create(path);
+                emit = lib.Emit(file, options: new Microsoft.CodeAnalysis.Emit.EmitOptions(metadataOnly: true, includePrivateMembers: false));
+            }
+            else
+            {
+                emit = lib.Emit(path);
+            }
             Xunit.Assert.True(emit.Success, string.Join("\n", emit.Diagnostics));
             try
             {
