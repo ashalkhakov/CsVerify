@@ -874,7 +874,8 @@ AndAlso(Eq(Sel(r, new KVar(t)), Sel(r, instance)), Ne(Sel(r, new KVar(t)), new K
         {
             switch (e)
             {
-                case IUnaryOperation uo when UserOperator(uo.OperatorMethod):
+                // (not lifted: of a nullable operand it is no call of the operator where that has no value)
+                case IUnaryOperation uo when UserOperator(uo.OperatorMethod) && !uo.IsLifted:
                     return OperatorCall(uo.OperatorMethod, uo.Syntax, uo.Operand);
                 case IUnaryOperation u when u.OperatorKind == UnaryOperatorKind.Not: return Not(Expr(u.Operand));
                 case IUnaryOperation bn when bn.OperatorKind == UnaryOperatorKind.BitwiseNegation && IsIntegral(bn.Type): return Complement(Expr(bn.Operand), bn.Type);
@@ -890,7 +891,7 @@ AndAlso(Eq(Sel(r, new KVar(t)), Sel(r, instance)), Ne(Sel(r, new KVar(t)), new K
         {
             switch (e)
             {
-                case IBinaryOperation bo when UserOperator(bo.OperatorMethod):
+                case IBinaryOperation bo when UserOperator(bo.OperatorMethod) && !bo.IsLifted:
                     return OperatorCall(bo.OperatorMethod, bo.Syntax, bo.LeftOperand, bo.RightOperand);
                 case IBinaryOperation b when b.OperatorMethod == null && !(IsString(b.Type) && b.OperatorKind == BinaryOperatorKind.Add) && (InSubset(b.LeftOperand.Type) && InSubset(b.RightOperand.Type) ||
                                              b.OperatorKind is BinaryOperatorKind.Equals or BinaryOperatorKind.NotEquals && (RefOperand(b.LeftOperand) || RefOperand(b.RightOperand))):

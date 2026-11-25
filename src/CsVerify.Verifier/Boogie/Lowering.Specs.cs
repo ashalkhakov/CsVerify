@@ -19,6 +19,16 @@ namespace CsVerify.Verifier.Boogie
         /// <summary>A specification: mathematics, its array reads, lengths, divisions and functions' calls kept for Checks' well-definedness.</summary>
         private KExpr Spec(IOperation e, IParameterSymbol result)
         {
+            // (a throw expression, a ?? throw ..., c ? a : throw ...: the value of what it stands in for, defined nowhere)
+            if (e is IThrowOperation || e is IConversionOperation { Operand: IThrowOperation })
+            {
+                var typed = e;
+                while (typed.Type == null && typed.Parent != null)
+                {
+                    typed = typed.Parent;
+                }
+                return typed.Type != null && InSubset(typed.Type) ? Thrown(typed.Type, e.Syntax) : throw new NotTranslated("in a specification: a throw where a " + typed.Type + " is expected");
+            }
             // (EF's entries: Lowering.EfEntries'; a method of the program a lambda calls: its body, InlinedBody's)
             if (e is IPropertyReferenceOperation er && EntryRead(er, result, spec: true) is KExpr entryValue)
             {
@@ -307,6 +317,10 @@ namespace CsVerify.Verifier.Boogie
                                                           !SpecSymbols.IsPure(npr.Property) && !(_contractOf?.Invoke(ng.OriginalDefinition) is Contract pc && pc.IsPure) && InSubset(npr.Type) &&
                                                           npr.Syntax.Ancestors().OfType<InvocationExpressionSyntax>().FirstOrDefault(i => i.Expression.ToString() is "Spec.Assert" or "Spec.Assume") != null:
                     return SpecImpureProperty(npr);
+                // (any other computed property of the program's that is no function: a specification can't read it)
+                case IPropertyReferenceOperation np when IsComputed(np.Property) && np.Property.GetMethod is IMethodSymbol g && g.DeclaringSyntaxReferences.Length > 0 && !_isFunction(g) &&
+                                                         !(_contractOf?.Invoke(g.OriginalDefinition) is Contract gc && gc.IsPure):
+                    throw new NotTranslated($"in a specification: '{np.Property.Name}', a property whose getter is neither [Pure] nor a single expression without effects");
                 default: return SpecOther(e, result);
             }
         }

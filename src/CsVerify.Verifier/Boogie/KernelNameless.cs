@@ -229,6 +229,7 @@ namespace CsVerify.Verifier.Boogie
                 Value = Visit(cast.Value),
                 Test = Visit(cast.Test),
                 At = cast.At,
+                Domain = cast.Domain,
             },
             _ => throw new InvalidOperationException("a kernel expression the rewrite doesn't know: " + e.GetType().Name),
         };

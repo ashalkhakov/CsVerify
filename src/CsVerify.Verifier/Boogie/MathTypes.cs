@@ -24,6 +24,15 @@ namespace CsVerify.Verifier.Boogie
         /// <summary>A struct's or a tuple's parts, at any depth (a struct's struct's fields too), each with its type.</summary>
         public static IEnumerable<(MExpr part, ITypeSymbol type)> Parts(MExpr v, ITypeSymbol t, int depth = 0)
         {
+            // (a nullable struct's: its value's, whatever it is where it has none)
+            if (depth <= 8 && IsNullableStruct(t))
+            {
+                foreach (var inner in Parts(new MOp("$nv." + NullableKey(t), v), Underlying(t), depth + 1))
+                {
+                    yield return inner;
+                }
+                yield break;
+            }
             if (depth > 8 || !(IsStruct(t) || IsTuple(t)))
             {
                 yield break;

@@ -88,7 +88,7 @@ namespace CsVerify.Verifier.Boogie
         /// <summary>Could this method be a procedure (before its body is looked at)?</summary>
         public static bool Candidate(IMethodSymbol m, Contract c, bool asContract = false)
         {
-            if (EmptyDataConstructor(m))
+            if (DataConstructor(m))
             {
                 return true;
             }
@@ -200,11 +200,14 @@ namespace CsVerify.Verifier.Boogie
             return b.Requires.Count == 0 && b.Ensures.Count == 0 && b.ThrowEnsures.Count == 0 && b.Modifies == null;
         }
 
-        /// <summary>A data type's constructor that does nothing (a closed base's private Avl() { }): nothing to verify.</summary>
-        public static bool EmptyDataConstructor(IMethodSymbol m) =>
-            m.MethodKind == MethodKind.Constructor && !m.IsStatic && IsData(m.ContainingType) && m.Parameters.Length == 0 &&
-            m.DeclaringSyntaxReferences.Length == 1 && m.DeclaringSyntaxReferences[0].GetSyntax() is Microsoft.CodeAnalysis.CSharp.Syntax.ConstructorDeclarationSyntax
-                { Initializer: null, ExpressionBody: null, Body: { Statements.Count: 0 } };
+        /// <summary>
+        /// A data type's constructor that its values' definition already says all of: one that does nothing (a closed
+        /// base's private Avl() { }), or one that only stores its parameters (DataTypes.Stored). Nothing to verify.
+        /// </summary>
+        public static bool DataConstructor(IMethodSymbol m) =>
+            m.MethodKind == MethodKind.Constructor && !m.IsStatic && IsData(m.ContainingType) &&
+            m.DeclaringSyntaxReferences.Length == 1 && m.DeclaringSyntaxReferences[0].GetSyntax() is Microsoft.CodeAnalysis.CSharp.Syntax.ConstructorDeclarationSyntax syntax &&
+            (m.Parameters.Length == 0 ? syntax is { Initializer: null, ExpressionBody: null, Body: { Statements.Count: 0 } } : Verifier.DataTypes.Stored(m.ContainingType) != null);
 
         /// <summary>CsVerify's attributes that the translation knows; any other (an atomic step, a lock's) is StaticChecks' to check.</summary>
         private static readonly HashSet<string> Known = new HashSet<string>
@@ -228,9 +231,9 @@ namespace CsVerify.Verifier.Boogie
         public static string WhyNot(IMethodSymbol m, Contract c)
         {
             var t = m.ContainingType;
-            if (!StaticContext(m) && !IsClass(t) && !IsInterface(t) && !EmptyDataConstructor(m))
+            if (!StaticContext(m) && !IsClass(t) && !IsInterface(t) && !DataConstructor(m))
             {
-                return "a member of " + t.Name + ", a type outside the subset" + (WhyNotClass(t) is string why ? ": it " + why : "");
+                return "a member of " + t.Name + ", a type outside the subset" + (WhyNotClass(t) is string why ? ": it " + why : WhyNotRecord(t) is string record ? ": " + record : "");
             }
             if (m.IsAsync && !IsTaskLike(m.ReturnType))
             {
@@ -271,6 +274,12 @@ namespace CsVerify.Verifier.Boogie
             }
             return "an inherited contract";
         }
+
+        /// <summary>What keeps a record class out of the subset: neither data nor a value object (for CSV1902's message).</summary>
+        private static string WhyNotRecord(INamedTypeSymbol t) =>
+            t.IsRecord && t.TypeKind == TypeKind.Class && !IsData(t) && !IsValueObject(t)
+                ? "a record whose state isn't its constructor's parameters as given (positional, or stored by an abstract base's constructor and nothing else), nor a sealed one derived from object"
+                : null;
 
         /// <summary>A kind of method the translation takes somewhere: a method, an accessor, a constructor, a lambda or local function.</summary>
         private static bool TakenKind(IMethodSymbol m)
@@ -327,6 +336,33 @@ namespace CsVerify.Verifier.Boogie
                     }
                 }
                 _reaches[m] = seen;
+            }
+            // (a getter taken as [Pure] because a specification reads it (PureGetters) is a function only where its
+            // expression is a specification's; one that isn't stays code, as it was. Until none changes: one may read another)
+            for (bool changed = true; changed;)
+            {
+                changed = false;
+                foreach (var (m, _, _) in list)
+                {
+                    if (ContractOf?.Invoke(m) is Contract c && c.InferredPure)
+                    {
+                        bool defined;
+                        try
+                        {
+                            defined = Lowering.Signature(m, c, IsFunction, Literal, ContractOf).FunctionBody != null;
+                        }
+                        catch (NotTranslated)
+                        {
+                            defined = false;
+                        }
+                        if (!defined)
+                        {
+                            c.IsPure = c.InferredPure = false;
+                            c.PureBody = null;
+                            changed = true;
+                        }
+                    }
+                }
             }
         }
 
@@ -861,6 +897,45 @@ namespace CsVerify.Verifier.Boogie
         private static MExpr FieldOfType(MExpr v, ITypeSymbol t) =>
             MathTypes.OfType(v, t) ?? (!IsData(t) && TypeOf(t) == "Ref" && IsNullable(t) && NotNullable(t) ? NotNull(v) : null);
 
+        /// <summary>What a function of a data value d gives, of its type: a data value one of its cases (or null, where its type allows), any other as FieldOfType.</summary>
+        private static MExpr FieldFact(string function, ITypeSymbol type)
+        {
+            var read = new MOp(function, new MVar("d"));
+            if (!IsData(type))
+            {
+                return FieldOfType(read, type);
+            }
+            return NotNullable(type) ? MathTypes.IsCase(read, type) : OrElse(IsNull(read), MathTypes.IsCase(read, type));
+        }
+
+        /// <summary>
+        /// A record's field, of its constructor's parameters: its own the parameter it holds; a base's what the base makes
+        /// of its constructor's parameters, each the argument the record's header gives it (an integer one wrapped into
+        /// its parameter's range, as unchecked arithmetic does).
+        /// </summary>
+        private MExpr FieldValue(INamedTypeSymbol c, IPropertySymbol field)
+        {
+            var def = Verifier.DataTypes.Def(c);
+            var ctor = Verifier.DataTypes.Constructor(def) ?? throw new NotTranslated("a data record without its constructor: " + def.Name);
+            if (Verifier.DataTypes.Held(def, field) is IParameterSymbol held)
+            {
+                return new MVar(Local(held));
+            }
+            if (!(Verifier.DataTypes.Def(def.BaseType) is INamedTypeSymbol b) || SymbolEqualityComparer.Default.Equals(field.OriginalDefinition.ContainingType, def))
+            {
+                throw new NotTranslated("a field no parameter of its record's constructor gives: " + field.Name);
+            }
+            var inBase = FieldValue(b, field);
+            var given = new Dictionary<string, MExpr>();
+            foreach (var p in Verifier.DataTypes.Constructor(b).Parameters.Where(p => inBase.Mentions(new HashSet<string> { Local(p) })))
+            {
+                var arg = Checks.MathOf(Lowering.BaseArgument(def, p, IsFunction, Literal, ContractOf), this, ctor);
+                // (the field's own value is wrapped where it is declared)
+                given[Local(p)] = arg is MVar || inBase is MVar || !IsIntegral(p.Type) ? arg : MathTypes.Wrap(arg, p.Type);
+            }
+            return inBase.Substitute(given);
+        }
+
         /// <summary>The data types named, their cases and the data types of their fields: Dafny's datatypes.</summary>
         private void DataTypes()
         {
@@ -902,8 +977,14 @@ namespace CsVerify.Verifier.Boogie
                 };
                 foreach (var p in ctor.Parameters)
                 {
-                    var prop = Verifier.DataTypes.PositionalProperty(c, p.Ordinal);
-                    dc.AddParam((Local(p), TypeOf(p.Type), IsData(p.Type), FieldFunction(prop)));
+                    // (read back from the field that holds it; one no field holds (D(int N) : A(N + 1)), from a function of
+                    // its own: some argument the value was built of)
+                    var back = Data.Holder(c, p) is IPropertySymbol holder ? FieldFunction(holder) : "$arg." + CaseName(c).Substring(3) + "." + Ident(p.Name);
+                    if (Data.Holder(c, p) == null && !fields.ContainsKey(back))
+                    {
+                        fields[back] = (TypeOf(p.Type), FieldFact(back, p.Type));
+                    }
+                    dc.AddParam((Local(p), TypeOf(p.Type), IsData(p.Type), back));
                     if (FieldOfType(new MVar(Local(p)), p.Type) is MExpr typed)
                     {
                         dc.AddGuard(typed);
@@ -921,10 +1002,7 @@ namespace CsVerify.Verifier.Boogie
                 foreach (var prop in Data.Fields(c))
                 {
                     var fn = FieldFunction(prop);
-                    MExpr value = Verifier.DataTypes.IsInitField(prop) ? new MVar(InitParam(prop))
-                        : SymbolEqualityComparer.Default.Equals(prop.ContainingType.OriginalDefinition, c.OriginalDefinition)
-                        ? new MVar(Local(ctor.Parameters.First(x => x.Name == prop.Name)))
-                        : Checks.MathOf(Lowering.BaseArgument(c, prop, IsFunction, Literal, ContractOf), this, ctor);
+                    MExpr value = Verifier.DataTypes.IsInitField(prop) ? new MVar(InitParam(prop)) : FieldValue(c, prop);
                     // (a computed one, as a base's argument: an integer the C# value, wrapped into the field's range as unchecked
                     // arithmetic does (checked, one that overflows throws, so there is no such value); a data value the
                     // field's where it is of the field's type)
@@ -945,10 +1023,7 @@ namespace CsVerify.Verifier.Boogie
                     // an integer one in its type's range)
                     if (!fields.ContainsKey(fn))
                     {
-                        fields[fn] = (TypeOf(prop.OriginalDefinition.Type), IsData(prop.Type)
-                            ? NotNullable(prop.OriginalDefinition.Type) ? MathTypes.IsCase(new MOp(fn, new MVar("d")), prop.Type)
-                              : OrElse(IsNull(new MOp(fn, new MVar("d"))), MathTypes.IsCase(new MOp(fn, new MVar("d")), prop.Type))
-                            : FieldOfType(new MOp(fn, new MVar("d")), prop.OriginalDefinition.Type));
+                        fields[fn] = (TypeOf(prop.OriginalDefinition.Type), FieldFact(fn, prop.OriginalDefinition.Type));
                     }
                 }
                 list.Add(dc);

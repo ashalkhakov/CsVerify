@@ -216,6 +216,23 @@ namespace CsVerify.Verifier.Boogie
                     AddWellDefinedness(Spec(nd.Args[0], wf, guard), wf, guard);
                     return Spec(nd.Args[1], wf, guard);
                 }
+                // (where a function's body doesn't throw: none of its throws reached, the functions it reads in their domains)
+                case KOp { Op: "$domain" } dom:
+                {
+                    var (collecting, known) = (_domain, _facts.ToList());
+                    _domain = new List<MExpr>();
+                    try
+                    {
+                        Spec(dom.Args[0], new List<MExpr>(), new List<MExpr>());
+                        return _domain.Count == 0 ? MLit.True : And(_domain);
+                    }
+                    finally
+                    {
+                        _domain = collecting;
+                        _facts.Clear();
+                        _facts.AddRange(known);
+                    }
+                }
                 case KOp { Op: "streq" } eq:
                 {
                     var (l, r) = (Spec(eq.Args[0], wf, guard), Spec(eq.Args[1], wf, guard));
@@ -252,7 +269,7 @@ namespace CsVerify.Verifier.Boogie
                 case KLet let:
                 {
                     var value = Spec(let.Value, wf, guard);
-                    int from = wf.Count, facts = _facts.Count;
+                    int from = wf.Count, facts = _facts.Count, domainFrom = _domain?.Count ?? 0;
                     var name = Opened();
                     var body = Spec(let.BodyAt(name), wf, guard);
                     // (what makes the body well-defined, and what it knows, are of the local's value too)
@@ -260,6 +277,10 @@ namespace CsVerify.Verifier.Boogie
                     for (int k = from; k < wf.Count; k++)
                     {
                         wf[k] = wf[k].Substitute(bound);
+                    }
+                    for (int k = domainFrom; _domain != null && k < _domain.Count; k++)
+                    {
+                        _domain[k] = _domain[k].Substitute(bound);
                     }
                     for (int k = facts; k < _facts.Count; k++)
                     {
@@ -319,7 +340,12 @@ namespace CsVerify.Verifier.Boogie
                 case KCast cast:
                 {
                     var v = Spec(cast.Value, wf, guard);
-                    AddWellDefinedness(Spec(cast.Test, wf, guard), wf, guard);
+                    var test = Spec(cast.Test, wf, guard);
+                    AddWellDefinedness(test, wf, guard);
+                    if (cast.Domain)
+                    {
+                        InDomain(test, guard);
+                    }
                     return v;
                 }
                 case KLen len:
@@ -477,7 +503,7 @@ namespace CsVerify.Verifier.Boogie
                         }
                     }
                     var args = fn.Args.Select(a => Spec(a, wf, guard)).ToArray();
-                    return FunctionApp(fn, receiver, args, cond => AddWellDefinedness(cond, wf, guard));
+                    return FunctionApp(fn, receiver, args, cond => AddWellDefinedness(cond, wf, guard), cond => InDomain(cond, guard));
                 }
                 default: throw new NotTranslated("in a specification: " + e.GetType().Name);
             }
@@ -498,15 +524,38 @@ namespace CsVerify.Verifier.Boogie
 
         private void AddWellDefinedness(MExpr cond, List<MExpr> wf, List<MExpr> guard) => wf.Add(guard.Count == 0 ? cond : Implies(And(guard), cond));
 
-        /// <summary>A function's application, its receiver and arguments made: what it needs, its precondition at them.</summary>
-        private MExpr FunctionApp(KFnCall fn, MExpr receiver, MExpr[] args, Action<MExpr> need)
+        /// <summary>Where a function's domain is being read ("$domain" of its body): what it has found so far, each under its guards.</summary>
+        private List<MExpr> _domain;
+
+        /// <summary>The functions whose domains are being read (one that calls itself is in its domain where it gets there).</summary>
+        private readonly HashSet<IMethodSymbol> _domainOf = new HashSet<IMethodSymbol>(SymbolEqualityComparer.Default);
+
+        private void InDomain(MExpr cond, List<MExpr> guard) => _domain?.Add(guard.Count == 0 ? cond : Implies(And(guard), cond));
+
+        /// <summary>A function's application, its receiver and arguments made: what it needs, its precondition at them, and (a function that may throw) its domain.</summary>
+        private MExpr FunctionApp(KFnCall fn, MExpr receiver, MExpr[] args, Action<MExpr> need, Action<MExpr> inDomain = null)
         {
             // (well-defined where its precondition holds, at the arguments)
             var given = Given(fn.Callee, receiver, args);
             var saved = _facts.ToList();
-            foreach (var r in _program.Signature(fn.Callee).Requires)
+            var sig = _program.Signature(fn.Callee);
+            foreach (var r in sig.Requires)
             {
                 need(Spec(r.Expr, out _).Substitute(given));
+            }
+            // (and, of one that may throw, where it doesn't: a part of the domain of a function that reads it, too)
+            if (sig.Partial && sig.FunctionBody != null && _domainOf.Add(fn.Callee))
+            {
+                try
+                {
+                    var domain = Spec(new KOp("$domain", sig.FunctionBody), out _).Substitute(given);
+                    need(domain);
+                    inDomain?.Invoke(domain);
+                }
+                finally
+                {
+                    _domainOf.Remove(fn.Callee);
+                }
             }
             _facts.Clear();
             _facts.AddRange(saved);

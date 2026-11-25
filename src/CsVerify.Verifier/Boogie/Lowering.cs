@@ -206,8 +206,8 @@ namespace CsVerify.Verifier.Boogie
             {
                 return Predicate();
             }
-            // (a data type's constructor that does nothing: a procedure of no statements, and no object)
-            if (BoogieTranslator.EmptyDataConstructor(_m))
+            // (a data type's constructor that does nothing, or only stores its parameters: a procedure of no statements, and no object)
+            if (BoogieTranslator.DataConstructor(_m))
             {
                 _p.AddBlock(KBlock.Of("b0", 0, jump: KReturn.Of(_decl)));
                 return _p;
@@ -310,11 +310,11 @@ namespace CsVerify.Verifier.Boogie
             // (a function's definition is its body: not one an override may answer, which is of its contract alone)
             if (_isFunction(_m) && _contract.PureBody != null && !Engine.IsOverridable(_m))
             {
-                _p.FunctionBody = Spec(_contract.PureBody, null);
+                DefinedBy(Spec(_contract.PureBody, null));
             }
             else if (_isFunction(_m) && _contract.PureStatements != null && !Engine.IsOverridable(_m))
             {
-                _p.FunctionBody = PureStatements(_contract.PureStatements, 0);
+                DefinedBy(PureStatements(_contract.PureStatements, 0));
             }
             var heads = LoopHeads(cfg);
             foreach (var h in heads)

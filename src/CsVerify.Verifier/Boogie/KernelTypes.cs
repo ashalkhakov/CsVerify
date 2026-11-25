@@ -152,15 +152,23 @@ namespace CsVerify.Verifier.Boogie
         public static bool Scalar(ITypeSymbol t) => IsIntegral(t) || t?.SpecialType == SpecialType.System_Boolean;
 
         /// <summary>
-        /// A nullable value of a scalar (int?, bool?): a reference, null where it has no value, $nmk.U(v) where it has v,
-        /// one reference per value (so == is the lifted operator's); $nv.U reads the value.
+        /// A nullable value of a scalar (int?, bool?) or of a struct of the subset (AccountKey?): a reference, null where
+        /// it has no value, $nmk.U(v) where it has v, one reference per value; $nv.U reads the value. Two of a scalar are
+        /// equal as references (the lifted ==); two of a struct as their values are (IsNullableStruct).
         /// </summary>
         public static bool IsNullableValue(ITypeSymbol t) => t is INamedTypeSymbol { OriginalDefinition.SpecialType: SpecialType.System_Nullable_T } n &&
-            (Scalar(n.TypeArguments[0]) || IsOpaqueTicks(n.TypeArguments[0]) || IsOpaqueId(n.TypeArguments[0]));
+            (Scalar(n.TypeArguments[0]) || IsOpaqueTicks(n.TypeArguments[0]) || IsOpaqueId(n.TypeArguments[0]) || IsStruct(n.TypeArguments[0]));
 
-        /// <summary>A nullable value's functions' suffix: its scalar's (Int32), or the opaque value's name (DateTime, Guid).</summary>
-        private static string NullableKey(ITypeSymbol nullable) =>
-            Scalar(Underlying(nullable)) ? Sp(Underlying(nullable)).ToString().Substring("System_".Length) : Underlying(nullable).Name;
+        /// <summary>A nullable struct (IsNullableValue's): its value a struct's, which == compares as the struct's does.</summary>
+        public static bool IsNullableStruct(ITypeSymbol t) => IsNullableValue(t) && IsStruct(Underlying(t));
+
+        /// <summary>A nullable value's functions' suffix: its scalar's (Int32), the opaque value's name (DateTime, Guid), or S$ and the struct's.</summary>
+        public static string NullableKey(ITypeSymbol nullable) =>
+            Scalar(Underlying(nullable)) ? Sp(Underlying(nullable)).ToString().Substring("System_".Length)
+            : IsStruct(Underlying(nullable)) ? StructNullable + Ident(Underlying(nullable).ToDisplayString()) : Underlying(nullable).Name;
+
+        /// <summary>What a nullable struct's functions' suffix starts with: their values are references (a struct's), not ints.</summary>
+        public const string StructNullable = "S$";
 
         public static ITypeSymbol Underlying(ITypeSymbol nullable) => ((INamedTypeSymbol)nullable).TypeArguments[0];
 

@@ -140,6 +140,19 @@ namespace CsVerify.Analyzers
             {
                 return;
             }
+            // an exception made to be thrown: where a [Pure] member throws it has no value, so nothing sees the object
+            for (var parent = op.Parent; parent != null; parent = parent.Parent)
+            {
+                if (parent is IThrowOperation)
+                {
+                    return;
+                }
+                if (!(parent is IConversionOperation || parent is IParenthesizedOperation || parent is IArgumentOperation || parent is IObjectCreationOperation ||
+                      parent is IInterpolatedStringOperation || parent is IInterpolationOperation))
+                {
+                    break;
+                }
+            }
             Report(context, op, $"allocation '{op.Syntax}'");
         }
     }

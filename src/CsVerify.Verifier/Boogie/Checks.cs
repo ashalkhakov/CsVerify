@@ -512,6 +512,7 @@ namespace CsVerify.Verifier.Boogie
             {
                 Expr = e.Math,
                 At = e.Source.At,
+                Domain = e.Source.Expr is KOp { Op: "$domain" },
             }).ToList();
             // (the caller's measure is as it was at entry, as Dafny's is: what the body writes before the call doesn't count)
             var decreases = _p.Decreases?.Select(d => (MExpr)Old(Spec(d, out _))).ToList();

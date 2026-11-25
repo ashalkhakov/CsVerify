@@ -832,8 +832,10 @@ namespace CsVerify.Verifier.Boogie
 
         private void DataDeconstruction(IDeconstructionAssignmentOperation dc, List<ILocalSymbol> parts)
         {
-            var fields = KernelTypes.Data.Fields((INamedTypeSymbol)dc.Value.Type);
-            if (fields.Count != parts.Count)
+            // (the synthesized Deconstruct: the property of each of the primary constructor's parameters, in their order)
+            var fields = DataTypes.PrimaryConstructor((INamedTypeSymbol)dc.Value.Type)?.Parameters
+                .Select(p => DataTypes.PositionalProperty((INamedTypeSymbol)dc.Value.Type, p.Ordinal)).ToList();
+            if (fields == null || fields.Count != parts.Count || fields.Any(f => f == null))
             {
                 throw new NotTranslated("a deconstruction of another shape");
             }
@@ -1045,9 +1047,16 @@ namespace CsVerify.Verifier.Boogie
                     {
                         Emit(KCheck.Of(NotNull(value), "CSV1014", dfp.Syntax.Parent ?? dfp.Syntax, $"'{dfp.Syntax.Parent ?? dfp.Syntax}' might be null, but property '{prop.Name}' is not nullable"));
                     }
-                    var fields = KernelTypes.Data.Fields((INamedTypeSymbol)dcr.Type)
-                        .Select(f => SymbolEqualityComparer.Default.Equals(f, prop) ? Box(value, prop.Type, dfp.Property.Type) : (KExpr)new KOp(FieldFunction(f), new KVar(made)));
-                    Emit(KAssign.Of(made, new KOp(CaseName((INamedTypeSymbol)dcr.Type), fields.ToArray())));
+                    // (its constructor's arguments, each read back from the field that holds it: a value of the case only
+                    // where every field is such a one, else the copy is a value no construction gives)
+                    var type = (INamedTypeSymbol)dcr.Type;
+                    var holders = DataTypes.PrimaryConstructor(type)?.Parameters.Select(p => KernelTypes.Data.Holder(type, p)).Concat(DataTypes.InitFields(type)).ToList();
+                    if (holders == null || holders.Any(h => h == null) || holders.Count != KernelTypes.Data.Fields(type).Count)
+                    {
+                        throw new NotTranslated($"a copy of a {type.Name} with '{prop.Name}' set: a field of it isn't a parameter of its constructor as given");
+                    }
+                    var fields = holders.Select(f => SymbolEqualityComparer.Default.Equals(f, prop) ? Box(value, prop.Type, dfp.Property.Type) : (KExpr)new KOp(FieldFunction(f), new KVar(made)));
+                    Emit(KAssign.Of(made, new KOp(CaseName(type), fields.ToArray())));
                     return;
                 }
                 // (a computed property: its setter, called with the value)
@@ -1212,8 +1221,9 @@ namespace CsVerify.Verifier.Boogie
                     return;
                 }
                 var target = ThrowTarget(b.EnclosingRegion);
-                // (a proof may not escape its obligations by throwing)
-                if (_p.Ghost || _contract.IsPure || _contract.IsLemma)
+                // (a proof may not escape its obligations by throwing; a function may, where its body is its definition:
+                // there it isn't defined (Partial), and what it throws no try of its own catches)
+                if ((_p.Ghost || _contract.IsPure || _contract.IsLemma) && !(_p.Partial && !_p.Ghost && TryOf(b.EnclosingRegion) == null))
                 {
                     Emit(KCheck.Of(
                         KLit.False,

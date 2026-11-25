@@ -1,3 +1,4 @@
+using System;
 using System.IO;
 using System.Linq;
 using CsVerify.Verifier;
@@ -45,6 +46,37 @@ public static class Lonely
             var r = Engine.VerifySources(new[] { ("Test.cs", Harness.Usings + source) }, o);
             Assert.True(r.CompilationErrors.Count == 0, string.Join("\n", r.CompilationErrors));
             return r;
+        }
+
+        [Fact]
+        public void TheState_IsNamedOnce_WhereAnExpressionReadsItAgain()
+        {
+            // (a contract that reads a list through an interface several times: each read is of the whole state, which the
+            // expression names once instead of writing its every map out at each)
+            var boogie = Path.Combine(Path.GetTempPath(), "csverify-state-" + Guid.NewGuid().ToString("N") + ".bpl");
+            try
+            {
+                var r = Run(@"using System.Collections.Generic;
+public static class Lists
+{
+    public static int First(IReadOnlyList<int> xs)
+    {
+        Spec.Requires(xs.Count >= 2 && xs[0] == 1 && xs[1] == 2);
+        Spec.Ensures<int>(r => r == xs[0] && xs.Count >= 2 && xs[1] == 2);
+        return xs[0];
+    }
+}", boogie: boogie);
+                Assert.True(r.Errors("First").Length == 0, r.Explain("First"));
+                var text = File.ReadAllText(boogie);
+                Assert.Contains("(var $stNow := $st(", text);
+                // (its maps written out a few times in the procedure, not once a read)
+                var procedure = text.Substring(text.IndexOf("procedure Lists.First", StringComparison.Ordinal));
+                Assert.True(System.Text.RegularExpressions.Regex.Matches(procedure, @"\$stNow\b").Count > System.Text.RegularExpressions.Regex.Matches(procedure, @"\$st\(").Count);
+            }
+            finally
+            {
+                File.Delete(boogie);
+            }
         }
 
         [Fact]

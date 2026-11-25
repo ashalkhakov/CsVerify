@@ -55,7 +55,8 @@ ATS separates the **statics** (types and indices, reasoned about at compile time
 - `Spec.Ensures<R>(r => …)` binds `r` to the return value. Lambdas cannot capture `ref`/`in` parameters, so for those use `Spec.Ensures(bool)` with `Spec.Result<R>()` and `Spec.Old(x)`.
 - `Spec.Forall(lo, hi, i => P)` / `Spec.Exists(...)` are bounded integer quantifiers.
 - `Spec.Pre(f, x)`, `Spec.Post(f, x, r)` and `Spec.Total(f)` say what a `Func` or `Action` accepts and gives, as Dafny's `f.requires` and `f.ensures`, `Spec.ReadsOf(f, x)` and `Spec.Reads(f, x => frame)` what those read (`f.reads`), and `Spec.Changes(f, x => frame)` and `Spec.ChangesNothing(f)` what it may change (see [Delegates](#delegates)).
-- Specification expressions should be side-effect free. Calls in them must be `[Pure]`: a source method, or a library member whose stub is (`l.Count`, `string.IsNullOrEmpty(s)`; see [Contracts for code without sources](library-contracts.md)).
+- Specification expressions should be side-effect free. Calls in them must be `[Pure]`: a source method, or a library member whose stub is (`l.Count`, `string.IsNullOrEmpty(s)`; see [Contracts for code without sources](library-contracts.md)). A property of the program needs no `[Pure]` where its getter is a single expression with no effects (`public bool IsOpen => State == State.Open;`): a specification that reads it takes it as a function.
+- A function may throw: `public State Current => Stored ?? throw new InvalidOperationException("No state.");`. It is defined where it doesn't. Code that reads it may get the exception, and knows afterwards that it didn't. A specification may read it only where it is defined, so `Spec.Ensures<bool>(r => r == (Current == State.Open))` verifies in a method that read `Current` on the way (or requires `Stored != null`), and is CSV1012 otherwise.
 
 ## Delegates
 

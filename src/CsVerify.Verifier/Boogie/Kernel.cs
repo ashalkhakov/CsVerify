@@ -808,6 +808,8 @@ namespace CsVerify.Verifier.Boogie
     {
         public KExpr Value, Test;
         public SyntaxNode At;
+        /// <summary>A throw expression's (its test false): where a function's body reaches it is outside the function's domain.</summary>
+        public bool Domain;
     }
 
     internal sealed class KAssert : KStmt
@@ -1061,6 +1063,11 @@ namespace CsVerify.Verifier.Boogie
         public KExpr ReadsFrame;
         /// <summary>A [Pure] or [GhostFunction] method of one expression: a function too, of this body.</summary>
         public KExpr FunctionBody;
+        /// <summary>
+        /// A function whose body may throw: defined where it doesn't (its domain, "$domain" of its body). A specification
+        /// that reads it must be there (CSV1012); its procedure, where it returns, was.
+        /// </summary>
+        public bool Partial;
         /// <summary>An override that states its own precondition: it, and each base's, which must imply it (CSV1018).</summary>
         public List<KExpr> OwnRequires = new List<KExpr>();
         public List<(IMethodSymbol method, List<KExpr> requires)> BaseRequires = new List<(IMethodSymbol, List<KExpr>)>();

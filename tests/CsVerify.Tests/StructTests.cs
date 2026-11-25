@@ -83,5 +83,41 @@ public static class G
             Assert.Equal(new[] { "CSV1002" }, r.Errors("WrongRound"));
             Assert.Equal(new[] { "CSV1002" }, r.Errors("WrongSame"));
         }
+
+        [Fact]
+        public void ANullableStruct_IsNull_OrItsValue()
+        {
+            // (#135: a nullable record struct as a parameter, a field, a result; its == the struct's, lifted)
+            var r = Harness.Verify(@"public readonly record struct Key(Guid Value);
+public readonly record struct Range(int Lo, int Hi);
+public struct Plain { public int A; }
+public sealed class Holder { public Key? Kept { get; set; } }
+public sealed record Moved(Key From, Key? To);
+public static class Use
+{
+    public static Moved Move(Key from, Key? to) { Spec.Ensures<Moved>(r => r.To == null || r.To != r.From); return new Moved(from, to == from ? null : to); }
+    public static bool Has(Key? k) { Spec.Ensures<bool>(r => r == (k != null) && r == k.HasValue); return k.HasValue; }
+    public static Key ValueOf(Key? k) { Spec.Requires(k != null); Spec.Ensures<Key>(r => r == k.Value); return k.Value; }
+    public static Key Unchecked(Key? k) { return k.Value; }
+    public static Key Or(Key? k, Key other) { Spec.Ensures<Key>(r => r == (k ?? other)); return k ?? other; }
+    public static int LoOf(Range? s) { Spec.Ensures<int>(r => s == null ? r == 0 : r == s.Value.Lo); return s is { } v ? v.Lo : 0; }
+    public static int LoOrDefault(Range? s) { Spec.Ensures<int>(r => s != null || r == 0); return s.GetValueOrDefault().Lo; }
+    public static Range? Widen(Range? s) { Spec.Ensures<Range?>(r => (r == null) == (s == null)); if (s is Range v && v.Hi < 100) { return new Range(v.Lo, v.Hi + 1); } return s; }
+    public static bool Same(Key? a, Key? b) { Spec.Requires(a != null && b != null && a.Value.Value == b.Value.Value); Spec.Ensures<bool>(r => r); return a == b; }
+    public static bool SameWrong(Key? a, Key? b) { Spec.Requires(a != null && b != null); Spec.Ensures<bool>(r => r); return a == b; }
+    public static bool NullWrong(Key? a, Key b) { Spec.Requires(a == null); Spec.Ensures<bool>(r => r); return a == b; }
+    public static bool BothNull(Key? a, Key? b) { Spec.Requires(a == null && b == null); Spec.Ensures<bool>(r => r); return a == b; }
+    public static void Keep(Holder h, Key k) { Spec.Ensures(h.Kept != null && h.Kept.Value == k); h.Kept = k; }
+    public static void Drop(Holder h) { Spec.Ensures(h.Kept == null); h.Kept = null; }
+    public static int OfPlain(Plain? p) { Spec.Ensures<int>(r => p == null ? r == -1 : r == p.Value.A); return p.HasValue ? p.Value.A : -1; }
+}");
+            foreach (var ok in new[] { "Move", "Has", "ValueOf", "Or", "LoOf", "LoOrDefault", "Widen", "Same", "BothNull", "Keep", "Drop", "OfPlain" })
+            {
+                Assert.True(r.Errors(ok).Length == 0, r.Explain(ok));
+            }
+            Assert.Equal(new[] { "CSV1013" }, r.Errors("Unchecked"));
+            Assert.Equal(new[] { "CSV1002" }, r.Errors("SameWrong"));
+            Assert.Equal(new[] { "CSV1002" }, r.Errors("NullWrong"));
+        }
     }
 }

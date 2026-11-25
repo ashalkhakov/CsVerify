@@ -42,19 +42,21 @@ namespace CsVerify.Verifier.Boogie
             isFunction(call.TargetMethod) && call.TargetMethod.IsStatic && call.TargetMethod.Parameters.All(x => x.RefKind == RefKind.None && (Scalar(x.Type) || IsData(x.Type)));
 
         /// <summary>
-        /// A data case's field that its base record has: the argument its record header gives the base's primary
-        /// constructor, over the case's own constructor parameters (Ind(Fact Prev) : Fact(Prev.N + 1, ...)).
+        /// The argument a record's header gives a parameter of its base's constructor, over the record's own
+        /// constructor's parameters (Ind(Fact Prev) : Fact(Prev.N + 1, ...)).
         /// </summary>
-        public static KExpr BaseArgument(INamedTypeSymbol c, IPropertySymbol prop, Func<IMethodSymbol, bool> isFunction, Func<string, string> literal, Func<IMethodSymbol, Contract> contractOf)
+        public static KExpr BaseArgument(INamedTypeSymbol c, IParameterSymbol parameter, Func<IMethodSymbol, bool> isFunction, Func<string, string> literal, Func<IMethodSymbol, Contract> contractOf)
         {
             var def = DataTypes.Def(c);
-            var decl = def.DeclaringSyntaxReferences.Select(r => r.GetSyntax()).OfType<RecordDeclarationSyntax>().FirstOrDefault();
-            var baseType = decl?.BaseList?.Types.OfType<PrimaryConstructorBaseTypeSyntax>().FirstOrDefault() ?? throw new NotTranslated("a base field without its argument: " + prop.Name);
+            var decl = def.DeclaringSyntaxReferences.Select(r => r.GetSyntax()).OfType<RecordDeclarationSyntax>()
+                .FirstOrDefault(d => d.BaseList?.Types.OfType<PrimaryConstructorBaseTypeSyntax>().Any() == true);
+            var baseType = decl?.BaseList.Types.OfType<PrimaryConstructorBaseTypeSyntax>().First() ?? throw new NotTranslated($"the base constructor's '{parameter.Name}' without its argument: {def.Name}");
             var ctor = DataTypes.PrimaryConstructor(def);
             var model = KernelTypes.Compilation.ModelOf(decl.SyntaxTree);
             var call = model.GetOperation(baseType)?.DescendantsAndSelf().OfType<IInvocationOperation>().FirstOrDefault(i => i.TargetMethod.MethodKind == MethodKind.Constructor)
                        ?? throw new NotTranslated("a base constructor call not found: " + c.Name);
-            var arg = call.Arguments.FirstOrDefault(a => a.Parameter?.Name == prop.Name) ?? throw new NotTranslated("a base field not given by name: " + prop.Name);
+            var arg = call.Arguments.FirstOrDefault(a => SymbolEqualityComparer.Default.Equals(a.Parameter?.OriginalDefinition, parameter.OriginalDefinition))
+                      ?? throw new NotTranslated($"the base constructor's '{parameter.Name}' without its argument: {def.Name}");
             var l = new Lowering(ctor, contractOf(ctor), decl, model, null, _ => false, isFunction, literal, contractOf);
             return l.Spec(arg.Value, null);
         }
@@ -77,14 +79,67 @@ namespace CsVerify.Verifier.Boogie
             }
             if ((SpecSymbols.IsPredicate(m) || isFunction(m) && !Engine.IsOverridable(m)) && contract.PureBody != null)
             {
-                l._p.FunctionBody = l.Spec(contract.PureBody, null);
+                // (a function whose expression is no specification's is of its contract alone, as its callers see it: its
+                // own procedure says why it isn't verified)
+                try
+                {
+                    l.DefinedBy(l.Spec(contract.PureBody, null));
+                }
+                catch (NotTranslated) when (!SpecSymbols.IsPredicate(m))
+                {
+                }
             }
             else if (isFunction(m) && !Engine.IsOverridable(m) && contract.PureStatements != null)
             {
-                l._p.FunctionBody = l.PureStatements(contract.PureStatements, 0);
+                l.DefinedBy(l.PureStatements(contract.PureStatements, 0));
             }
             return l._p;
         }
+
+        /// <summary>
+        /// A function's body is its definition. One that may throw (Partial) is defined where it doesn't: its domain,
+        /// which its procedure, where it returns, was in.
+        /// </summary>
+        private void DefinedBy(KExpr body)
+        {
+            _p.FunctionBody = body;
+            if (body != null && !SpecSymbols.IsPredicate(_m) && Partial(_m))
+            {
+                _p.Partial = true;
+                _p.AddEnsures(KSpec.Of(new KOp("$domain", body), _contract.Declaration ?? _decl));
+            }
+        }
+
+        /// <summary>
+        /// A function that may throw: its body has a throw, or reads a function that may. (JML's exceptional behaviour:
+        /// code that calls it may see the exception; a specification may only read it where it returns.)
+        /// </summary>
+        private bool Partial(IMethodSymbol m, HashSet<IMethodSymbol> seen = null)
+        {
+            m = m.OriginalDefinition;
+            if (!_isFunction(m) || Engine.IsOverridable(m) || !(_contractOf?.Invoke(m) is Contract c) || c.IsLemma)
+            {
+                return false;
+            }
+            var body = c.PureBody != null ? new[] { c.PureBody } : c.PureStatements;
+            seen ??= new HashSet<IMethodSymbol>(SymbolEqualityComparer.Default);
+            if (body == null || !seen.Add(m))
+            {
+                return false;
+            }
+            return body.SelectMany(b => b.DescendantsAndSelf()).Any(o => o is IThrowOperation ||
+                o is IInvocationOperation i && i.TargetMethod.DeclaringSyntaxReferences.Length > 0 && Partial(i.TargetMethod, seen) ||
+                o is IPropertyReferenceOperation { Property.GetMethod: IMethodSymbol g } && g.DeclaringSyntaxReferences.Length > 0 && Partial(g, seen));
+        }
+
+        /// <summary>A throw where a value is expected: a value defined nowhere, so that what guards it bounds where a specification, or the function it is the body of, is defined.</summary>
+        private static KExpr Thrown(ITypeSymbol type, SyntaxNode at) => new KCast
+        {
+            Value = Default(type),
+            Test = KLit.False,
+            At = at,
+            Domain = true,
+        };
 
         /// <summary>A member's read of a primary constructor's parameter: what the constructor set it to, as nothing assigns it after.</summary>
         private KExpr PrimaryRead(IParameterSymbol p)
@@ -349,6 +404,9 @@ namespace CsVerify.Verifier.Boogie
                     case IExpressionStatementOperation es when es.Operation is IInvocationOperation inv &&
                                                               (SpecSymbols.IsSpecClass(inv.TargetMethod.ContainingType) || _contractOf?.Invoke(inv.TargetMethod) is Contract lc && lc.IsLemma):
                         return PureStatements(ops, i + 1);
+                    // (a throw: the function isn't defined here)
+                    case IThrowOperation: case IExpressionStatementOperation { Operation: IThrowOperation }:
+                        return InSubset(_m.ReturnType) ? Thrown(_m.ReturnType, op.Syntax) : null;
                     default:
                         return null;
                 }

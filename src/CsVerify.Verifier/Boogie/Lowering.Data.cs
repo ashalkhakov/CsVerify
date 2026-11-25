@@ -551,6 +551,17 @@ namespace CsVerify.Verifier.Boogie
                 case IBinaryOperation eq when eq.OperatorMethod != null && eq.OperatorKind is BinaryOperatorKind.Equals or BinaryOperatorKind.NotEquals &&
                                               IsData(eq.OperatorMethod.ContainingType):
                     return RecordEquality(eq, mode);
+                // (a nullable struct's == and !=, the synthesized operator lifted: with null, whether it has a value; else
+                // both null, or neither and their values equal)
+                case IBinaryOperation ns when ns.OperatorKind is BinaryOperatorKind.Equals or BinaryOperatorKind.NotEquals && ns.IsLifted && ns.OperatorMethod is { IsImplicitlyDeclared: true } &&
+                                              (IsNullableStruct(ns.LeftOperand.Type) || IsNullableStruct(ns.RightOperand.Type)):
+                {
+                    var (l, r) = (LoweredSide(ns.LeftOperand, mode), LoweredSide(ns.RightOperand, mode));
+                    bool withNull = Unconverted(ns.LeftOperand).ConstantValue is { HasValue: true, Value: null } || Unconverted(ns.RightOperand).ConstantValue is { HasValue: true, Value: null };
+                    var same = withNull ? Eq(l, r) : ValuesEqual(l, r, IsNullableStruct(ns.LeftOperand.Type) ? ns.LeftOperand.Type : ns.RightOperand.Type, ns.Syntax, 0)
+                                                     ?? throw new NotTranslated("== of " + ns.OperatorMethod.ContainingType.Name);
+                    return ns.OperatorKind == BinaryOperatorKind.Equals ? same : Not(same);
+                }
                 // (a value object's == and !=: the same object, or two whose fields are equal; not where its own Equals decides)
                 case IBinaryOperation vo when vo.OperatorMethod != null && vo.OperatorMethod.IsImplicitlyDeclared && vo.OperatorKind is BinaryOperatorKind.Equals or BinaryOperatorKind.NotEquals &&
                                               IsValueObject(vo.OperatorMethod.ContainingType) && !OwnEquals(vo.OperatorMethod.ContainingType):
@@ -1018,7 +1029,8 @@ namespace CsVerify.Verifier.Boogie
             KExpr acc = null;
             var arms = sw.Arms.Select(arm =>
             {
-                var cond = Pattern(arm.Pattern, v, sw.Value.Type, mode);
+                // (of a nullable value, int? or an enum's: its patterns are of its value where it has one)
+                var cond = PartPattern(arm.Pattern, v, sw.Value.Type, mode);
                 if (arm.Guard != null)
                 {
                     cond = AndAlso(cond, Lower(arm.Guard, mode));
@@ -1104,7 +1116,14 @@ namespace CsVerify.Verifier.Boogie
         /// </summary>
         private KExpr ValuesEqual(KExpr a, KExpr b, ITypeSymbol t, SyntaxNode at, int depth)
         {
-            if (Scalar(t) || IsDecimal(t) || IsNullableValue(t) || IsData(t) && KernelTypes.Data.HasValueEquality((INamedTypeSymbol)t))
+            // (a nullable struct's: both null, or neither and the structs' values equal)
+            if (IsNullableStruct(t))
+            {
+                return depth < 4 && ValuesEqual(NullableValue(a, t), NullableValue(b, t), Underlying(t), at, depth + 1) is KExpr values
+                    ? OrElse(AndAlso(IsNull(a), IsNull(b)), AndAlso(AndAlso(NotNull(a), NotNull(b)), values)) : null;
+            }
+            // (a DateTime's or a TimeSpan's ticks and a Guid: the ints the kernel keeps for them)
+            if (Scalar(t) || IsDecimal(t) || IsOpaqueTicks(t) || IsOpaqueId(t) || IsNullableValue(t) || IsData(t) && KernelTypes.Data.HasValueEquality((INamedTypeSymbol)t))
             {
                 return Eq(a, b);
             }
@@ -1177,6 +1196,28 @@ namespace CsVerify.Verifier.Boogie
             return null;
         }
 
+        /// <summary>
+        /// A record's == of fields the kernel doesn't compare: one reference (two nulls too) is equal, as C#'s synthesized
+        /// operator says before it asks Equals; two are some relation not known ($dataEq in a specification, a value not
+        /// known in code).
+        /// </summary>
+        private KExpr EqualityNotKnown(KExpr l, KExpr r, IBinaryOperation eq, LowerMode mode)
+        {
+            KExpr two;
+            if (mode.InSpec)
+            {
+                two = new KOp("$dataEq", l, r);
+            }
+            else
+            {
+                var unknown = Declare("t$" + _temps++, eq.Type);
+                Emit(KHavoc.Of(unknown));
+                two = new KVar(unknown);
+            }
+            var same = OrElse(Eq(l, r), two);
+            return eq.OperatorKind == BinaryOperatorKind.Equals ? same : Not(same);
+        }
+
         private KExpr RecordEquality(IBinaryOperation eq, LowerMode mode)
         {
             // (with null: whether it is null, whatever its fields are)
@@ -1189,29 +1230,12 @@ namespace CsVerify.Verifier.Boogie
                 {
                     return eq.OperatorKind == BinaryOperatorKind.Equals ? same : Not(same);
                 }
-                if (mode.InSpec)
-                {
-                    var eqv = new KOp("$dataEq", dl, dr);
-                    return eq.OperatorKind == BinaryOperatorKind.Equals ? eqv : Not(eqv);
-                }
-                var unknown = Declare("t$" + _temps++, eq.Type);
-                Emit(KHavoc.Of(unknown));
-                return new KVar(unknown);
+                return EqualityNotKnown(dl, dr, eq, mode);
             }
-            // (fields that don't compare as values, strings': in code, whether they're equal isn't known)
+            // (fields that don't compare as values, strings', or the record's own Equals: whether two are equal isn't known)
             if (!withNull && !KernelTypes.Data.HasValueEquality((INamedTypeSymbol)eq.OperatorMethod.ContainingType))
             {
-                // (in a specification: some relation, not known, between them)
-                if (mode.InSpec)
-                {
-                    var eqv = new KOp("$dataEq", Lower(eq.LeftOperand, mode), Lower(eq.RightOperand, mode));
-                    return eq.OperatorKind == BinaryOperatorKind.Equals ? eqv : Not(eqv);
-                }
-                Lower(eq.LeftOperand, mode);
-                Lower(eq.RightOperand, mode);
-                var unknown = Declare("t$" + _temps++, eq.Type);
-                Emit(KHavoc.Of(unknown));
-                return new KVar(unknown);
+                return EqualityNotKnown(Lower(eq.LeftOperand, mode), Lower(eq.RightOperand, mode), eq, mode);
             }
             var l = Lower(eq.LeftOperand, mode);
             var r = Lower(eq.RightOperand, mode);

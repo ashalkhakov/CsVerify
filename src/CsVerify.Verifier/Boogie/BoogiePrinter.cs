@@ -138,8 +138,9 @@ namespace CsVerify.Verifier.Boogie
             foreach (var u in _nullables.OrderBy(x => x, System.StringComparer.Ordinal))
             {
                 // (an opaque value's, DateTime's or Guid's: an int of no range)
+                // (a struct's: the struct's value, a reference)
                 var scalar = System.Enum.TryParse<SpecialType>("System_" + u, out var st) && (st == SpecialType.System_Boolean || KernelTypes.Widths.ContainsKey(st));
-                var ty = scalar && st == SpecialType.System_Boolean ? "bool" : "int";
+                var ty = u.StartsWith(KernelTypes.StructNullable) ? "Ref" : scalar && st == SpecialType.System_Boolean ? "bool" : "int";
                 var ranged = scalar && st != SpecialType.System_Boolean;
                 var range = ranged ? $"{Range(st).lo} <= v && v <= {Range(st).hi}" : "true";
                 Line($"function $nv.{u}(x: Ref): {ty};");
@@ -477,7 +478,45 @@ namespace CsVerify.Verifier.Boogie
 
         private static string Maps(Context cx) => string.Join(", ", ElementTypes.Select(t => Map(ElementMap(t), cx)));
 
+        /// <summary>
+        /// The state where an expression reads it more than once, named once: (var $stNow := $st(maps); e). $st takes
+        /// every map of the program, and a contract that reads a collection through an interface names it at each read
+        /// and again in what guards each later read, so written out it is most of the program's text. Not in old(...),
+        /// whose maps are the entry's, nor in a trigger.
+        /// </summary>
+        private const string StateNow = "$stNow";
+
+        /// <summary>How deep E is in the expression it prints; how many old(...) and triggers are around; the state's reads so far.</summary>
+        private int _depth, _stateElsewhere, _stateReads;
+
         private string E(MExpr e, Context cx)
+        {
+            if (_depth > 0 || e is MOp { Op: "$pattern" })
+            {
+                _depth++;
+                try
+                {
+                    return Term(e, cx);
+                }
+                finally
+                {
+                    _depth--;
+                }
+            }
+            _depth++;
+            _stateReads = 0;
+            try
+            {
+                var s = Term(e, cx);
+                return _stateReads == 0 ? s : _stateReads == 1 ? s.Replace(StateNow, State) : $"(var {StateNow} := {State}; {s})";
+            }
+            finally
+            {
+                _depth--;
+            }
+        }
+
+        private string Term(MExpr e, Context cx)
         {
             switch (e)
             {
@@ -485,7 +524,15 @@ namespace CsVerify.Verifier.Boogie
                 case MVar v when cx.AtEntry && cx.Ins.Contains(v.Name): return v.Name + "$in";
                 case MVar v: return v.Name == "result" ? cx.Result : Map(v.Name, cx);
                 case MOp { Op: "old" } old when cx.Ins.Count > 0 && !cx.AtEntry:
-                    return $"old({E(old.Args[0], cx.AsAtEntry())})";
+                    _stateElsewhere++;
+                    try
+                    {
+                        return $"old({E(old.Args[0], cx.AsAtEntry())})";
+                    }
+                    finally
+                    {
+                        _stateElsewhere--;
+                    }
                 case MFnApp f when f.Plain:
                     return $"{f.Function}({string.Join(", ", f.Args.Select(a => E(a, cx)))})";
                 case MFnApp f when f.Snap != null:
@@ -530,7 +577,16 @@ namespace CsVerify.Verifier.Boogie
                     _binders.Add(name);
                     try
                     {
-                        var trigger = q.Trigger == null ? "" : string.Concat(q.Trigger.Select(t => $"{{ {E(t, cx)} }} "));
+                        string trigger;
+                        _stateElsewhere++;
+                        try
+                        {
+                            trigger = q.Trigger == null ? "" : string.Concat(q.Trigger.Select(t => $"{{ {E(t, cx)} }} "));
+                        }
+                        finally
+                        {
+                            _stateElsewhere--;
+                        }
                         if (q.Range == null)
                         {
                             return $"({(q.Forall ? "forall" : "exists")} {name}: {q.Type} :: {trigger}{E(q.Body, cx)})";
@@ -546,7 +602,16 @@ namespace CsVerify.Verifier.Boogie
                 }
                 case MOp op:
                 {
-                    var a = op.Args.Select(x => E(x, cx)).ToArray();
+                    string[] a;
+                    _stateElsewhere += op.Op == "old" ? 1 : 0;
+                    try
+                    {
+                        a = op.Args.Select(x => E(x, cx)).ToArray();
+                    }
+                    finally
+                    {
+                        _stateElsewhere -= op.Op == "old" ? 1 : 0;
+                    }
                     if (_tags != null && op.Args.Length == 1 && _tags.TryGetValue(op.Op, out var tag))
                     {
                         return $"($tag({a[0]}) == {tag})";
@@ -579,7 +644,13 @@ namespace CsVerify.Verifier.Boogie
                         case "$tree": return $"(lambda r$: Ref :: $root[r$] == $root[{a[0]}])";
                         case "set.subset": return $"(forall r$: Ref :: {a[0]}[r$] ==> {a[1]}[r$])";
                         case "set.disjoint": return $"(forall r$: Ref :: !({a[0]}[r$] && {a[1]}[r$]))";
-                        case "$state": return State;
+                        case "$state":
+                            if (_stateElsewhere > 0)
+                            {
+                                return State;
+                            }
+                            _stateReads++;
+                            return StateNow;
                         case "slen": return $"slen({a[0]})";
                         case "sl": return $"sl({a[0]})";
                         case "sat": return $"sat({a[0]}, {a[1]})";
@@ -1268,9 +1339,11 @@ namespace CsVerify.Verifier.Boogie
             // its postconditions, of every snapshot, where its precondition's facts hold (those that read no memory: an
             // axiom is about every state)
             var cx = new Context { Result = app };
-            var pre = p.Requires.Where(r => !ReadsMemory(r.Expr)).Select(r => E(r.Expr, cx)).DefaultIfEmpty("true");
+            // (one that may throw: within its domain; where that reads memory, no state's fact, and none is stated)
+            var domain = p.Ensures.Where(e => e.Domain).Select(e => e.Expr).ToList();
+            var pre = p.Requires.Select(r => r.Expr).Where(r => !ReadsMemory(r)).Concat(domain).Select(r => E(r, cx)).DefaultIfEmpty("true");
             // (conjunct by conjunct: those of them that read no memory)
-            foreach (var e in p.Ensures.SelectMany(e => e.Expr.Conjuncts()).Where(e => !ReadsMemory(e)))
+            foreach (var e in p.Ensures.Where(e => !e.Domain && !domain.Any(ReadsMemory)).SelectMany(e => e.Expr.Conjuncts()).Where(e => !ReadsMemory(e)))
             {
                 Line($"axiom (forall s: int{ps} :: {{ {app} }} {string.Join(" && ", pre)} ==> {E(e, cx)});");
             }
@@ -1384,9 +1457,11 @@ namespace CsVerify.Verifier.Boogie
             {
                 return;
             }
-            foreach (var e in p.Ensures)
+            // (one that may throw promises them where it doesn't, its domain: where it returns)
+            var within = string.Join(" && ", new[] { guard }.Concat(p.Ensures.Where(e => e.Domain).Select(e => E(e.Expr, cx))));
+            foreach (var e in p.Ensures.Where(e => !e.Domain))
             {
-                Line($"axiom (forall {bound} :: {{ {FunctionAt("ly", name, memoryArgs, args)} }} {guard} ==> {E(e.Expr, cx)});");
+                Line($"axiom (forall {bound} :: {{ {FunctionAt("ly", name, memoryArgs, args)} }} {within} ==> {E(e.Expr, cx)});");
             }
             // (a value of data type, of arguments of their types, is of its type: as its body is checked to give)
             if (IsData(m.ReturnType))
@@ -1576,7 +1651,7 @@ namespace CsVerify.Verifier.Boogie
                 Line($"  free ensures {E(MathTypes.InRange(new MVar("result"), Returns(m)), cx)};");
             }
             // (a struct's or a tuple's parts: each of its type, an integer in its range, a data value one of its cases)
-            if (Returns(m) is ITypeSymbol rt && (IsStruct(rt) || IsTuple(rt)) && !p.Source.Ghost)
+            if (Returns(m) is ITypeSymbol rt && (IsStruct(rt) || IsTuple(rt) || IsNullableStruct(rt)) && !p.Source.Ghost)
             {
                 foreach (var (part, pt) in MathTypes.Parts(new MVar("result"), rt).Where(x => IsIntegral(x.type) || IsData(x.type)))
                 {
@@ -1845,8 +1920,8 @@ namespace CsVerify.Verifier.Boogie
             {
                 yield return E(ticks, cx);
             }
-            // (a struct's integer fields, at any depth: each in its type's range)
-            if (IsStruct(type))
+            // (a struct's integer fields, at any depth: each in its type's range; a nullable struct's value's)
+            if (IsStruct(type) || IsNullableStruct(type))
             {
                 foreach (var (part, pt) in MathTypes.Parts(new MVar(local), type).Where(x => IsIntegral(x.type)))
                 {

@@ -64,7 +64,10 @@ namespace CsVerify.Analyzers
             return false;
         }
 
-        /// <summary>A record class whose whole state (its own and its bases') is init-only positional properties.</summary>
+        /// <summary>
+        /// A record class whose whole state (its own and its bases') is init-only positional properties, and the
+        /// properties an abstract base's constructor stores its parameters in (StoredParameters).
+        /// </summary>
         public static bool IsValueRecord(ITypeSymbol type)
         {
             for (var t = type as INamedTypeSymbol; t != null && t.SpecialType != SpecialType.System_Object; t = t.BaseType)
@@ -77,11 +80,12 @@ namespace CsVerify.Analyzers
                 {
                     return false;
                 }
-                foreach (var f in t.GetMembers().OfType<IFieldSymbol>())
+                var stored = StoredParameters(t.OriginalDefinition);
+                foreach (var f in t.OriginalDefinition.GetMembers().OfType<IFieldSymbol>())
                 {
                     if (!f.IsStatic && !(f.AssociatedSymbol is IPropertySymbol p && p.SetMethod?.IsInitOnly != false &&
                                          p.DeclaringSyntaxReferences.Length > 0 &&
-                                         p.DeclaringSyntaxReferences.All(r => r.GetSyntax() is Microsoft.CodeAnalysis.CSharp.Syntax.ParameterSyntax)))
+                                         (p.DeclaringSyntaxReferences.All(r => r.GetSyntax() is ParameterSyntax) || stored != null && stored.ContainsKey(p))))
                     {
                         return false;
                     }
@@ -89,6 +93,65 @@ namespace CsVerify.Analyzers
             }
             return true;
         }
+
+        /// <summary>
+        /// An abstract record's one constructor, where all it does is store its parameters, each in a get-only
+        /// auto-property of the record's (private protected Command(DateTime now) => Now = now;): a primary constructor
+        /// written out. The parameter each property holds; null where the record has no such constructor.
+        /// </summary>
+        public static System.Collections.Generic.Dictionary<IPropertySymbol, IParameterSymbol> StoredParameters(INamedTypeSymbol t)
+        {
+            if (t == null || !t.IsRecord || !t.IsAbstract || t.TypeKind != TypeKind.Class)
+            {
+                return null;
+            }
+            var declared = t.InstanceConstructors.Where(c => !c.IsImplicitlyDeclared).ToList();
+            if (declared.Count != 1 || declared[0].Parameters.Length == 0 || declared[0].Parameters.Any(p => p.RefKind != RefKind.None || p.IsParams) ||
+                declared[0].DeclaringSyntaxReferences.Length != 1 ||
+                !(declared[0].DeclaringSyntaxReferences[0].GetSyntax() is ConstructorDeclarationSyntax { Initializer: null } syntax))
+            {
+                return null;
+            }
+            var ctor = declared[0];
+            var statements = syntax.ExpressionBody != null
+                ? new[] { syntax.ExpressionBody.Expression }
+                : syntax.Body?.Statements.Select(s => (s as ExpressionStatementSyntax)?.Expression).ToArray();
+            if (statements == null)
+            {
+                return null;
+            }
+            var stored = new System.Collections.Generic.Dictionary<IPropertySymbol, IParameterSymbol>(SymbolEqualityComparer.Default);
+            foreach (var s in statements)
+            {
+                if (!(s is AssignmentExpressionSyntax { RawKind: (int)Microsoft.CodeAnalysis.CSharp.SyntaxKind.SimpleAssignmentExpression } a))
+                {
+                    return null;
+                }
+                // (a name a parameter has is the parameter; any other, or this.P, the record's member)
+                var member = a.Left switch
+                {
+                    IdentifierNameSyntax id when !ctor.Parameters.Any(p => p.Name == id.Identifier.ValueText) => id.Identifier.ValueText,
+                    MemberAccessExpressionSyntax { Expression: ThisExpressionSyntax, Name: IdentifierNameSyntax name } => name.Identifier.ValueText,
+                    _ => null,
+                };
+                var from = a.Right is IdentifierNameSyntax r ? ctor.Parameters.FirstOrDefault(p => p.Name == r.Identifier.ValueText) : null;
+                var into = member == null ? null : t.GetMembers(member).OfType<IPropertySymbol>().FirstOrDefault();
+                if (from == null || into == null || !IsGetOnlyAuto(into) || stored.ContainsKey(into) ||
+                    !SymbolEqualityComparer.IncludeNullability.Equals(into.Type, from.Type))
+                {
+                    return null;
+                }
+                stored[into] = from;
+            }
+            return stored;
+        }
+
+        /// <summary>An instance auto-property with a getter alone and no initializer: set by a constructor, never after.</summary>
+        private static bool IsGetOnlyAuto(IPropertySymbol p) =>
+            !p.IsStatic && !p.IsAbstract && !p.IsVirtual && !p.IsOverride && p.SetMethod == null && p.GetMethod != null &&
+            p.DeclaringSyntaxReferences.Length == 1 &&
+            p.DeclaringSyntaxReferences[0].GetSyntax() is PropertyDeclarationSyntax { ExpressionBody: null, Initializer: null, AccessorList: { } accessors } &&
+            accessors.Accessors.All(x => x.Body == null && x.ExpressionBody == null);
         /// <summary>[Pure] or [GhostFunction]: a mathematical function the verifier may use in specifications.</summary>
         public static bool IsPure(ISymbol s) => HasAttribute(s, "PureAttribute") || IsGhostFunction(s) ||
             s is IMethodSymbol m && (

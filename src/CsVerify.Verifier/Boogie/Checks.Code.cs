@@ -65,6 +65,9 @@ namespace CsVerify.Verifier.Boogie
                     Assume(Extensional(l, r));
                     return Eq(l, r);
                 }
+                // (a function's domain: a specification's, whatever reads it)
+                case KOp { Op: "$domain" }:
+                    return Spec(e, out _);
                 case KOp op: return new MOp(op.Op, op.Args.Select(Code).ToArray());
                 case KIfc ic:
                 {
@@ -120,6 +123,9 @@ namespace CsVerify.Verifier.Boogie
                     }
                     return new MOp(df.Function, v);
                 }
+                // (a throw expression is a specification's, where its guards say when: code's throws are its flow graph's)
+                case KCast { Domain: true } thrown:
+                    throw new NotTranslated($"'{thrown.At}' where code evaluates it as a value");
                 case KCast cast:
                 {
                     // (in code, a failing cast throws, which ends the path; a proof must show it doesn't)
