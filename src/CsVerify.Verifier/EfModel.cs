@@ -15,7 +15,7 @@ namespace CsVerify.Verifier
     /// conventions (Id or TypeId is the key), and the fluent configuration in OnModelCreating and
     /// IEntityTypeConfiguration&lt;T&gt;.Configure, in the forms EF's documentation writes it.
     /// </summary>
-    internal sealed class EfModel
+    internal sealed partial class EfModel
     {
         internal sealed class Entity
         {
@@ -37,8 +37,16 @@ namespace CsVerify.Verifier
             public HashSet<IPropertySymbol> Converted = new HashSet<IPropertySymbol>(SymbolEqualityComparer.Default);
             /// <summary>Shadow columns (Property&lt;T&gt;("Name") of no property of the class): their names and types.</summary>
             public Dictionary<string, ITypeSymbol> Shadow = new Dictionary<string, ITypeSymbol>();
-            /// <summary>Is the column NOT NULL: of a value type not Nullable, annotated not null, or configured required.</summary>
+            /// <summary>Whether each column is nullable, as EF's own model has it (EfRuntimeModel), where that was read.</summary>
+            public Dictionary<IPropertySymbol, bool> ModelNullable = new Dictionary<IPropertySymbol, bool>(SymbolEqualityComparer.Default);
+            /// <summary>
+            /// Sets of properties no two rows the entity's query filter keeps share: a unique index filtered by what the
+            /// query filter says of every row (a soft delete's). Not of a query that ignores the filters.
+            /// </summary>
+            public List<List<IPropertySymbol>> UniqueWhereFiltered = new List<List<IPropertySymbol>>();
+            /// <summary>Is the column NOT NULL: as EF's model says; else of a value type not Nullable, annotated not null, or configured required.</summary>
             public bool NotNullColumn(IPropertySymbol p) =>
+                ModelNullable.TryGetValue(p.OriginalDefinition, out bool nullable) ? !nullable :
                 p.Type.IsValueType ? p.Type is not INamedTypeSymbol { OriginalDefinition.SpecialType: SpecialType.System_Nullable_T }
                 : p.NullableAnnotation == NullableAnnotation.NotAnnotated || Required.Contains(p.OriginalDefinition) ||
                   p.GetAttributes().Any(a => a.AttributeClass?.ToDisplayString() == "System.ComponentModel.DataAnnotations.RequiredAttribute");
@@ -112,10 +120,19 @@ namespace CsVerify.Verifier
         };
 
         /// <summary>The model, or null for a program that does not reference EF Core.</summary>
-        public static EfModel For(Compilation compilation, IReadOnlyList<SyntaxTree> userTrees, IReadOnlyList<INamedTypeSymbol> sourceTypes)
+        public static EfModel For(Compilation compilation, IReadOnlyList<SyntaxTree> userTrees, IReadOnlyList<INamedTypeSymbol> sourceTypes, bool runtime = true)
         {
             var dbContext = compilation.GetTypeByMetadataName("Microsoft.EntityFrameworkCore.DbContext");
-            return dbContext == null ? null : new EfModel(compilation, userTrees, sourceTypes, dbContext);
+            if (dbContext == null)
+            {
+                return null;
+            }
+            var model = new EfModel(compilation, userTrees, sourceTypes, dbContext);
+            if (runtime)
+            {
+                model.ApplyRuntime(compilation, EfRuntimeModel.Read(compilation, model.Contexts.Where(c => !c.IsAbstract && !c.IsGenericType), model._providers));
+            }
+            return model;
         }
 
         private EfModel(Compilation compilation, IReadOnlyList<SyntaxTree> userTrees, IReadOnlyList<INamedTypeSymbol> sourceTypes, INamedTypeSymbol dbContext)
@@ -235,8 +252,12 @@ namespace CsVerify.Verifier
 
         private readonly HashSet<IPropertySymbol> _oneToOne = new HashSet<IPropertySymbol>(SymbolEqualityComparer.Default);
 
-        /// <summary>Is the navigation an end of a one-to-one (HasOne ... WithOne)?</summary>
-        public bool OneToOne(IPropertySymbol nav) => _oneToOne.Contains(nav.OriginalDefinition);
+        /// <summary>One-to-one ends whose unique index is filtered by what the dependent's query filter says of every row.</summary>
+        private readonly HashSet<IPropertySymbol> _oneToOneWhereFiltered = new HashSet<IPropertySymbol>(SymbolEqualityComparer.Default);
+
+        /// <summary>Is the navigation an end of a one-to-one: among all rows, or (filtered) among those the query filters keep?</summary>
+        public bool OneToOne(IPropertySymbol nav, bool filtered = false) =>
+            _oneToOne.Contains(nav.OriginalDefinition) || filtered && _oneToOneWhereFiltered.Contains(nav.OriginalDefinition);
 
         /// <summary>Does the model say what a navigation's inverse is (null: it has none)?</summary>
         public bool KnownInverse(IPropertySymbol nav, out IPropertySymbol inverse) => _inverses.TryGetValue(nav.OriginalDefinition, out inverse);

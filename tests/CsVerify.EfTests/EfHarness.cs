@@ -68,7 +68,7 @@ namespace CsVerify.Tests
         /// A library of its own that uses EF Core (a project with the context and its configuration), compiled to an
         /// assembly the program references, and described as the MSBuild target describes it (--project-reference).
         /// </summary>
-        public static VerificationResult VerifyEfWithContextLibrary(string library, string source, bool sources = true)
+        public static VerificationResult VerifyEfWithContextLibrary(string library, string source, bool sources = true, bool staticModel = false)
         {
             var name = "CsVerifyEfContext" + Guid.NewGuid().ToString("N");
             var dir = Path.Combine(Path.GetTempPath(), name);
@@ -85,6 +85,7 @@ namespace CsVerify.Tests
             try
             {
                 var options = Options();
+                options.EfStaticModel = staticModel;
                 options.References.Add(path);
                 // (without: a library's, read from its assembly alone)
                 if (sources)
@@ -154,6 +155,10 @@ namespace CsVerify.Tests
         {
             var result = Engine.VerifySources(new[] { ("Test.cs", Usings + source) }, Options(overflow, sqlite));
             Xunit.Assert.True(result.CompilationErrors.Count == 0, string.Join("\n", result.CompilationErrors));
+            if (System.Environment.GetEnvironmentVariable("CSVERIFY_EF_MODEL_STRICT") != null)
+            {
+                Xunit.Assert.True(!result.Warnings.Any(w => w.Contains("couldn't be built")), string.Join("\n", result.Warnings));
+            }
             return result;
         }
     }

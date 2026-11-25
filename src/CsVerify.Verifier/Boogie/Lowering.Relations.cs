@@ -86,16 +86,17 @@ namespace CsVerify.Verifier.Boogie
             return null;
         }
 
-        private static Rel Scan(EfModel.Entity e) => new Rel { Table = e, Keys = KeysOf(e, "", 0, true).ToList() };
+        private static Rel Scan(EfModel.Entity e) => new Rel { Table = e, Keys = KeysOf(e, "", 0, true, filtered: true).ToList() };
 
         /// <summary>
         /// An entity's keys, as paths from its row: its key and unique indexes, then, of each one-to-one navigation, the
         /// keys of the entity it leads to (a row of either end has one row of the other at most). Those, and a nullable
         /// column's, identify a row only where they aren't null.
         /// </summary>
-        private static IEnumerable<RelKey> KeysOf(EfModel.Entity e, string prefix, int depth, bool total)
+        private static IEnumerable<RelKey> KeysOf(EfModel.Entity e, string prefix, int depth, bool total, bool filtered)
         {
-            foreach (var set in e.Identifying.Where(s => s.Count > 0))
+            // (filtered: of the rows the query filters keep, where a unique index is one only among those)
+            foreach (var set in e.Identifying.Concat(filtered ? e.UniqueWhereFiltered : Enumerable.Empty<List<IPropertySymbol>>()).Where(s => s.Count > 0))
             {
                 yield return new RelKey { Columns = set.Select(p => prefix + p.Name).ToHashSet(), Total = total && set.All(e.NotNullColumn) };
             }
@@ -103,11 +104,11 @@ namespace CsVerify.Verifier.Boogie
             {
                 yield break;
             }
-            foreach (var nav in e.References.Where(KernelTypes.Ef.OneToOne))
+            foreach (var nav in e.References.Where(n => KernelTypes.Ef.OneToOne(n, filtered)))
             {
                 if (KernelTypes.Ef.EntityOf(nav.Type) is EfModel.Entity t && !ReferenceEquals(t, e))
                 {
-                    foreach (var k in KeysOf(t, prefix + nav.Name + ".", depth + 1, false))
+                    foreach (var k in KeysOf(t, prefix + nav.Name + ".", depth + 1, false, filtered))
                     {
                         yield return k;
                     }
@@ -138,8 +139,12 @@ namespace CsVerify.Verifier.Boogie
                 case "Distinct" when args.Count == 1:
                     r.Order = null;
                     return r;
+                // (every row, the ones the query filters drop too: the keys that hold of them all)
+                case "IgnoreQueryFilters":
+                    r.Keys = KeysOf(r.Table, "", 0, true, filtered: false).ToList();
+                    return r;
                 case "Skip" or "Take" or "AsNoTracking" or "AsNoTrackingWithIdentityResolution" or "AsTracking" or "Include" or "ThenInclude" or "AsSplitQuery" or
-                    "AsSingleQuery" or "IgnoreQueryFilters" or "IgnoreAutoIncludes" or "TagWith" or "TagWithCallSite":
+                    "AsSingleQuery" or "IgnoreAutoIncludes" or "TagWith" or "TagWithCallSite":
                     return r;
                 default:
                     return null;

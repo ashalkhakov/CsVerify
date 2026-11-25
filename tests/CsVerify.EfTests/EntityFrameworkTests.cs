@@ -164,7 +164,10 @@ public sealed class Users : IdentityDbContext<AppUser, IdentityRole<long>, long>
         [Fact]
         public void AnEntityALibrarysContextConfigures_WithoutAModel_IsReadNoFurther()
         {
-            // (a library context's OnModelCreating, of no model of the Spec library's: its key and tokens unknown)
+            // (a library context's OnModelCreating, of no model of the Spec library's: read from the source alone, its key
+            // and tokens are unknown; EF's own model has them)
+            foreach (var staticModel in new[] { true, false })
+            {
             var r = EfHarness.VerifyEfWithContextLibrary(@"namespace Lib
 {
     public class Member { public long Id { get; set; } public string Name { get; set; } = """"; }
@@ -179,9 +182,18 @@ public static class Store
 {
     public static async Task<Mine?> ById(Club db, long id) => await db.All.AsNoTracking().FirstOrDefaultAsync(m => m.Id == id);
     public static async Task Attach(Mine m) { using var db = new Club(); db.Attach(m); await db.SaveChangesAsync(); }
-}", sources: false);
+}", sources: false, staticModel: staticModel);
+            // (the key is Name, as the library says: an order by Id is none)
             Assert.Equal(new[] { "CSV1031" }, r.Errors("ById"));
-            Assert.Contains(r["Attach"].Diagnostics, d => d.Id == "CSV1902" && d.Message.Contains("a library's OnModelCreating configures it"));
+            if (staticModel)
+            {
+                Assert.Contains(r["Attach"].Diagnostics, d => d.Id == "CSV1902" && d.Message.Contains("a library's OnModelCreating configures it"));
+            }
+            else
+            {
+                Assert.DoesNotContain(r["Attach"].Diagnostics, d => d.Id == "CSV1902");
+            }
+            }
         }
 
         [Fact]

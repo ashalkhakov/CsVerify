@@ -129,6 +129,9 @@ options:
                         case "--each":
                             each = true;
                             break;
+                        case "--ef-static-model":
+                            options.EfStaticModel = true;
+                            break;
                         case "--checks":
                             options.CheckKinds = Checks.Parse(args[++i]);
                             break;
