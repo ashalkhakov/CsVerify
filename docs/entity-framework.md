@@ -27,8 +27,21 @@ from its assembly. `CSVERIFY_EF_MODEL_TRACE=1` prints what was read, and each re
 of a model that couldn't be built names the first of those. An entity type only EF's model has (the
 other side of a `HasOne<T>()` that nothing else declares) is one here too.
 
-Where a context can't be made (no provider among the references, a constructor that needs what the verifier can't
-give), a warning says why, and the configuration is read from the sources instead, as below; `--ef-static-model`
+A project needn't reference a provider: a library's host picks the database, and the provider is among the host's
+references only. Where the program's references have none, EF's model is built with a provider of the verifier's own,
+a relational one of no database, compiled against the EF Core the program references (EF Core 6 to 10): EF's own
+conventions and its relational ones, no database's (a model is what the configuration says of any database; what a
+provider's conventions add isn't in it, SQL Server's filter on a unique index over a nullable column, which counts
+here as the index without it). It has a column for each type every database has one for; a property of another type
+is a column where the configuration converts it (`HasConversion`) or names its column's type (`HasColumnType`). A
+project that references EF Core alone, without `Microsoft.EntityFrameworkCore.Relational`, gets that package of the
+same version from the packages folder EF Core came from, where it is there. The same provider is the second try
+where the program's own can't build the model, and a design-time factory that fails here (one that reads a connection
+string there is none of) is passed over for the context's constructor. `CSVERIFY_EF_MODEL_TRACE=1` says how each
+context's model was built.
+
+Where a context can't be made (a constructor that needs what the verifier can't give, a context that configures a
+provider itself and fails), a warning says why, and the configuration is read from the sources instead, as below; `--ef-static-model`
 reads only the sources. A unique index with a filter counts where the filter is that its columns are not null, and,
 among the rows the entity's query filter keeps, where it is that a flag the query filter requires false is false
 (`HasFilter("[IsDeleted] = 0")` with `HasQueryFilter(x => !x.IsDeleted)`): not for a query with `IgnoreQueryFilters`.

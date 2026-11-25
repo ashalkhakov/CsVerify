@@ -172,6 +172,31 @@ namespace CsVerify.Tests
             return ModelBuilt(result);
         }
 
+        /// <summary>
+        /// As VerifyEf, of a library whose host picks the database: EF Core's assemblies in a folder of their own, no
+        /// provider among them or beside them.
+        /// </summary>
+        public static VerificationResult VerifyEfWithoutAProvider(string source)
+        {
+            var dir = Path.Combine(Path.GetTempPath(), "CsVerifyEfNoProvider" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(dir);
+            try
+            {
+                var references = new List<string>();
+                foreach (var reference in EfReferences())
+                {
+                    references.Add(Path.Combine(dir, Path.GetFileName(reference)));
+                    File.Copy(reference, references.Last());
+                }
+                return VerifyEf(source, options =>
+                {
+                    options.References.Clear();
+                    options.References.AddRange(references);
+                });
+            }
+            finally { try { Directory.Delete(dir, true); } catch (Exception e) when (e is IOException or UnauthorizedAccessException) { } }
+        }
+
         public static VerificationResult VerifyEf(string source, bool overflow = true, bool sqlite = false)
         {
             var result = Engine.VerifySources(new[] { ("Test.cs", Usings + source) }, Options(overflow, sqlite));

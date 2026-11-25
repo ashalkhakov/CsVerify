@@ -154,5 +154,81 @@ public sealed class Store(Db db)
             Assert.True(r.Errors("Store.ByEmail").SequenceEqual(new[] { "CSV1001" }), r.Explain("Store.ByEmail"));
             Assert.True(r.Errors("Store.ByName").SequenceEqual(new[] { "CSV1001" }), r.Explain("Store.ByName"));
         }
+
+        // (a configuration the sources' reading doesn't follow: an index's filter that names a renamed column, a unique
+        // index over a shadow foreign key. Verified only where EF's own model was built)
+        private const string HostPicksTheDatabase = @"
+public sealed class Tag
+{
+    public long Id { get; set; }
+    public string? Code { get; set; }
+    public string Name { get; set; } = """";
+}
+public sealed class Owner
+{
+    public long RowId { get; set; }
+}
+public sealed class Payment
+{
+    public long RowId { get; set; }
+    public Owner? Holder { get; private set; }
+    public Guid? IdempotencyKey { get; set; }
+}
+public sealed class Db : DbContext
+{
+    CONSTRUCTORS
+    protected override void OnModelCreating(ModelBuilder b)
+    {
+        b.Entity<Tag>().Property(t => t.Code).HasColumnName(""CodeId"");
+        b.Entity<Tag>().HasIndex(t => t.Code).IsUnique().HasFilter(""[CodeId] IS NOT NULL"");
+        b.Entity<Owner>().HasKey(o => o.RowId);
+        b.Entity<Payment>().HasKey(p => p.RowId);
+        b.Entity<Payment>().HasOne(p => p.Holder).WithMany().HasForeignKey(""OwnerId"").IsRequired();
+        b.Entity<Payment>().HasIndex(""OwnerId"", nameof(Payment.IdempotencyKey)).IsUnique();
+    }
+}
+public sealed class Store(Db db)
+{
+    public async Task<Tag?> ByCode(string code) => await db.Set<Tag>().Where(t => t.Code == code).SingleOrDefaultAsync();
+    public async Task<Tag?> ByName(string name) => await db.Set<Tag>().Where(t => t.Name == name).SingleOrDefaultAsync();
+    public async Task<Payment?> ByKey(long owner, Guid key) =>
+        await db.Set<Payment>().Where(p => EF.Property<long>(p, ""OwnerId"") == owner && p.IdempotencyKey == key).SingleOrDefaultAsync();
+}";
+
+        private const string OptionsConstructor = "public Db(DbContextOptions<Db> options) : base(options) { }";
+
+        private const string FailingFactory = @"
+public sealed class DbFactory : Microsoft.EntityFrameworkCore.Design.IDesignTimeDbContextFactory<Db>
+{
+    public Db CreateDbContext(string[] args) => throw new InvalidOperationException(""the connection string isn't configured"");
+}";
+
+        private static void AssertEfsModel(CsVerify.Verifier.VerificationResult r)
+        {
+            Assert.DoesNotContain(r.Diagnostics, d => d.Id == "CSV1902");
+            Assert.True(r.Errors("Store.ByCode").Length == 0, r.Explain("Store.ByCode"));
+            Assert.True(r.Errors("Store.ByKey").Length == 0, r.Explain("Store.ByKey"));
+            Assert.True(r.Errors("Store.ByName").SequenceEqual(new[] { "CSV1001" }), r.Explain("Store.ByName"));
+        }
+
+        // (PR #134's review, the third: a library's project references EF Core and no provider, its host picks the
+        // database; EF's model is built with the verifier's own provider, of no database. A context with the options'
+        // constructor; with a parameterless one too; with only that one, and no OnConfiguring)
+        [Theory]
+        [InlineData(OptionsConstructor)]
+        [InlineData("public Db() { } " + OptionsConstructor)]
+        [InlineData("public Db() { }")]
+        public void AContextWhoseProjectReferencesNoProvider_HasEfsModel(string constructors) =>
+            AssertEfsModel(VerifyEfWithoutAProvider(HostPicksTheDatabase.Replace("CONSTRUCTORS", constructors)));
+
+        // (a design-time factory that can't make the context here, one that reads a configuration: the context is made
+        // by its constructor; with the provider the program references, or with the verifier's own)
+        [Fact]
+        public void AContextWhoseFactoryFails_IsMadeByItsConstructor()
+        {
+            var source = HostPicksTheDatabase.Replace("CONSTRUCTORS", OptionsConstructor) + FailingFactory;
+            AssertEfsModel(VerifyEf(source));
+            AssertEfsModel(VerifyEfWithoutAProvider(source));
+        }
     }
 }

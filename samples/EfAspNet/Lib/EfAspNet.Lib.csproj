@@ -1,7 +1,9 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <!-- The model of samples/EfAspNet: a context derived from ASP.NET Core Identity's, in a project that references the
        ASP.NET Core shared framework. The verifier is given the framework's reference assemblies (its targeting pack's),
-       which can't be loaded: it loads the shared framework's in their place to ask EF for its model. -->
+       which can't be loaded: it loads the shared framework's in their place to ask EF for its model. The project
+       references no provider, its host (the application) picks the database: the verifier builds EF's model with a
+       provider of its own, of no database. -->
   <PropertyGroup>
     <TargetFramework>net10.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
@@ -11,7 +13,7 @@
   <ItemGroup>
     <FrameworkReference Include="Microsoft.AspNetCore.App" />
     <PackageReference Include="CsVerify" Version="$(CsVerifyVersion)" PrivateAssets="all" />
-    <PackageReference Include="Microsoft.EntityFrameworkCore.Sqlite" Version="10.0.12" />
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Relational" Version="10.0.12" />
     <PackageReference Include="Microsoft.AspNetCore.Identity.EntityFrameworkCore" Version="10.0.12" />
   </ItemGroup>
 </Project>
