@@ -1045,6 +1045,14 @@ namespace CsVerify.Verifier
                 result.Warnings.Add(w);
                 Console.Error.WriteLine("csverify: warning: " + w);
             }
+            foreach (var group in (engine.Ef?.RuntimeStoodIn ?? new List<(string context, string service)>()).GroupBy(x => x.context))
+            {
+                var w = $"EF's model of '{group.Key}' was built without its host: the context asks the host for {string.Join(", ", group.Select(x => "'" + x.service + "'"))}, " +
+                        "which nothing among the program's references implements, and a stand-in answered (false, 0, null). " +
+                        $"Where the model depends on the answers, give the service in an IDesignTimeDbContextFactory<{group.Key.Split('.').Last()}>";
+                result.Warnings.Add(w);
+                Console.Error.WriteLine("csverify: warning: " + w);
+            }
             Boogie.KernelTypes.Data = engine.Data;
             Boogie.KernelTypes.Compilation = compilation;
             Boogie.KernelTypes.RefArrays = Boogie.KernelTypes.NamesRefArrays(compilation);

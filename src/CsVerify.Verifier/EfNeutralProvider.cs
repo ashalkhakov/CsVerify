@@ -11,6 +11,20 @@ namespace CsVerify.Verifier
     {
         public const string Type = "__CsVerifyEfProvider";
 
+        /// <summary>
+        /// A stand-in's base (EfHostServices): compiled into the program's load context, since a proxy of one of the
+        /// program's interfaces can't be made over a class of the verifier's.
+        /// </summary>
+        public const string StandIn = "__CsVerifyEfStandIn";
+
+        public const string StandInSource = """
+            public class __CsVerifyEfStandIn : System.Reflection.DispatchProxy
+            {
+                protected override object Invoke(System.Reflection.MethodInfo method, object[] args) =>
+                    method == null || method.ReturnType == typeof(void) || !method.ReturnType.IsValueType ? null : System.Activator.CreateInstance(method.ReturnType);
+            }
+            """;
+
         public const string Source = """
             using System;
             using System.Collections.Generic;

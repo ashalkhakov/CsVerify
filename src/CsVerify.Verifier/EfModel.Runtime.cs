@@ -16,6 +16,9 @@ namespace CsVerify.Verifier
         /// <summary>Why EF's own model of a context wasn't read (the configuration's source was, instead).</summary>
         public readonly List<(string context, string why)> RuntimeFailures = new List<(string, string)>();
 
+        /// <summary>A service a context asked its host for where EF's model was built, which a stand-in answered.</summary>
+        public readonly List<(string context, string service)> RuntimeStoodIn = new List<(string, string)>();
+
         /// <summary>Was EF's own model read, of every context?</summary>
         public bool FromRuntime { get; private set; }
 
@@ -26,6 +29,7 @@ namespace CsVerify.Verifier
         private void ApplyRuntime(Compilation compilation, EfRuntimeModel runtime)
         {
             RuntimeFailures.AddRange(runtime.Failures);
+            RuntimeStoodIn.AddRange(runtime.StoodIn);
             if (runtime.Contexts.Count == 0)
             {
                 return;

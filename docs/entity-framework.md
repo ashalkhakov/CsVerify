@@ -40,6 +40,17 @@ where the program's own can't build the model, and a design-time factory that fa
 string there is none of) is passed over for the context's constructor. `CSVERIFY_EF_MODEL_TRACE=1` says how each
 context's model was built.
 
+A model's configuration may ask the context's host for a service (`this.GetService<T>()` in `OnModelCreating`: the
+application's service provider, where the host registers what its database needs). The host isn't there where a
+library is verified. Such a service is an implementation among the program's own assemblies, made by a constructor
+whose arguments are services in turn (as it is where the host's project is the one verified, which references it).
+Where nothing among the references implements it and it is an interface, a stand-in answers, each member with its
+type's default (false, 0, null), and a warning names the service: the model is EF's own, of a host that answers so.
+Where the model depends on the answers, a design-time factory gives them, as for EF's tools
+(`IDesignTimeDbContextFactory<T>`, its options naming the services, `UseApplicationServiceProvider`; it needn't name
+a provider, the context it makes is given one). EF's own services and those of what it builds on (its logging, its
+cache) are never stood in for.
+
 Where a context can't be made (a constructor that needs what the verifier can't give, a context that configures a
 provider itself and fails), a warning says why, and the configuration is read from the sources instead, as below; `--ef-static-model`
 reads only the sources. A unique index with a filter counts where the filter is that its columns are not null, and,

@@ -59,6 +59,8 @@ namespace CsVerify.Verifier
         public readonly List<string> Contexts = new List<string>();
         /// <summary>Why a context's model couldn't be read: the context and the reason.</summary>
         public readonly List<(string context, string why)> Failures = new List<(string, string)>();
+        /// <summary>A service a context asked its host for where its model was built, which a stand-in answered: the context and the service.</summary>
+        public readonly List<(string context, string service)> StoodIn = new List<(string, string)>();
 
         /// <summary>The models of the contexts given, of the compilation as emitted.</summary>
         public static EfRuntimeModel Read(Compilation compilation, IEnumerable<INamedTypeSymbol> contexts, IEnumerable<string> providersNamed, IReadOnlyList<string> nativeLibraries)
@@ -69,32 +71,53 @@ namespace CsVerify.Verifier
             {
                 return model;
             }
-            // (a context that takes no options and has no OnConfiguring: in the copy emitted here, one that configures the
-            // provider found; the program's own isn't changed)
-            var hooked = false;
+            // (a context with no OnConfiguring of its own: in the copy emitted here, one that configures what the context
+            // was made without, a provider and its host's services; the program's own isn't changed)
             var member = (Microsoft.CodeAnalysis.CSharp.Syntax.MemberDeclarationSyntax)Microsoft.CodeAnalysis.CSharp.SyntaxFactory.ParseMemberDeclaration(
-                "protected override void OnConfiguring(global::Microsoft.EntityFrameworkCore.DbContextOptionsBuilder b) { base.OnConfiguring(b); if (!b.IsConfigured) global::__CsVerifyEf.Configure?.Invoke(b); }");
-            var declarations = wanted.Where(c => !c.InstanceConstructors.Any(k => k.Parameters.Any(p => p.Type.Name == "DbContextOptions")) && !c.GetMembers("OnConfiguring").Any())
+                "protected override void OnConfiguring(global::Microsoft.EntityFrameworkCore.DbContextOptionsBuilder b) { base.OnConfiguring(b); global::__CsVerifyEf.Configure?.Invoke(b); }");
+            var declarations = wanted.Where(c => !c.GetMembers("OnConfiguring").Any())
                 .Select(c => c.DeclaringSyntaxReferences.FirstOrDefault()?.GetSyntax()).OfType<Microsoft.CodeAnalysis.CSharp.Syntax.ClassDeclarationSyntax>().ToList();
-            var original = compilation;
-            foreach (var group in declarations.GroupBy(d => d.SyntaxTree))
+            // (the copy of a compilation, the program's or a project's it references, with its contexts' hooks: the
+            // compilation itself where it declares none of them, or where the copy doesn't compile)
+            Compilation Hooked(Compilation c)
             {
-                var tree = group.Key;
-                compilation = compilation.ReplaceSyntaxTree(tree, tree.WithRootAndOptions(tree.GetRoot().ReplaceNodes(group, (d, _) => d.AddMembers(member)), tree.Options));
-                hooked = true;
-            }
-            if (hooked && compilation.SyntaxTrees.FirstOrDefault() is SyntaxTree first)
-            {
-                compilation = compilation.AddSyntaxTrees(first.WithRootAndOptions(
-                    Microsoft.CodeAnalysis.CSharp.SyntaxFactory.ParseCompilationUnit("internal static class __CsVerifyEf { public static global::System.Action<object> Configure; }"), first.Options).WithFilePath("__CsVerifyEf.cs"));
-                if (compilation.GetDiagnostics().Any(d => d.Severity == DiagnosticSeverity.Error))
+                var its = declarations.Where(d => c.ContainsSyntaxTree(d.SyntaxTree)).ToList();
+                if (its.Count == 0 || !(c.SyntaxTrees.FirstOrDefault() is SyntaxTree first))
                 {
-                    compilation = original;
-                    hooked = false;
+                    return c;
+                }
+                var copy = c;
+                var changed = new List<SyntaxTree>();
+                foreach (var group in its.GroupBy(d => d.SyntaxTree))
+                {
+                    var tree = group.Key;
+                    changed.Add(tree.WithRootAndOptions(tree.GetRoot().ReplaceNodes(group, (d, _) => d.AddMembers(member)), tree.Options));
+                    copy = copy.ReplaceSyntaxTree(tree, changed.Last());
+                }
+                changed.Add(first.WithRootAndOptions(
+                    Microsoft.CodeAnalysis.CSharp.SyntaxFactory.ParseCompilationUnit("internal static class __CsVerifyEf { public static global::System.Action<object> Configure; }"), first.Options).WithFilePath("__CsVerifyEf.cs"));
+                copy = copy.AddSyntaxTrees(changed.Last());
+                return changed.Any(t => copy.GetSemanticModel(t).GetDiagnostics().Any(d => d.Severity == DiagnosticSeverity.Error)) ? c : copy;
+            }
+            foreach (var project in compilation.References.OfType<CompilationReference>().ToList())
+            {
+                var copy = Hooked(project.Compilation);
+                if (copy != project.Compilation)
+                {
+                    compilation = compilation.ReplaceReference(project, copy.ToMetadataReference(project.Properties.Aliases, project.Properties.EmbedInteropTypes));
                 }
             }
+            compilation = Hooked(compilation);
             var providers = providersNamed.ToList();
             var load = new Loader(compilation, nativeLibraries);
+            load.Configure = b =>
+            {
+                if (!(bool)Get(b, "IsConfigured"))
+                {
+                    load.Provider(b, providers);
+                }
+                load.UseHost(b);
+            };
             try
             {
                 Assembly program;
@@ -106,10 +129,6 @@ namespace CsVerify.Verifier
                 {
                     model.Failures.AddRange(wanted.Select(c => (EfModel.MetadataName(c), "the program couldn't be loaded: " + Inner(e).Message.Split('\n')[0] + NotLoaded(load))));
                     return model;
-                }
-                if (hooked)
-                {
-                    program.GetType("__CsVerifyEf").GetField("Configure").SetValue(null, (Action<object>)(b => load.Provider(b, providers)));
                 }
                 var trace = Environment.GetEnvironmentVariable("CSVERIFY_EF_MODEL_TRACE") != null;
                 foreach (var name in wanted.Select(EfModel.MetadataName))
@@ -127,6 +146,7 @@ namespace CsVerify.Verifier
                         }
                         load.NoFactory = !factory;
                         load.NeutralOnly = neutralOnly;
+                        var stoodIn = load.Host.StoodIn.Count;
                         try
                         {
                             var type = program.GetType(name) ?? load.Find(name);
@@ -137,6 +157,7 @@ namespace CsVerify.Verifier
                                 var built = DesignTimeModel(context);
                                 model.ReadModel(built, load);
                                 model.Contexts.Add(name);
+                                model.StoodIn.AddRange(load.Host.StoodIn.Skip(stoodIn).Distinct().Select(service => (name, service)));
                                 if (trace)
                                 {
                                     Console.Error.WriteLine($"[ef-model] {name}: built {(load.UsedFactory ? "by the program's factory" : load.UsedNeutral ? "with the verifier's own provider (of no database)" : "with the program's provider")}");
@@ -275,7 +296,7 @@ namespace CsVerify.Verifier
                 return IntPtr.Zero;
             }
 
-            private static string PackagesRoot(string reference)
+            internal static string PackagesRoot(string reference)
             {
                 // (root/id/version/lib/tfm/x.dll)
                 var tfm = Path.GetDirectoryName(reference);
@@ -518,6 +539,11 @@ namespace CsVerify.Verifier
             public bool NoFactory, NeutralOnly;
             /// <summary>How the last context was made: by the program's factory; with the verifier's own provider.</summary>
             public bool UsedFactory, UsedNeutral;
+            /// <summary>The services a context asks its host for.</summary>
+            public readonly EfHostServices Host;
+            /// <summary>What a hooked context's OnConfiguring does, in each assembly emitted here that has one.</summary>
+            public Action<object> Configure;
+            private HashSet<string> _efs;
 
             public Loader(Compilation compilation, IReadOnlyList<string> nativeLibraries) : base("csverify-ef-model", isCollectible: true)
             {
@@ -539,6 +565,91 @@ namespace CsVerify.Verifier
                     }
                 }
                 Shared = References.For(_paths, nativeLibraries);
+                Host = new EfHostServices(MayBeAHosts, ProgramAssemblies, StandIn);
+            }
+
+            /// <summary>
+            /// A service that may be a host's: not the runtime's, not EF's, and not of what EF builds on (its logging, its
+            /// cache, dependency injection), which EF asks the host for itself and does without.
+            /// </summary>
+            private bool MayBeAHosts(Type service) => MayBeAHosts((service.IsGenericType ? service.GetGenericTypeDefinition() : service).Assembly);
+
+            private bool MayBeAHosts(Assembly assembly)
+            {
+                var name = assembly.GetName().Name ?? "";
+                if (assembly == typeof(object).Assembly || File.Exists(Path.Combine(Path.GetDirectoryName(typeof(object).Assembly.Location) ?? "", name + ".dll")))
+                {
+                    return false;
+                }
+                if (_efs == null)
+                {
+                    _efs = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                    var next = new Queue<Assembly>(Shared.All().Where(a => (a.GetName().Name ?? "").StartsWith("Microsoft.EntityFrameworkCore", StringComparison.OrdinalIgnoreCase)));
+                    while (next.Count > 0)
+                    {
+                        var a = next.Dequeue();
+                        if (!_efs.Add(a.GetName().Name ?? ""))
+                        {
+                            continue;
+                        }
+                        foreach (var r in a.GetReferencedAssemblies())
+                        {
+                            try
+                            {
+                                next.Enqueue(Shared.LoadFromAssemblyName(r));
+                            }
+                            catch (Exception)
+                            {
+                                _efs.Add(r.Name ?? "");
+                            }
+                        }
+                    }
+                }
+                return !_efs.Contains(name);
+            }
+
+            /// <summary>The program's assemblies: what is emitted here, and the references that are no package's and no framework's (a project's output).</summary>
+            private IEnumerable<Assembly> ProgramAssemblies()
+            {
+                var all = new List<Assembly>();
+                foreach (var c in new[] { _compilation }.Concat(_projects.Values))
+                {
+                    try
+                    {
+                        all.Add(Emitted(c));
+                    }
+                    catch (Exception)
+                    {
+                    }
+                }
+                var dotnet = Path.GetFullPath(Path.Combine(Path.GetDirectoryName(typeof(object).Assembly.Location) ?? "", "..", "..", ".."));
+                var outputs = _paths.Where(p => References.PackagesRoot(p) == null && !p.StartsWith(dotnet, StringComparison.OrdinalIgnoreCase))
+                    .Select(Path.GetFileNameWithoutExtension).ToHashSet(StringComparer.OrdinalIgnoreCase);
+                all.AddRange(Shared.All().Where(a => outputs.Contains(a.GetName().Name ?? "") && MayBeAHosts(a)));
+                return all;
+            }
+
+            /// <summary>The host's services, of a builder that names none: DbContextOptionsBuilder.UseApplicationServiceProvider.</summary>
+            public void UseHost(object builder)
+            {
+                try
+                {
+                    var core = Many(Get(Get(builder, "Options"), "Extensions")).FirstOrDefault(e => e.GetType().Name == "CoreOptionsExtension");
+                    if (core != null && Get(core, "ApplicationServiceProvider") != null)
+                    {
+                        return;
+                    }
+                    var use = builder.GetType().GetMethods(BindingFlags.Public | BindingFlags.Instance)
+                        .FirstOrDefault(m => m.Name == "UseApplicationServiceProvider" && m.GetParameters() is { Length: 1 } ps && ps[0].ParameterType == typeof(IServiceProvider));
+                    use?.Invoke(builder, new object[] { Host });
+                }
+                catch (Exception e)
+                {
+                    if (Environment.GetEnvironmentVariable("CSVERIFY_EF_MODEL_TRACE") != null)
+                    {
+                        Console.Error.WriteLine("[ef-model] the host's services couldn't be named: " + Inner(e).Message.Split('\n')[0]);
+                    }
+                }
             }
 
             /// <summary>
@@ -553,6 +664,29 @@ namespace CsVerify.Verifier
                     return true;
                 }
                 return UsedNeutral = Neutral(builder);
+            }
+
+            private Type _standIn;
+
+            /// <summary>A stand-in's base, compiled into this context.</summary>
+            private Type StandIn()
+            {
+                if (_standIn == null)
+                {
+                    var references = _compilation.References.Concat(_paths.Distinct(StringComparer.OrdinalIgnoreCase).Select(p => (MetadataReference)MetadataReference.CreateFromFile(p)));
+                    var made = Microsoft.CodeAnalysis.CSharp.CSharpCompilation.Create("CsVerify.EfStandIn",
+                        new[] { Microsoft.CodeAnalysis.CSharp.CSharpSyntaxTree.ParseText(EfNeutralProvider.StandInSource) }, references,
+                        new Microsoft.CodeAnalysis.CSharp.CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary));
+                    using var image = new MemoryStream();
+                    var result = made.Emit(image);
+                    if (!result.Success)
+                    {
+                        throw new InvalidOperationException(result.Diagnostics.First(d => d.Severity == DiagnosticSeverity.Error).GetMessage());
+                    }
+                    image.Position = 0;
+                    _standIn = LoadFromStream(image).GetType(EfNeutralProvider.StandIn);
+                }
+                return _standIn;
             }
 
             /// <summary>The verifier's own provider (EfNeutralProvider), compiled against the program's EF Core.</summary>
@@ -642,7 +776,9 @@ namespace CsVerify.Verifier
                     throw new InvalidOperationException(result.Diagnostics.FirstOrDefault(d => d.Severity == DiagnosticSeverity.Error)?.GetMessage() ?? "it doesn't compile");
                 }
                 image.Position = 0;
-                return _emitted[name] = LoadFromStream(image);
+                var loaded = _emitted[name] = LoadFromStream(image);
+                loaded.GetType("__CsVerifyEf")?.GetField("Configure")?.SetValue(null, Configure);
+                return loaded;
             }
 
             protected override Assembly Load(AssemblyName name)
@@ -701,6 +837,7 @@ namespace CsVerify.Verifier
             var builderType = ef.Assembly.GetType("Microsoft.EntityFrameworkCore.DbContextOptionsBuilder`1").MakeGenericType(context);
             var builder = Activator.CreateInstance(builderType);
             var configured = load.Provider(builder, providersNamed);
+            load.UseHost(builder);
             var options = Get(builder, "Options");
             Exception last = null;
             foreach (var ctor in context.GetConstructors(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance)

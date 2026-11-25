@@ -230,5 +230,89 @@ public sealed class DbFactory : Microsoft.EntityFrameworkCore.Design.IDesignTime
             AssertEfsModel(VerifyEf(source));
             AssertEfsModel(VerifyEfWithoutAProvider(source));
         }
+
+        // (a context whose model asks its host for a service, GetService<T>() in OnModelCreating: the code's index is
+        // unique where the service says so)
+        private const string AsksItsHost = @"
+public interface ICatalogRules
+{
+    bool UniqueCodes { get; }
+}
+public sealed class Item
+{
+    public long Id { get; set; }
+    public string Code { get; set; } = """";
+}
+public sealed class Db : DbContext
+{
+    public Db(DbContextOptions<Db> options) : base(options) { }
+    protected override void OnModelCreating(ModelBuilder b)
+    {
+        var rules = Microsoft.EntityFrameworkCore.Infrastructure.AccessorExtensions.GetService<ICatalogRules>(this);
+        var code = b.Entity<Item>().HasIndex(i => i.Code);
+        if (rules.UniqueCodes)
+        {
+            code.IsUnique();
+        }
+    }
+}
+public sealed class Store(Db db)
+{
+    public async Task<Item?> ByCode(string code) => await db.Set<Item>().Where(i => i.Code == code).SingleOrDefaultAsync();
+}";
+
+        // (the host isn't among the program's references, and nothing there implements the service: a stand-in answers,
+        // false, and a warning says so; the model is EF's own all the same)
+        [Fact]
+        public void AServiceOfTheHosts_NothingImplements_IsStoodInFor()
+        {
+            foreach (var r in new[] { VerifyEf(AsksItsHost), VerifyEfWithoutAProvider(AsksItsHost) })
+            {
+                Assert.Contains(r.Warnings, w => w.Contains("was built without its host") && w.Contains("'ICatalogRules'"));
+                Assert.True(r.Errors("Store.ByCode").SequenceEqual(new[] { "CSV1001" }), r.Explain("Store.ByCode"));
+            }
+        }
+
+        // (an implementation among the program's own classes is the service: its answer, not a stand-in's)
+        [Fact]
+        public void AServiceOfTheHosts_TheProgramImplements_IsThatOne()
+        {
+            var source = AsksItsHost + @"
+public sealed class StrictRules : ICatalogRules
+{
+    public bool UniqueCodes => true;
+}";
+            foreach (var r in new[] { VerifyEf(source), VerifyEfWithoutAProvider(source) })
+            {
+                Assert.DoesNotContain(r.Warnings, w => w.Contains("was built without its host"));
+                Assert.True(r.Errors("Store.ByCode").Length == 0, r.Explain("Store.ByCode"));
+            }
+        }
+
+        // (a design-time factory gives the host's services, and no provider: the context it makes is given one. The
+        // factory's service is the one asked: the class made by its constructor alone would answer false)
+        [Fact]
+        public void AServiceOfTheHosts_ADesignTimeFactoryGives_IsThatOne()
+        {
+            var source = AsksItsHost + @"
+public sealed class RulesOf(bool unique) : ICatalogRules
+{
+    public bool UniqueCodes => unique;
+}
+public sealed class DesignTimeServices : IServiceProvider
+{
+    public object? GetService(Type service) => service == typeof(ICatalogRules) ? new RulesOf(true) : null;
+}
+public sealed class DbFactory : Microsoft.EntityFrameworkCore.Design.IDesignTimeDbContextFactory<Db>
+{
+    public Db CreateDbContext(string[] args) =>
+        new Db(new DbContextOptionsBuilder<Db>().UseApplicationServiceProvider(new DesignTimeServices()).Options);
+}";
+            foreach (var r in new[] { VerifyEf(source), VerifyEfWithoutAProvider(source) })
+            {
+                Assert.DoesNotContain(r.Warnings, w => w.Contains("was built without its host"));
+                Assert.True(r.Errors("Store.ByCode").Length == 0, r.Explain("Store.ByCode"));
+            }
+        }
     }
 }
