@@ -82,6 +82,11 @@ namespace CsVerify.Verifier
         /// project of its own, which the program's compilation references in place of its assembly.
         /// </summary>
         public List<ProjectReference> ProjectReferences = new List<ProjectReference>();
+        /// <summary>
+        /// The native libraries the program's packages bring (--native, the MSBuild target's): what a database provider
+        /// loads where EF's model is built (SQLite's e_sqlite3).
+        /// </summary>
+        public List<string> NativeLibraries = new List<string>();
 
         /// <summary>Is an obligation (or a diagnostic) with this id checked in the profile?</summary>
         internal bool Checked(string id) => CheckKinds == null || !(Verifier.Checks.KindOf(id) is string kind) || CheckKinds.Contains(kind);
@@ -317,7 +322,8 @@ namespace CsVerify.Verifier
                 .Select(d => compilation.ModelOf(t).GetDeclaredSymbol(d)).OfType<INamedTypeSymbol>()).ToList();
             Levels = new LockLevels(compilation, Locks, SourceTypes);
             Atomics = new Atomics(SourceTypes);
-            Ef = EfModel.For(compilation, UserTrees, SourceTypes, !options.EfStaticModel);
+            Ef = EfModel.For(compilation, UserTrees, SourceTypes, !options.EfStaticModel,
+                options.NativeLibraries.Concat(options.ProjectReferences.SelectMany(p => p.NativeLibraries)).ToList());
             MetadataEntities.Current = Ef == null ? null : MetadataEntities.For(compilation, Ef.Entities.Select(e => e.Type));
             Predicates = SourceTypes.SelectMany(t => t.GetMembers().OfType<IMethodSymbol>()).Where(SpecSymbols.IsPredicate).ToList();
             // (a predicate needs the permission state even with no [Owned] class: over arrays alone, say)
@@ -1039,6 +1045,14 @@ namespace CsVerify.Verifier
                 result.Warnings.Add(w);
                 Console.Error.WriteLine("csverify: warning: " + w);
             }
+            foreach (var group in (engine.Ef?.RuntimeStoodIn ?? new List<(string context, string service)>()).GroupBy(x => x.context))
+            {
+                var w = $"EF's model of '{group.Key}' was built without its host: the context asks the host for {string.Join(", ", group.Select(x => "'" + x.service + "'"))}, " +
+                        "which nothing among the program's references implements, and a stand-in answered (false, 0, null). " +
+                        $"Where the model depends on the answers, give the service in an IDesignTimeDbContextFactory<{group.Key.Split('.').Last()}>";
+                result.Warnings.Add(w);
+                Console.Error.WriteLine("csverify: warning: " + w);
+            }
             Boogie.KernelTypes.Data = engine.Data;
             Boogie.KernelTypes.Compilation = compilation;
             Boogie.KernelTypes.RefArrays = Boogie.KernelTypes.NamesRefArrays(compilation);
@@ -1513,6 +1527,8 @@ namespace CsVerify.Verifier
             // their callers call; their bodies are verified as always)
             var opaque = new HashSet<MethodResult>(held.Where(x => SpecSymbols.IsTrusted(x.method) || x.result.Unselected || x.decl is TypeDeclarationSyntax).Select(x => x.result));
             var why = new Dictionary<MethodResult, string>();
+            // (methods not selected whose bodies are translated all the same: they prove a fact a selected method assumes)
+            var provers = new HashSet<MethodResult>();
             Boogie.BoogieTranslator translator;
             // (a method that doesn't translate leaves out those that call it: until none is left out)
             while (true)
@@ -1543,7 +1559,7 @@ namespace CsVerify.Verifier
                         {
                             Trace($"not translated to Boogie: {x.result.Name ?? x.method.ContainingType.Name + "." + x.method.Name + " (abstract)"}: {(Environment.GetEnvironmentVariable("CSVERIFY_TRACE") == "2" ? nt.ToString() : nt.Message)}");
                             why[x.result] = nt.Message;
-                            if (x.result.Name == null)
+                            if (x.result.Name == null && !provers.Contains(x.result))
                             {
                                 refused.Add(x);
                                 continue;
@@ -1591,6 +1607,27 @@ namespace CsVerify.Verifier
                     why.Clear();
                     opaque = new HashSet<MethodResult>(held.Where(x => SpecSymbols.IsTrusted(x.method) || x.result.Unselected || x.decl is TypeDeclarationSyntax).Select(x => x.result));
                     continue;
+                }
+                // (--only, or a project's run with the projects it references: a fact a method of this run assumes, of a
+                // helper that isn't one of them, is proved here too. The helper's body is translated for it, and what
+                // that one assumes of others in turn: a method is proved as a run of the whole proves it)
+                if (errors.Count == 0 && engine.Partial)
+                {
+                    var running = included.Where(x => x.result.Name != null || provers.Contains(x.result))
+                        .SelectMany(x => translator.Procedures.TryGetValue(x.result, out var ps) ? ps : new List<string>()).ToHashSet();
+                    var unproved = translator.FactProcedures().Where(f => f.Value.proving.Count == 0 && f.Value.assuming.Any(running.Contains)).Select(f => f.Key).ToList();
+                    var helpers = included.Where(x => x.result.Unselected && !provers.Contains(x.result) && !(x.decl is TypeDeclarationSyntax) && !SpecSymbols.IsTrusted(x.method) &&
+                                                      unproved.Any(key => Boogie.BoogieTranslator.FactOf(key, x.method))).ToList();
+                    if (helpers.Count > 0)
+                    {
+                        foreach (var x in helpers)
+                        {
+                            provers.Add(x.result);
+                            x.result.Unselected = false;
+                            opaque.Remove(x.result);
+                        }
+                        continue;
+                    }
                 }
                 if (errors.Count == 0 || errors.Any(e => e.result == null))
                 {
@@ -1648,11 +1685,31 @@ namespace CsVerify.Verifier
                 only = (only ?? named.SelectMany(x => translator.Procedures[x.result]).Distinct().ToList())
                     .Where(p => !named.Any(x => x.result.Cached && translator.Procedures[x.result].Contains(p))).ToList();
             }
-            // (inferred facts: one no candidate proves, or whose prover isn't among the methods selected, is left out; else
-            // those that prove it and those that assume it are verified together, a proof kept from before aside)
-            foreach (var (key, (proving, assuming)) in translator.FactProcedures())
+            // (--only: a fact a selected method assumes is proved in this run too, so the helper that proves it is
+            // verified with it, and what that helper assumes in turn; a selected method is proved as a run of every
+            // method proves it)
+            var facts = translator.FactProcedures();
+            var needed = selected == null ? null : new HashSet<string>(selected);
+            for (bool more = needed != null; more;)
             {
-                if (proving.Count == 0 || selected != null && !proving.All(selected.Contains))
+                more = false;
+                foreach (var (proving, assuming) in facts.Values.Where(f => f.proving.Count > 0 && f.assuming.Any(needed.Contains)))
+                {
+                    int before = needed.Count;
+                    needed.UnionWith(proving);
+                    more |= needed.Count > before;
+                }
+            }
+            if (needed != null)
+            {
+                only = only.Union(needed.Except(selected)).ToList();
+            }
+            // (inferred facts: one no candidate proves, or that no method of this run assumes, is left out; else those
+            // that prove it and those that assume it are verified together, a proof kept from before aside)
+            foreach (var (key, (proving, assuming0)) in facts)
+            {
+                var assuming = needed == null ? assuming0 : new HashSet<string>(assuming0.Where(needed.Contains));
+                if (proving.Count == 0 || needed != null && !proving.All(needed.Contains))
                 {
                     translator.LeaveOutFact(key);
                     continue;

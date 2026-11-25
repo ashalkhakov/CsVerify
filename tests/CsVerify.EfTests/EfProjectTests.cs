@@ -1,3 +1,5 @@
+using System;
+using System.IO;
 using System.Linq;
 using Xunit;
 using static CsVerify.Tests.EfHarness;
@@ -88,6 +90,229 @@ public sealed class Shop : IdentityDbContext<User, IdentityRole<long>, long>
                 Assert.True(r.Errors(m).Length == 0, r.Explain(m));
             }
             Assert.Contains(r["IsDuplicate"].Diagnostics, d => d.Id == "CSV1902" && d.Message.Contains("unboxing"));
+        }
+
+        [Fact]
+        public void AContextOfAFrameworksTargetingPack_HasEfsModel()
+        {
+            // (PR #134's review: a project with <FrameworkReference Include="Microsoft.AspNetCore.App" /> gives the verifier
+            // the targeting pack's reference assemblies, which can't be loaded; the shared framework's are, in their
+            // place, and the context, derived from ASP.NET Core Identity's, gets EF's own model)
+            var dotnet = Path.GetFullPath(Path.Combine(Path.GetDirectoryName(typeof(object).Assembly.Location), "..", "..", ".."));
+            var packs = Path.Combine(dotnet, "packs", "Microsoft.AspNetCore.App.Ref");
+            Assert.True(Directory.Exists(packs), "the SDK's ASP.NET Core targeting pack, at " + packs);
+            var major = Environment.Version.Major.ToString();
+            var version = Directory.GetDirectories(packs).Where(d => Path.GetFileName(d).Split('.')[0] == major).OrderBy(d => d, StringComparer.Ordinal).Last();
+            var pack = Directory.EnumerateFiles(Directory.GetDirectories(Path.Combine(version, "ref")).Single(), "*.dll").ToList();
+            var names = pack.Select(Path.GetFileNameWithoutExtension).ToHashSet(StringComparer.OrdinalIgnoreCase);
+            var r = EfHarness.VerifyEf(@"using Microsoft.AspNetCore.Identity;
+using Microsoft.AspNetCore.Identity.EntityFrameworkCore;
+public sealed class Tag
+{
+    public long Id { get; set; }
+    public string? Code { get; set; }
+    public string Name { get; set; } = """";
+}
+public sealed class Db(DbContextOptions<Db> options) : IdentityDbContext<IdentityUser<long>, IdentityRole<long>, long>(options)
+{
+    protected override void OnModelCreating(ModelBuilder b)
+    {
+        base.OnModelCreating(b);
+        b.Entity<Tag>().Property(t => t.Code).HasColumnName(""CodeId"");
+        b.Entity<Tag>().HasIndex(t => t.Code).IsUnique().HasFilter(""[CodeId] IS NOT NULL"");
+    }
+}
+public sealed class Store(Db db)
+{
+    public async Task<Tag?> ByCode(string code) => await db.Set<Tag>().Where(t => t.Code == code).SingleOrDefaultAsync();
+    public async Task<Tag?> ByName(string name) => await db.Set<Tag>().Where(t => t.Name == name).SingleOrDefaultAsync();
+    public async Task<IdentityUser<long>?> ById(long id) => await db.Users.Where(u => u.Id == id).SingleOrDefaultAsync();
+    public async Task<IdentityUser<long>?> ByNormalizedName(string name) => await db.Users.Where(u => u.NormalizedUserName == name).SingleOrDefaultAsync();
+    public async Task<IdentityUser<long>?> ByEmail(string email) => await db.Users.Where(u => u.Email == email).SingleOrDefaultAsync();
+    public async Task<long> Rename(long id, string name)
+    {
+        var user = await db.Users.Where(u => u.Id == id).SingleOrDefaultAsync();
+        if (user == null) return 0;
+        user.UserName = name;
+        await db.SaveChangesAsync();
+        return user.Id;
+    }
+}", options =>
+            {
+                // (as a build has them: the framework's, in place of the packages' of the same names)
+                options.References.RemoveAll(reference => names.Contains(Path.GetFileNameWithoutExtension(reference)));
+                options.References.AddRange(pack);
+            });
+            Assert.DoesNotContain(r.Diagnostics, d => d.Id == "CSV1902");
+            // (a library's own entity, Identity's IdentityUser<long> through db.Users: its key and its unique index, as
+            // EF's model has them)
+            foreach (var ok in new[] { "ByCode", "ById", "ByNormalizedName", "Rename" })
+            {
+                Assert.True(r.Errors("Store." + ok).Length == 0, ok + ": " + r.Explain("Store." + ok));
+            }
+            // (an email isn't unique by Identity's model)
+            Assert.True(r.Errors("Store.ByEmail").SequenceEqual(new[] { "CSV1001" }), r.Explain("Store.ByEmail"));
+            Assert.True(r.Errors("Store.ByName").SequenceEqual(new[] { "CSV1001" }), r.Explain("Store.ByName"));
+        }
+
+        // (a configuration the sources' reading doesn't follow: an index's filter that names a renamed column, a unique
+        // index over a shadow foreign key. Verified only where EF's own model was built)
+        private const string HostPicksTheDatabase = @"
+public sealed class Tag
+{
+    public long Id { get; set; }
+    public string? Code { get; set; }
+    public string Name { get; set; } = """";
+}
+public sealed class Owner
+{
+    public long RowId { get; set; }
+}
+public sealed class Payment
+{
+    public long RowId { get; set; }
+    public Owner? Holder { get; private set; }
+    public Guid? IdempotencyKey { get; set; }
+}
+public sealed class Db : DbContext
+{
+    CONSTRUCTORS
+    protected override void OnModelCreating(ModelBuilder b)
+    {
+        b.Entity<Tag>().Property(t => t.Code).HasColumnName(""CodeId"");
+        b.Entity<Tag>().HasIndex(t => t.Code).IsUnique().HasFilter(""[CodeId] IS NOT NULL"");
+        b.Entity<Owner>().HasKey(o => o.RowId);
+        b.Entity<Payment>().HasKey(p => p.RowId);
+        b.Entity<Payment>().HasOne(p => p.Holder).WithMany().HasForeignKey(""OwnerId"").IsRequired();
+        b.Entity<Payment>().HasIndex(""OwnerId"", nameof(Payment.IdempotencyKey)).IsUnique();
+    }
+}
+public sealed class Store(Db db)
+{
+    public async Task<Tag?> ByCode(string code) => await db.Set<Tag>().Where(t => t.Code == code).SingleOrDefaultAsync();
+    public async Task<Tag?> ByName(string name) => await db.Set<Tag>().Where(t => t.Name == name).SingleOrDefaultAsync();
+    public async Task<Payment?> ByKey(long owner, Guid key) =>
+        await db.Set<Payment>().Where(p => EF.Property<long>(p, ""OwnerId"") == owner && p.IdempotencyKey == key).SingleOrDefaultAsync();
+}";
+
+        private const string OptionsConstructor = "public Db(DbContextOptions<Db> options) : base(options) { }";
+
+        private const string FailingFactory = @"
+public sealed class DbFactory : Microsoft.EntityFrameworkCore.Design.IDesignTimeDbContextFactory<Db>
+{
+    public Db CreateDbContext(string[] args) => throw new InvalidOperationException(""the connection string isn't configured"");
+}";
+
+        private static void AssertEfsModel(CsVerify.Verifier.VerificationResult r)
+        {
+            Assert.DoesNotContain(r.Diagnostics, d => d.Id == "CSV1902");
+            Assert.True(r.Errors("Store.ByCode").Length == 0, r.Explain("Store.ByCode"));
+            Assert.True(r.Errors("Store.ByKey").Length == 0, r.Explain("Store.ByKey"));
+            Assert.True(r.Errors("Store.ByName").SequenceEqual(new[] { "CSV1001" }), r.Explain("Store.ByName"));
+        }
+
+        // (PR #134's review, the third: a library's project references EF Core and no provider, its host picks the
+        // database; EF's model is built with the verifier's own provider, of no database. A context with the options'
+        // constructor; with a parameterless one too; with only that one, and no OnConfiguring)
+        [Theory]
+        [InlineData(OptionsConstructor)]
+        [InlineData("public Db() { } " + OptionsConstructor)]
+        [InlineData("public Db() { }")]
+        public void AContextWhoseProjectReferencesNoProvider_HasEfsModel(string constructors) =>
+            AssertEfsModel(VerifyEfWithoutAProvider(HostPicksTheDatabase.Replace("CONSTRUCTORS", constructors)));
+
+        // (a design-time factory that can't make the context here, one that reads a configuration: the context is made
+        // by its constructor; with the provider the program references, or with the verifier's own)
+        [Fact]
+        public void AContextWhoseFactoryFails_IsMadeByItsConstructor()
+        {
+            var source = HostPicksTheDatabase.Replace("CONSTRUCTORS", OptionsConstructor) + FailingFactory;
+            AssertEfsModel(VerifyEf(source));
+            AssertEfsModel(VerifyEfWithoutAProvider(source));
+        }
+
+        // (a context whose model asks its host for a service, GetService<T>() in OnModelCreating: the code's index is
+        // unique where the service says so)
+        private const string AsksItsHost = @"
+public interface ICatalogRules
+{
+    bool UniqueCodes { get; }
+}
+public sealed class Item
+{
+    public long Id { get; set; }
+    public string Code { get; set; } = """";
+}
+public sealed class Db : DbContext
+{
+    public Db(DbContextOptions<Db> options) : base(options) { }
+    protected override void OnModelCreating(ModelBuilder b)
+    {
+        var rules = Microsoft.EntityFrameworkCore.Infrastructure.AccessorExtensions.GetService<ICatalogRules>(this);
+        var code = b.Entity<Item>().HasIndex(i => i.Code);
+        if (rules.UniqueCodes)
+        {
+            code.IsUnique();
+        }
+    }
+}
+public sealed class Store(Db db)
+{
+    public async Task<Item?> ByCode(string code) => await db.Set<Item>().Where(i => i.Code == code).SingleOrDefaultAsync();
+}";
+
+        // (the host isn't among the program's references, and nothing there implements the service: a stand-in answers,
+        // false, and a warning says so; the model is EF's own all the same)
+        [Fact]
+        public void AServiceOfTheHosts_NothingImplements_IsStoodInFor()
+        {
+            foreach (var r in new[] { VerifyEf(AsksItsHost), VerifyEfWithoutAProvider(AsksItsHost) })
+            {
+                Assert.Contains(r.Warnings, w => w.Contains("was built without its host") && w.Contains("'ICatalogRules'"));
+                Assert.True(r.Errors("Store.ByCode").SequenceEqual(new[] { "CSV1001" }), r.Explain("Store.ByCode"));
+            }
+        }
+
+        // (an implementation among the program's own classes is the service: its answer, not a stand-in's)
+        [Fact]
+        public void AServiceOfTheHosts_TheProgramImplements_IsThatOne()
+        {
+            var source = AsksItsHost + @"
+public sealed class StrictRules : ICatalogRules
+{
+    public bool UniqueCodes => true;
+}";
+            foreach (var r in new[] { VerifyEf(source), VerifyEfWithoutAProvider(source) })
+            {
+                Assert.DoesNotContain(r.Warnings, w => w.Contains("was built without its host"));
+                Assert.True(r.Errors("Store.ByCode").Length == 0, r.Explain("Store.ByCode"));
+            }
+        }
+
+        // (a design-time factory gives the host's services, and no provider: the context it makes is given one. The
+        // factory's service is the one asked: the class made by its constructor alone would answer false)
+        [Fact]
+        public void AServiceOfTheHosts_ADesignTimeFactoryGives_IsThatOne()
+        {
+            var source = AsksItsHost + @"
+public sealed class RulesOf(bool unique) : ICatalogRules
+{
+    public bool UniqueCodes => unique;
+}
+public sealed class DesignTimeServices : IServiceProvider
+{
+    public object? GetService(Type service) => service == typeof(ICatalogRules) ? new RulesOf(true) : null;
+}
+public sealed class DbFactory : Microsoft.EntityFrameworkCore.Design.IDesignTimeDbContextFactory<Db>
+{
+    public Db CreateDbContext(string[] args) =>
+        new Db(new DbContextOptionsBuilder<Db>().UseApplicationServiceProvider(new DesignTimeServices()).Options);
+}";
+            foreach (var r in new[] { VerifyEf(source), VerifyEfWithoutAProvider(source) })
+            {
+                Assert.DoesNotContain(r.Warnings, w => w.Contains("was built without its host"));
+                Assert.True(r.Errors("Store.ByCode").Length == 0, r.Explain("Store.ByCode"));
+            }
         }
     }
 }

@@ -269,7 +269,7 @@ namespace CsVerify.Verifier.Boogie
             if (fd.Instance == null)
             {
                 var sv = Sel(FieldMap(fd.Field), MLit.Null);
-                if (NonNullField(fd.Field))
+                if (ReadNonNull(fd.Field))
                 {
                     Assume(NotNull(sv));
                 }
@@ -298,7 +298,7 @@ namespace CsVerify.Verifier.Boogie
             // (a non-nullable field of a built object: not this one's, while its constructor builds it. True in every
             // state, as the type says: not under a quantifier's range, whose variable it doesn't mention, where the
             // solver would have no term to instantiate it with)
-            if (NonNullField(fd.Field) && !(_p.IsCtor && fd.OnThis))
+            if (ReadNonNull(fd.Field) && !(_p.IsCtor && fd.OnThis))
             {
                 Emit(MAssume.Of(Implies(NotNull(o), NotNull(v)), always: true));
             }

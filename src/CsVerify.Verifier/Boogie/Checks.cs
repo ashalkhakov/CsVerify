@@ -361,6 +361,15 @@ namespace CsVerify.Verifier.Boogie
         /// <summary>A field whose value, once its object is built, is never null.</summary>
         private static bool NonNullField(ISymbol field) => (!field.IsStatic || StaticStartsWithObject(field)) && IsNullable(FieldType(field)) && NotNullable(FieldType(field));
 
+        /// <summary>
+        /// A field read as never null: one whose type says so (NonNullField), but an entity's reference navigation. EF
+        /// sets that one, to the row it loads or to nothing where the query doesn't include it, whatever its type
+        /// says: what it holds is what the query read.
+        /// </summary>
+        private static bool ReadNonNull(ISymbol field) =>
+            NonNullField(field) &&
+            !(KernelTypes.Ef?.EntityOf(field.ContainingType) is { } entity && entity.References.Any(r => SymbolEqualityComparer.Default.Equals(r.OriginalDefinition, field.OriginalDefinition)));
+
         private static MExpr And(IEnumerable<MExpr> xs)
         {
             var list = xs.ToList();

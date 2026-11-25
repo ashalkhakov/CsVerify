@@ -309,7 +309,9 @@ namespace CsVerify.Verifier.Boogie
 
             // (procedures verified side by side, a solver each: their results don't depend on each other)
             var cores = "/vcsCores:" + solvers;
-            options.Parse(new[] { "/proverOpt:PROVER_PATH=" + z3Path, "/timeLimit:" + Math.Max(1, timeoutMs / 1000), cores }.Concat(only).Concat(extra).ToArray());
+            // (declarations in the program's order: Boogie's own order of them differs from run to run, and with it
+            // the solver's input and how long it takes, so the same program verified one time and timed out the next)
+            options.Parse(new[] { "/proverOpt:PROVER_PATH=" + z3Path, "/timeLimit:" + Math.Max(1, timeoutMs / 1000), cores, "/normalizeDeclarationOrder:0" }.Concat(only).Concat(extra).ToArray());
             SolverFactory.Use(options);
             using var engine = new ExecutionEngine(options, new EmptyVerificationResultCache(), scheduler, false);
             if (Parser.Parse(program.Text, "csverify.bpl", out Microsoft.Boogie.Program parsed, false) != 0 || parsed == null)

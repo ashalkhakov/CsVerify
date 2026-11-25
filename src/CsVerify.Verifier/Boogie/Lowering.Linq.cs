@@ -105,17 +105,33 @@ namespace CsVerify.Verifier.Boogie
 
         /// <summary>
         /// A map of values of a type, one for each object, nothing else known of them: each a value of its type
-        /// (ValueOfType), as one the program could hold is.
+        /// (ValueOfType), as one the program could hold is; of a class a column converts to, null or an object of it.
         /// </summary>
         private string ValueMap(ITypeSymbol t)
         {
             var name = LinqMap("[Ref]" + TypeOf(t));
-            if (ValueOfType(Sel(new KVar(name), new KVar("o$")), t) is KExpr of)
+            var v = Sel(new KVar(name), new KVar("o$"));
+            if (ColumnClass(t))
+            {
+                _p.AddClassType(t.OriginalDefinition);
+            }
+            var of = ValueOfType(v, t) ?? (ColumnClass(t)
+                ? OrElse(Eq(v, KLit.Null), AndAlso(Sel("$Alloc", v), new KOp("sub", new KOp("dtype", v), new KLit(TypeConst(t.WithNullableAnnotation(NullableAnnotation.None))))))
+                : null);
+            if (of != null)
             {
                 Emit(KSpecStmt.AssumedFree(KQuant.ForAll("o$", "Ref", of), _decl, argumentAt: _decl));
             }
             return name;
         }
+
+        /// <summary>
+        /// A class a column may convert to (HasConversion): one of its own, no entity, no string, no collection. What a
+        /// query gives of such a column is an object the converter made, or null.
+        /// </summary>
+        private static bool ColumnClass(ITypeSymbol t) =>
+            t is INamedTypeSymbol { TypeKind: TypeKind.Class, IsGenericType: false, SpecialType: SpecialType.None } c && !IsData(c) &&
+            KernelTypes.Ef?.EntityOf(c) == null;
 
         /// <summary>
         /// v is a value of t, as far as t says (MathTypes.OfType's, as kernel terms): an integer in its range, a decimal in
@@ -355,11 +371,12 @@ namespace CsVerify.Verifier.Boogie
 
         /// <summary>
         /// A database query of a scalar in a database query's lambda, correlated by the lambda's row (its only parameter
-        /// of it): of a value type, or a string, and none of the lambda's other parameters.
+        /// of it): of a type a column holds, a value type, a string, a data value or a class it converts to (ColumnClass),
+        /// and none of the lambda's other parameters.
         /// </summary>
         private bool Subquery(IInvocationOperation s, IAnonymousFunctionOperation fn) =>
             KernelTypes.Ef != null && fn.Symbol.Parameters.Length == 1 && KernelTypes.Ef.EntityOf(fn.Symbol.Parameters[0].Type) != null &&
-            (s.Type?.IsValueType == true || IsString(s.Type)) && InSubset(s.Type) && (IsQueryableMethod(s.TargetMethod) || IsEfMethod(s.TargetMethod)) &&
+            (s.Type?.IsValueType == true || IsString(s.Type) || IsData(s.Type) || ColumnClass(s.Type)) && InSubset(s.Type) && (IsQueryableMethod(s.TargetMethod) || IsEfMethod(s.TargetMethod)) &&
             DatabaseRoot(s, out _) != null &&
             !s.Descendants().OfType<IParameterReferenceOperation>().Any(r => r.Parameter.ContainingSymbol is IMethodSymbol { MethodKind: MethodKind.AnonymousFunction } pm &&
                                                                            !SymbolEqualityComparer.Default.Equals(pm, fn.Symbol) && !s.Descendants().OfType<IAnonymousFunctionOperation>().Any(f => SymbolEqualityComparer.Default.Equals(f.Symbol, pm)));
@@ -899,7 +916,13 @@ namespace CsVerify.Verifier.Boogie
         private (IOperation body, IParameterSymbol p1, IParameterSymbol p2) LambdaArg(IInvocationOperation q, int ordinal)
         {
             var arg = q.Arguments.First(a => a.Parameter.Ordinal == ordinal).Value;
-            return PureLambda(arg) ?? throw new NotTranslated("a LINQ lambda that isn't pure: " + Unconverted(arg).Kind + " " + ((Unconverted(arg) as IDelegateCreationOperation)?.Target?.Kind));
+            if (PureLambda(arg) is { } lambda)
+            {
+                return lambda;
+            }
+            // (the lambda as written, on one line and cut short: which one, of a query with several)
+            var written = string.Join(" ", arg.Syntax.ToString().Split((char[])null, StringSplitOptions.RemoveEmptyEntries));
+            throw new NotTranslated("a LINQ lambda that isn't pure: " + (written.Length > 80 ? written.Substring(0, 80) + "..." : written));
         }
 
         /// <summary>A query: a member of Enumerable that gives a sequence.</summary>

@@ -249,19 +249,25 @@ namespace CsVerify.Verifier.Boogie
                     }
                 }
             }
-            // (each an entity of the type; which row an object is, the inverse of Row)
+            // (each an entity of the type; which objects are rows, and which row each is, the inverse of Row. The inverse
+            // is stated of an object that is a row, at the question whether it is one: asked of any object, the row at
+            // its index would be one more row, whose objects are asked the same, without end)
             var i4 = Atom();
             LinqFact(Over(KLit.Zero, len, i4, Isa(Sel(rows, i4), e)), at);
             var index = new KVar(LinqMap("[Ref]int"));
+            var member = new KVar(LinqMap("[Ref]bool"));
             var i5 = Atom();
-            LinqFact(Over(KLit.Zero, len, i5, Eq(Sel(index, Sel(rows, i5)), i5)), at);
+            LinqFact(Over(KLit.Zero, len, i5, AndAlso(Sel(member, Sel(rows, i5)), Eq(Sel(index, Sel(rows, i5)), i5))), at);
+            var z = Atom();
+            LinqFact(new KQuant(true, "Ref", null, Nameless.Close(Implies(Sel(member, z), AndAlso(Between(KLit.Zero, Sel(index, z), len), Eq(Sel(rows, Sel(index, z)), z))), z),
+                new[] { Nameless.Close(Sel(member, z), z) }), at);
             var y = new KVar("y$");
-            var isRow = AndAlso(Between(KLit.Zero, Sel(index, y), len), Eq(Sel(rows, Sel(index, y)), y));
+            var isRow = Sel(member, y);
             // (a query that gives no entity of the type, Count, Any, a projection of columns: the database's values, no objects)
             if (_dbResult != null && !Mentions(_dbResult, e.Type)) { }
             else if (t.NoTracking)
             {
-                Materialized(t, rows, len, at, index);
+                Materialized(t, rows, len, at, member);
                 ReadRows(t.Context, e, isRow);
             }
             // (with tracking: what is known of the rows past their reading, only where the context tracked none of the type
@@ -276,7 +282,7 @@ namespace CsVerify.Verifier.Boogie
                 var outer = _known;
                 _known = null;
                 LinqFact(Eq(new KVar(k), none), at);
-                TrackedIncludes(t, rows, len, index, at, new KVar(k));
+                TrackedIncludes(t, rows, len, member, at, new KVar(k));
                 _known = outer == null ? new KVar(k) : (KExpr)AndAlso(outer, new KVar(k));
                 TrackedRows(t.Context, isRow);
             }
@@ -293,7 +299,7 @@ namespace CsVerify.Verifier.Boogie
 
         /// <summary>
         /// Objects a read without tracking made, of one level, their entity: the rows (Rows at each index below Length,
-        /// Index its inverse); or, of each object of the level above (Parent), what a path's navigation loads: its value
+        /// IsRow the objects that are rows); or, of each object of the level above (Parent), what a path's navigation loads: its value
         /// (Of, a term over the object; maybe null where MaybeNull), the elements of the list it is (Size over the list, El
         /// over it and an index), or the members of the set it is (Member over it and an object). ParentOf, IndexOf: the
         /// inverse maps, which object of the level above, which index of its list.
@@ -302,7 +308,7 @@ namespace CsVerify.Verifier.Boogie
         {
             public EfModel.Entity Entity;
             public Made Parent;
-            public KVar Rows, Index;
+            public KVar Rows, IsRow;
             public KExpr Length;
             public KAbs Of;
             public bool MaybeNull;
@@ -311,12 +317,12 @@ namespace CsVerify.Verifier.Boogie
             public KVar ParentOf, IndexOf;
         }
 
-        private static Made RowsMade(EfModel.Entity entity, KVar rows, KExpr length, KVar index) => new Made
+        private static Made RowsMade(EfModel.Entity entity, KVar rows, KExpr length, KVar isRow) => new Made
         {
             Entity = entity,
             Rows = rows,
             Length = length,
-            Index = index,
+            IsRow = isRow,
         };
 
         /// <summary>forall (or exists) z: Ref :: body, z an atom in it.</summary>
@@ -363,7 +369,7 @@ namespace CsVerify.Verifier.Boogie
         {
             if (m.Parent == null)
             {
-                return AndAlso(Between(KLit.Zero, Sel(m.Index, r), m.Length), Eq(Sel(m.Rows, Sel(m.Index, r)), r));
+                return Sel(m.IsRow, r);
             }
             var parent = Sel(m.ParentOf, r);
             var inParent = Has(m.Parent, parent);
@@ -442,14 +448,14 @@ namespace CsVerify.Verifier.Boogie
         /// through its type's filters, and so on down each path (Loaded). With identity resolution, or an Include not read
         /// here, EF fixes up navigations from the other rows it loads: nothing is known of them.
         /// </summary>
-        private void Materialized(DbTable t, KVar rows, KVar len, SyntaxNode at, KVar index)
+        private void Materialized(DbTable t, KVar rows, KVar len, SyntaxNode at, KVar isRow)
         {
             var e = t.Entity;
             KExpr Zero = KLit.Zero;
             KExpr Null = KLit.Null;
             var i2 = Atom();
             LinqFact(Over(Zero, len, i2, Not(Sel("$Alloc", Sel(rows, i2)))), at);
-            var top = RowsMade(e, rows, len, index);
+            var top = RowsMade(e, rows, len, isRow);
             var made = new List<Made> { top };
             var loadedTypes = new HashSet<ITypeSymbol>(t.IncludePaths.SelectMany(x => x).Select(nav => EfModel.NavigationTarget(nav.Type, out _)?.OriginalDefinition)
                 .Where(x => x != null), SymbolEqualityComparer.Default);
@@ -545,7 +551,7 @@ namespace CsVerify.Verifier.Boogie
         /// tracking (Loaded), and tracked from here on, unchanged (of an entity of those types the context didn't track,
         /// whether it does now isn't known, so that a later query doesn't take it for untracked).
         /// </summary>
-        private void TrackedIncludes(DbTable t, KVar rows, KVar len, KVar index, SyntaxNode at, KExpr known)
+        private void TrackedIncludes(DbTable t, KVar rows, KVar len, KVar isRow, SyntaxNode at, KExpr known)
         {
             if (t.UnknownInclude || t.IncludePaths.Count == 0)
             {
@@ -553,7 +559,7 @@ namespace CsVerify.Verifier.Boogie
             }
             var e = t.Entity;
             KExpr Null = KLit.Null;
-            var top = RowsMade(e, rows, len, index);
+            var top = RowsMade(e, rows, len, isRow);
             _known = known;
             foreach (var nav in e.References.Where(r => t.Includes.Contains(r.OriginalDefinition) && IsField(r)))
             {
@@ -1853,6 +1859,13 @@ namespace CsVerify.Verifier.Boogie
                 return null;
             }
             if (m.Name is "Dispose" or "DisposeAsync" && KernelTypes.Ef.IsContextType(receiver))
+            {
+                return null;
+            }
+            // (a context's OnModelCreating, OnConfiguring or ConfigureConventions calling its base's, a library context's:
+            // the library's part of the model and the options, which EF's own model has; nothing of the program's state)
+            if (m.Name is "OnModelCreating" or "OnConfiguring" or "ConfigureConventions" && inv.Instance is IInstanceReferenceOperation &&
+                _m != null && _m.Name == m.Name && _m.IsOverride)
             {
                 return null;
             }

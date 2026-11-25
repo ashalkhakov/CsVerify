@@ -14,7 +14,7 @@ namespace CsVerify.Tests
             var sep = Path.DirectorySeparatorChar;
             var files = Directory.EnumerateFiles(root, "*.cs", SearchOption.AllDirectories)
                 .Where(f => !f.Contains($"{sep}obj{sep}") && !f.Contains($"{sep}bin{sep}"));
-            return Engine.VerifyFiles(files, EfHarness.Options());
+            return EfHarness.ModelBuilt(Engine.VerifyFiles(files, EfHarness.Options()));
         }
 
         [Fact]

@@ -16,6 +16,9 @@ namespace CsVerify.Verifier
         /// <summary>Why EF's own model of a context wasn't read (the configuration's source was, instead).</summary>
         public readonly List<(string context, string why)> RuntimeFailures = new List<(string, string)>();
 
+        /// <summary>A service a context asked its host for where EF's model was built, which a stand-in answered.</summary>
+        public readonly List<(string context, string service)> RuntimeStoodIn = new List<(string, string)>();
+
         /// <summary>Was EF's own model read, of every context?</summary>
         public bool FromRuntime { get; private set; }
 
@@ -26,6 +29,7 @@ namespace CsVerify.Verifier
         private void ApplyRuntime(Compilation compilation, EfRuntimeModel runtime)
         {
             RuntimeFailures.AddRange(runtime.Failures);
+            RuntimeStoodIn.AddRange(runtime.StoodIn);
             if (runtime.Contexts.Count == 0)
             {
                 return;
@@ -43,17 +47,57 @@ namespace CsVerify.Verifier
                     Console.Error.WriteLine($"[ef-model] fk {fk.Dependent}({string.Join(",", fk.Properties)}) -> {fk.Principal}; unique {fk.Unique}; navs {fk.ToPrincipal ?? "-"}/{fk.ToDependent ?? "-"}");
                 }
             }
+            var known = new HashSet<Entity>(_entities.Values);
             var read = new Dictionary<Entity, EfRuntimeModel.Entity>();
             foreach (var r in runtime.Entities.Values)
             {
-                if (compilation.GetTypeByMetadataName(r.Type) is not INamedTypeSymbol type || type.IsGenericType)
+                if (EntityType(compilation, r.Type) is not INamedTypeSymbol type)
                 {
                     continue;
                 }
+                // (a library's own class: an entity because EF's model has it)
+                if (!type.Locations.Any(l => l.IsInSource) && !MetadataEntities.IsUserClass(type))
+                {
+                    LibraryEntities.Add(type.OriginalDefinition);
+                }
                 Add(type);
-                if (EntityOf(type) is Entity e)
+                // (of a generic class, the instantiation the model has; another of the same class isn't followed)
+                if (EntityOf(type) is Entity e && SymbolEqualityComparer.Default.Equals(e.Type, type) && !read.ContainsKey(e))
                 {
                     read[e] = r;
+                }
+            }
+            // (where EF's model was read of every context, the entity types are its: a class the sources' reading took
+            // for one and EF's model doesn't have, a value object a column converts to, isn't one; one EF's model owns
+            // is an owned one)
+            if (runtime.Failures.Count == 0)
+            {
+                var entities = runtime.Entities.Values.Select(r => EntityType(compilation, r.Type)?.OriginalDefinition).Where(t => t != null).ToHashSet<ITypeSymbol>(SymbolEqualityComparer.Default);
+                foreach (var owned in runtime.Owned.Select(name => EntityType(compilation, name)?.OriginalDefinition).Where(t => t != null && !entities.Contains(t)))
+                {
+                    _owned.Add(owned);
+                }
+                foreach (var t in _entities.Keys.Where(t => !entities.Contains(t)).ToList())
+                {
+                    _entities.Remove(t);
+                }
+            }
+            // (an entity only EF's model has, the other side of a HasOne<T>() say: its attributes, and every entity's
+            // navigations again, those to it among them)
+            foreach (var e in read.Keys.Where(e => !known.Contains(e)))
+            {
+                ReadAttributes(e);
+            }
+            foreach (var e in _entities.Values)
+            {
+                e.References.Clear();
+                e.Collections.Clear();
+                foreach (var p in PropertiesOf(e.Type))
+                {
+                    if (NavigationTarget(p.Type, out bool many) is INamedTypeSymbol target && _entities.ContainsKey(target))
+                    {
+                        (many ? e.Collections : e.References).Add(p);
+                    }
                 }
             }
             foreach (var (e, r) in read)
@@ -74,6 +118,22 @@ namespace CsVerify.Verifier
                 e.ModelNullable.Clear();
                 e.ForeignKeys.Clear();
                 e.CollectionKeys.Clear();
+                e.ShadowNotNull.Clear();
+                e.ReferenceColumns.Clear();
+                e.KeyColumns = new List<(List<string>, bool)>();
+                if (r.Key is { Count: > 0 })
+                {
+                    e.KeyColumns.Add((r.Key, false));
+                }
+                e.KeyColumns.AddRange(r.AlternateKeys.Select(k => (k, false)));
+                foreach (var ix in r.UniqueIndexes)
+                {
+                    var kind = FilterKind(ix, r);
+                    if (kind != IndexFilter.Other)
+                    {
+                        e.KeyColumns.Add((ix.Properties, kind == IndexFilter.QueryFilter));
+                    }
+                }
                 foreach (var k in r.AlternateKeys)
                 {
                     if (Mapped(k) is List<IPropertySymbol> alt)
@@ -100,6 +160,10 @@ namespace CsVerify.Verifier
                         if (p.Shadow && TypeOf(compilation, p.ClrType) is ITypeSymbol shadow)
                         {
                             e.Shadow[p.Name] = shadow;
+                            if (!p.Nullable)
+                            {
+                                e.ShadowNotNull.Add(p.Name);
+                            }
                         }
                         continue;
                     }
@@ -129,14 +193,18 @@ namespace CsVerify.Verifier
             }
             foreach (var fk in runtime.ForeignKeys)
             {
-                if (fk.Dependent == null || fk.Principal == null || compilation.GetTypeByMetadataName(fk.Dependent) is not INamedTypeSymbol dt || EntityOf(dt) is not Entity d ||
-                    compilation.GetTypeByMetadataName(fk.Principal) is not INamedTypeSymbol pt || EntityOf(pt) is not Entity p || !read.ContainsKey(d) || !read.ContainsKey(p))
+                if (fk.Dependent == null || fk.Principal == null || EntityType(compilation, fk.Dependent) is not INamedTypeSymbol dt || EntityOf(dt) is not Entity d ||
+                    EntityType(compilation, fk.Principal) is not INamedTypeSymbol pt || EntityOf(pt) is not Entity p || !read.ContainsKey(d) || !read.ContainsKey(p))
                 {
                     continue;
                 }
                 var toPrincipal = fk.ToPrincipal == null ? null : PropertiesOf(d.Type).FirstOrDefault(x => x.Name == fk.ToPrincipal);
                 var toDependent = fk.ToDependent == null ? null : PropertiesOf(p.Type).FirstOrDefault(x => x.Name == fk.ToDependent);
                 Pair(toPrincipal, toDependent);
+                if (toPrincipal != null)
+                {
+                    d.ReferenceColumns[toPrincipal] = fk.Properties;
+                }
                 if (fk.Unique)
                 {
                     // (its unique index: of all rows, or of those the dependent's query filter keeps)
@@ -207,6 +275,26 @@ namespace CsVerify.Verifier
                 return IndexFilter.Other;
             }
             return kind;
+        }
+
+        /// <summary>
+        /// An entity's class by its reflection name: a class of the compilation, or a generic one of such arguments (a
+        /// library's, IdentityUser`1[[System.Int64, ...]]).
+        /// </summary>
+        private static INamedTypeSymbol EntityType(Compilation compilation, string name)
+        {
+            int open = name.IndexOf("[[", StringComparison.Ordinal);
+            if (open < 0)
+            {
+                return compilation.GetTypeByMetadataName(name) is INamedTypeSymbol { IsGenericType: false, TypeKind: TypeKind.Class } plain ? plain : null;
+            }
+            if (compilation.GetTypeByMetadataName(name.Substring(0, open)) is not INamedTypeSymbol { TypeKind: TypeKind.Class } definition)
+            {
+                return null;
+            }
+            // (each argument [Name, Assembly...]: a class or a struct that isn't generic itself)
+            var arguments = Regex.Matches(name.Substring(open + 1), @"\[([^,\[\]]+),[^\[\]]*\]").Select(m => compilation.GetTypeByMetadataName(m.Groups[1].Value)).ToList();
+            return arguments.Count == definition.Arity && arguments.All(a => a != null) ? definition.Construct(arguments.ToArray<ITypeSymbol>()) : null;
         }
 
         /// <summary>A CLR type by its reflection name: a type of the compilation, or Nullable of one.</summary>

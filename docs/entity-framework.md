@@ -16,10 +16,46 @@ tokens, relationships and which are one-to-one, query filters' soft-delete flags
 with, however it configures it: conventions, attributes, configuration classes and their bases, constants, loops over
 the entity types, a provider's conventions. The configuration's own code is verified like any other; `typeof(T)` and a
 lambda quoted as an expression tree are objects of the library's there, never null. This runs the program's contexts' constructors and model configuration,
-never a query; the provider is never connected to. `CSVERIFY_EF_MODEL_TRACE=1` prints what was read.
+never a query; the provider is never connected to. A reference assembly among the program's references (a shared
+framework's targeting pack, ASP.NET Core's, where the project has a `FrameworkReference`; a package's `ref` folder)
+has no code: the assembly that runs in its place is loaded, the shared framework's of the pack's version. A provider's
+native library (SQLite's `e_sqlite3`) is loaded from
+the program's packages: the MSBuild targets name them (`--native`), and without those the packages beside the
+references' are searched. A library's own class that EF's model has as an entity (ASP.NET Core Identity's
+`IdentityUser<long>` through `db.Users`, used as it is) is an entity here too, its auto-properties its columns, read
+from its assembly. `CSVERIFY_EF_MODEL_TRACE=1` prints what was read, and each reference that couldn't be loaded with why; the warning
+of a model that couldn't be built names the first of those. An entity type only EF's model has (the
+other side of a `HasOne<T>()` that nothing else declares) is one here too. And where EF's model was read of every
+context, the entity types are its and no others: a class the sources' reading would take for one, a value object a
+column converts to by a convention (`ConfigureConventions`), is a column's value, and a type EF's model owns is an
+owned one.
 
-Where a context can't be made (no provider among the references, a constructor that needs what the verifier can't
-give), a warning says why, and the configuration is read from the sources instead, as below; `--ef-static-model`
+A project needn't reference a provider: a library's host picks the database, and the provider is among the host's
+references only. Where the program's references have none, EF's model is built with a provider of the verifier's own,
+a relational one of no database, compiled against the EF Core the program references (EF Core 6 to 10): EF's own
+conventions and its relational ones, no database's (a model is what the configuration says of any database; what a
+provider's conventions add isn't in it, SQL Server's filter on a unique index over a nullable column, which counts
+here as the index without it). It has a column for each type every database has one for; a property of another type
+is a column where the configuration converts it (`HasConversion`) or names its column's type (`HasColumnType`). A
+project that references EF Core alone, without `Microsoft.EntityFrameworkCore.Relational`, gets that package of the
+same version from the packages folder EF Core came from, where it is there. The same provider is the second try
+where the program's own can't build the model, and a design-time factory that fails here (one that reads a connection
+string there is none of) is passed over for the context's constructor. `CSVERIFY_EF_MODEL_TRACE=1` says how each
+context's model was built.
+
+A model's configuration may ask the context's host for a service (`this.GetService<T>()` in `OnModelCreating`: the
+application's service provider, where the host registers what its database needs). The host isn't there where a
+library is verified. Such a service is an implementation among the program's own assemblies, made by a constructor
+whose arguments are services in turn (as it is where the host's project is the one verified, which references it).
+Where nothing among the references implements it and it is an interface, a stand-in answers, each member with its
+type's default (false, 0, null), and a warning names the service: the model is EF's own, of a host that answers so.
+Where the model depends on the answers, a design-time factory gives them, as for EF's tools
+(`IDesignTimeDbContextFactory<T>`, its options naming the services, `UseApplicationServiceProvider`; it needn't name
+a provider, the context it makes is given one). EF's own services and those of what it builds on (its logging, its
+cache) are never stood in for.
+
+Where a context can't be made (a constructor that needs what the verifier can't give, a context that configures a
+provider itself and fails), a warning says why, and the configuration is read from the sources instead, as below; `--ef-static-model`
 reads only the sources. A unique index with a filter counts where the filter is that its columns are not null, and,
 among the rows the entity's query filter keeps, where it is that a flag the query filter requires false is false
 (`HasFilter("[IsDeleted] = 0")` with `HasQueryFilter(x => !x.IsDeleted)`): not for a query with `IgnoreQueryFilters`.
@@ -160,9 +196,14 @@ type, from its operators down to the table (filters, orders, projections, pages,
 columns that identify a row (its keys), the columns a filter fixes, and the order its rows are in. Keys follow the
 standard derivation of unique keys:
 
-- a table's are its key and unique indexes, named by their properties or their names (`HasAlternateKey("ExternalId")`),
-  and the keys of what a one-to-one navigation leads to (`HasOne(...).WithOne(...)`, or two reference navigations to
-  each other): a row of either end has one row of the other at most, as its foreign key is unique;
+- a table's are its key, alternate keys and unique indexes, by their columns, shadow columns too (a filter may fix
+  one with `EF.Property<T>(row, "Name")`), and the keys of what a one-to-one navigation leads to
+  (`HasOne(...).WithOne(...)`, or two reference navigations to each other): a row of either end has one row of the
+  other at most, as its foreign key is unique;
+- a key that holds a reference navigation's foreign key is also a key with the foreign key replaced by any key of the
+  row it names: `HasIndex("OwnerId", "IdempotencyKey").IsUnique()` with `OwnerId` the foreign key of `Holder` makes
+  `p.Holder!.Id == owner && p.IdempotencyKey == key` one row at most, where `Id` is a key of the owner; and a unique
+  index on the foreign key of a `WithMany()` navigation makes it one-to-one;
 - a filter that compares a column to a value not of the row (`t.ExternalId == id`, in a conjunct of `&&`) fixes it; a
   query that fixes every column of a key keeps one row at most;
 - a projection (`Select`) keeps the rows, one to one, in their order; a filter or an order on its members is read as
@@ -207,7 +248,9 @@ A query filter the verifier doesn't read (of a type it doesn't have, say) says n
 out; the query is read all the same. The lambdas the model's builders take (`HasQueryFilter(x => ...)`,
 `HasIndex(x => ...)`) are EF's to read, not run, and aren't verified as C#.
 In a query's lambda, a subquery of a scalar correlated by the row
-(`Owner = db.Owners.Where(o => o.Id == t.OwnerId).Select(o => o.Id).FirstOrDefault()`) is a value of the row not known.
+(`Owner = db.Owners.Where(o => o.Id == t.OwnerId).Select(o => o.Id).FirstOrDefault()`) is a value of the row not known:
+of a type a column holds, a value, a string, or a class the column converts to (a value object; an object of the class
+or null, as the converter makes it).
 `LoadAsync` of a query reads it, tracked: its rows are tracked from there on. A list `ToListAsync` (or LINQ's `ToList`)
 made is the method's own: an `await` leaves its rows as they were, where the method gives it only to LINQ's operators.
 

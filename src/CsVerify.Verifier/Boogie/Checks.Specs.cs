@@ -383,7 +383,7 @@ namespace CsVerify.Verifier.Boogie
                     if (fd.Instance == null)
                     {
                         var sv = Sel(FieldMap(fd.Field), MLit.Null);
-                        if (NonNullField(fd.Field))
+                        if (ReadNonNull(fd.Field))
                         {
                             _facts.Add(NotNull(sv));
                         }
@@ -395,7 +395,7 @@ namespace CsVerify.Verifier.Boogie
                         AddWellDefinedness(NotNull(o), wf, guard);
                     }
                     var v = Sel(FieldMap(fd.Field), o);
-                    if (NonNullField(fd.Field) && !(_p.IsCtor && fd.OnThis))
+                    if (ReadNonNull(fd.Field) && !(_p.IsCtor && fd.OnThis))
                     {
                         // (of a quantifier's variable: a fact of each value of it, stated where its quantifier closes)
                         (o.Mentions(_bound) ? _boundFacts : _facts).Add(Implies(NotNull(o), NotNull(v)));
@@ -415,7 +415,8 @@ namespace CsVerify.Verifier.Boogie
                     try
                     {
                         var body = Spec(opened.body, new List<MExpr>(), new List<MExpr>());
-                        return MQuant.Of(q, name, null, body);
+                        var trigger = opened.trigger?.Select(t => Spec(t, new List<MExpr>(), new List<MExpr>())).ToArray();
+                        return MQuant.Of(q, name, null, body, trigger);
                     }
                     finally
                     {

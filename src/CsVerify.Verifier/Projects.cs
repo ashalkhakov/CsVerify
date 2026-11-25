@@ -20,6 +20,8 @@ namespace CsVerify.Verifier
         public readonly List<string> References = new List<string>();
         public readonly List<string> Analyzers = new List<string>();
         public readonly List<string> AnalyzerConfigs = new List<string>();
+        /// <summary>The native libraries its packages bring (what a provider loads to build EF's model).</summary>
+        public readonly List<string> NativeLibraries = new List<string>();
 
         public static ProjectReference Read(string path)
         {
@@ -32,6 +34,7 @@ namespace CsVerify.Verifier
                     case "--assembly-name": p.AssemblyName = args[++i]; break;
                     case "--nullable": p.Nullable = ParseNullable(args[++i]); break;
                     case "-r": p.References.Add(args[++i]); break;
+                    case "--native": p.NativeLibraries.Add(args[++i]); break;
                     case "-a": p.Analyzers.Add(args[++i]); break;
                     case "--analyzer-config": p.AnalyzerConfigs.Add(args[++i]); break;
                     default:

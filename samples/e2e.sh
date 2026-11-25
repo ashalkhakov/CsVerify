@@ -137,4 +137,55 @@ grep -E -- "--project-reference .*Layered\.Model/obj/Debug/net10\.0/csverify\.pr
 grep -E -- "--project-reference .*Layered\.Data/obj/Debug/net10\.0/csverify\.project\.rsp" layered-rsp.txt
 grep -F -- "--nullable enable" Layered/Layered.Model/obj/Debug/net10.0/csverify.project.rsp
 
+# an EF Core project with the SQLite provider from its package (samples/EfSqlite): the verifier builds EF's own model
+# of it, which loads the provider's native library from the packages, on this system. Its lookups verify only by that
+# model (a renamed column in an index's filter, a composite index with a shadow foreign key, keys named by constants):
+# read from the sources instead, they fail
+cp -R "$repo/samples/EfSqlite" EfSqlite
+dotnet build EfSqlite -p:CsVerifyEnabled=true 2>&1 | tee efsqlite.txt
+grep -F "csverify: 21 of 21 methods verified" efsqlite.txt
+if grep -F "couldn't be built" efsqlite.txt; then
+    echo "error: EF's model of the SQLite sample wasn't built" >&2
+    exit 1
+fi
+grep -F -- "--native" EfSqlite/obj/Debug/net10.0/csverify.rsp > /dev/null
+
+# the same model in a library project, its context derived from ASP.NET Core Identity's, both projects referencing the
+# ASP.NET Core shared framework (samples/EfAspNet): the verifier is given the targeting pack's reference assemblies,
+# and loads the shared framework's in their place. Both projects verify, by EF's model. The library references no
+# provider (its host, the application, picks the database): its model is built with the verifier's own provider, the
+# application's with the provider it references
+cp -R "$repo/samples/EfAspNet" EfAspNet
+CSVERIFY_EF_MODEL_TRACE=1 dotnet build EfAspNet/App -p:CsVerifyEnabled=true 2>&1 | tee efaspnet.txt
+grep -F "csverify: 13 of 13 methods verified" efaspnet.txt
+grep -F "csverify: 4 of 4 methods verified" efaspnet.txt
+if grep -F "couldn't be built" efaspnet.txt; then
+    echo "error: EF's model of the ASP.NET sample wasn't built" >&2
+    exit 1
+fi
+grep -F "EfAspNet.Db: built with the verifier's own provider" efaspnet.txt
+grep -F "EfAspNet.Db: built with the program's provider" efaspnet.txt
+tr '\\' '/' < EfAspNet/App/obj/Debug/net10.0/csverify.rsp > efaspnet-rsp.txt
+grep -E "packs/Microsoft\.AspNetCore\.App\.Ref/.*/ref/" efaspnet-rsp.txt > /dev/null
+if grep -iE "sqlite|sqlserver" EfAspNet/Lib/obj/Debug/net10.0/csverify.rsp; then
+    echo "error: the ASP.NET sample's library references a provider" >&2
+    exit 1
+fi
+
+# a library that references EF Core alone, no provider and no relational package (samples/EfCoreOnly): EF's model is
+# built with the verifier's own provider and EF's relational package from the packages folder (restored above, of the
+# same version). Its lookup verifies only by that model (a unique index over a shadow foreign key)
+cp -R "$repo/samples/EfCoreOnly" EfCoreOnly
+CSVERIFY_EF_MODEL_TRACE=1 dotnet build EfCoreOnly -p:CsVerifyEnabled=true 2>&1 | tee efcoreonly.txt
+grep -F "csverify: 2 of 2 methods verified" efcoreonly.txt
+if grep -F "couldn't be built" efcoreonly.txt; then
+    echo "error: EF's model of the EF-Core-only sample wasn't built" >&2
+    exit 1
+fi
+grep -F "EfCoreOnly.Db: built with the verifier's own provider" efcoreonly.txt
+if grep -F "Relational" EfCoreOnly/obj/Debug/net10.0/csverify.rsp; then
+    echo "error: the EF-Core-only sample references EF's relational package" >&2
+    exit 1
+fi
+
 echo "e2e: OK"

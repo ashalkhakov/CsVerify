@@ -1,0 +1,16 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- The application of samples/EfAspNet: lookups on the model its library project configures, each kept to one row
+       by a key only EF's own model has (samples/e2e.sh). -->
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <CsVerifyVersion Condition="'$(CsVerifyVersion)' == ''">0.5.27</CsVerifyVersion>
+  </PropertyGroup>
+  <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+    <PackageReference Include="CsVerify" Version="$(CsVerifyVersion)" PrivateAssets="all" />
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Sqlite" Version="10.0.12" />
+    <ProjectReference Include="../Lib/EfAspNet.Lib.csproj" />
+  </ItemGroup>
+</Project>

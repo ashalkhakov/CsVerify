@@ -31,8 +31,10 @@ namespace CsVerify.Verifier.Boogie
             return ElementOf(t) is ITypeSymbol e && InSubset(e) && (IsArray(t) || IsList(t) || IsCollectionInterface(t)) ? t : null;
         }
 
-        private static string FactKey(IMethodSymbol m, IParameterSymbol p) =>
-            "rows:" + m.OriginalDefinition.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat) + "#" + p.Ordinal;
+        private static string FactKey(IMethodSymbol m, IParameterSymbol p) => FactPrefix(m) + p.Ordinal;
+
+        /// <summary>What every fact of a method's query parameters is named by.</summary>
+        internal static string FactPrefix(IMethodSymbol m) => "rows:" + m.OriginalDefinition.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat) + "#";
 
         /// <summary>The ghost input of a query parameter of this method: has the query one row at most?</summary>
         private string OneRow(IParameterSymbol p) => Declare("q$one$" + p.Name, KernelTypes.Compilation.GetSpecialType(SpecialType.System_Boolean));

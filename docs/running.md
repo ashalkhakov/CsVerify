@@ -51,6 +51,8 @@ Arguments are `.cs` files, directories (searched recursively, skipping `bin/` an
 | `-a <dll>` / `--analyzer-config <file>` | run the source generators of this analyzer assembly on the program, with this `.editorconfig` or `.globalconfig` (the MSBuild targets pass the project's) |
 | `--only <text>` | verify only the methods whose name (`Type.Method`, or a nested type's `Outer.Type.Method`) contains the text (repeatable); the others are still called by their contracts, and a `[Pure]` one by its body, but aren't verified; only what the selected methods reach is translated ([Faster runs](#faster-runs)) |
 | `-v` | list every method with its proved/total obligations and its solving time, the library contracts (`[ContractsFor]` stubs, trusted) the proofs assumed, and the time of each phase |
+| `--ef-static-model` | read an EF Core model from the sources only, without loading the program to ask EF for its own ([Entity Framework](entity-framework.md#the-model)) |
+| `--native <file>` | a native library the program's packages bring (repeatable; the MSBuild targets pass each runtime's): what a database provider loads where EF's model is built, SQLite's `e_sqlite3`. Without them, the packages beside the references' are searched |
 | `--checks <kinds>` | prove only these kinds of obligation: a comma-separated list of `null`, `linear`, `bounds`, `overflow`, `contracts` (or `all`). See [Check profiles](#check-profiles) |
 | `--each` | verify each argument as a program of its own (a comma joins paths into one: `lemon/CsLemon,lemon/CsLemon.Runtime`), and combine the results, for programs that cannot be compiled together |
 | `--library-report` | after the results, the [library report](#the-library-report) |
@@ -61,7 +63,11 @@ Arguments are `.cs` files, directories (searched recursively, skipping `bin/` an
 virtual call may run; and of each type they use its invariants, operators, conversions, constructors and the members C#
 calls without naming them (`GetEnumerator`, `Dispose`, `Deconstruct`, `GetAwaiter`...). The rest of the program isn't
 translated, so a run of a few methods costs the compilation and the analyses of the whole program, and those methods.
-What isn't translated can only be assumed less, never more, so a method `--only` proves is proved. Where what the
+What isn't translated can only be assumed less, never more, so a method `--only` proves is proved. A fact a selected
+method assumes of a helper it calls (what a query helper's result is, given its query) is proved in the same run: the
+helper's body is translated and verified for it though it isn't selected, and is reported only as part of that, so a
+method is proved alone as a run of every method proves it. The same holds of a project's run for the helpers of the
+projects it references. Where what the
 selected methods reach doesn't type check in Boogie on its own, the whole program is translated instead (with
 `CSVERIFY_TRACE`, a line says so).
 

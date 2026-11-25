@@ -589,6 +589,14 @@ public static class Store
             "var o = await db.Orders.AsNoTracking().Include(x => x.Customer).FirstOrDefaultAsync(x => x.Id == id); if (o == null) return; " +
             "db.Update(o); await db.SaveChangesAsync(); } }"));
 
+        // (a failure the solver has to search for: found in a fraction of a second, so within a small limit. Whether an
+        // object is a row is a question that makes no row; where it did, the search went on to the limit, CSV1902)
+        [Fact]
+        public void Update_ALoadedGraph_IsReportedWithinASmallLimit() => Assert.Equal(new[] { "CSV1033" }, VerifyEf(Model +
+            "public static class C { public static async Task M(int id) { using var db = new Shop(); " +
+            "var o = await db.Orders.AsNoTracking().Include(x => x.Customer).FirstOrDefaultAsync(x => x.Id == id); if (o == null) return; " +
+            "db.Update(o); await db.SaveChangesAsync(); } }", o => o.TimeoutMs = 3000).Errors("M"));
+
         [Fact]
         public void Update_ARowAlone_Verifies() => Assert.Empty(Errors("M",
             "public static class C { public static async Task M(int id) { using var db = new Shop(); " +
@@ -888,6 +896,9 @@ public sealed class Users(Db db)
     public async Task<List<string?>> Names() => await db.Users.AsNoTracking().Select(u => u.UserName).ToListAsync();
     public async Task<List<string>> Displays() => await db.Users.AsNoTracking().Select(u => u.Display).ToListAsync();
 }", referenceAssembly: true);
+            // (nothing of a reference assembly can be loaded, so EF's own model isn't built: a warning says so, and the
+            // model is read from the sources and the assembly's metadata)
+            Assert.Contains(r.Warnings, w => w.Contains("couldn't be built"));
             foreach (var ok in new[] { "Ids", "Names" })
             {
                 Assert.True(r.Errors("Users." + ok).Length == 0, ok + ": " + r.Explain("Users." + ok));
@@ -921,6 +932,7 @@ public sealed class Db(DbContextOptions<Db> options) : DbContext(options)
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         modelBuilder.Entity<Payee>();
+        modelBuilder.ApplyConfiguration(new TransferConfiguration());
     }
 }
 public abstract class KeyedConfiguration<T> : IEntityTypeConfiguration<T> where T : class
@@ -1114,10 +1126,14 @@ public sealed class Store(Db db)
 }");
             // (the converter's lambdas: EF gives them no null)
             Assert.DoesNotContain(r.Methods.Where(m => m.Name == "Db.OnModelCreating.<lambda:14>").SelectMany(m => m.Diagnostics), d => d.IsError);
-            foreach (var ok in new[] { "ByEmail", "Read", "AddNewCard" })
+            foreach (var ok in new[] { "Read", "AddNewCard" })
             {
                 Assert.True(r.Errors(ok).Length == 0, r.Explain(ok));
             }
+            // (a null member in the lambda is SQL's null, no dereference; First of a filter no index makes unique, in no
+            // order, is reported as Held's is. It passed while MemberId, a record a column converts to, was taken for
+            // an entity whose navigation wasn't included: null and, by its type, not null, so anything followed)
+            Assert.Equal(new[] { "CSV1031" }, r.Errors("ByEmail"));
             // (and these report nothing but what isn't verified yet: a list's task, LINQ's Select)
             foreach (var ok in new[] { "Started", "ById", "Code" })
             {
@@ -2935,6 +2951,426 @@ public sealed class Store(Db db)
             foreach (var bad in new[] { "Store.HolderOfProfileIgnoring", "Store.KeptOf", "Store.TwiceOf", "Store.SlotOf" })
             {
                 Assert.True(r.Errors(bad).SequenceEqual(new[] { "CSV1001" }), bad + ": " + r.Explain(bad));
+            }
+        }
+
+        [Fact]
+        public void ANavigationNotIncluded_IsNull_WhateverItsTypeSays()
+        {
+            // (a reference navigation of a type that isn't nullable: EF leaves it null where the query doesn't include
+            // it. Read, it may be null (CSV1013); and nothing follows from its type saying otherwise: an assertion
+            // that doesn't hold of the row is reported. v0.5.27 took the row's navigation for null and for not null at
+            // once, and proved anything of such a row)
+            var r = VerifyEf(@"
+public sealed class Owner
+{
+    public int Id { get; set; }
+    public string Name { get; set; } = """";
+}
+public sealed class Pet
+{
+    public int Id { get; set; }
+    public int OwnerId { get; set; }
+    public Owner Owner { get; set; } = null!;
+    public int Weight { get; set; }
+}
+public sealed class Db(DbContextOptions<Db> options) : DbContext(options)
+{
+    public DbSet<Pet> Pets => Set<Pet>();
+}
+public static class Reads
+{
+    public static async Task NotSo(Db db, int id)
+    {
+        var pet = await db.Pets.AsNoTracking().FirstOrDefaultAsync(p => p.Id == id);
+        if (pet == null) return;
+        Spec.Assert(pet.Weight == 12345);
+    }
+    public static async Task<string> NotIncluded(Db db, int id)
+    {
+        var pet = await db.Pets.AsNoTracking().FirstOrDefaultAsync(p => p.Id == id);
+        return pet == null ? """" : pet.Owner.Name;
+    }
+    public static async Task<string> Included(Db db, int id)
+    {
+        var pet = await db.Pets.AsNoTracking().Include(p => p.Owner).FirstOrDefaultAsync(p => p.Id == id);
+        return pet == null ? """" : pet.Owner.Name;
+    }
+}");
+            Assert.NotEmpty(r.Errors("Reads.NotSo"));
+            Assert.True(r.Errors("Reads.NotIncluded").SequenceEqual(new[] { "CSV1013" }), r.Explain("Reads.NotIncluded"));
+            Assert.True(r.Errors("Reads.Included").Length == 0, r.Explain("Reads.Included"));
+        }
+
+        [Fact]
+        public void AValueObjectAColumnConvertsTo_IsNoEntity_AndASubqueryGivesOne()
+        {
+            // (a class a column converts to by a convention the sources' reading doesn't follow: no entity, by EF's
+            // model. A correlated subquery that selects such a column gives an object of the class, or null: the
+            // helper it is in is verified, and its caller's lookup by the alternate key is of one row at most)
+            var source = @"using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
+public sealed record Reference
+{
+    private Reference(string value) => Value = value;
+    public string Value { get; }
+    public static Reference Parse(string value) => new Reference(value);
+}
+public sealed class ReferenceConverter : ValueConverter<Reference, string>
+{
+    public ReferenceConverter() : base(reference => reference.Value, value => Reference.Parse(value)) { }
+}
+public sealed class Shipment
+{
+    public long Id { get; set; }
+    public Guid Code { get; set; }
+    public Reference? Carrier { get; set; }
+}
+public sealed class Label
+{
+    public long Id { get; set; }
+    public Shipment? Shipment { get; set; }
+    public Reference? Carrier { get; set; }
+}
+public sealed class Db(DbContextOptions<Db> options) : DbContext(options)
+{
+    protected override void ConfigureConventions(ModelConfigurationBuilder configuration) =>
+        configuration.Properties<Reference>().HaveConversion<ReferenceConverter>();
+
+    protected override void OnModelCreating(ModelBuilder b)
+    {
+        b.Entity<Shipment>().HasAlternateKey(s => s.Code);
+        b.Entity<Shipment>().Ignore(s => s.Carrier);
+        b.Entity<Label>().HasOne(l => l.Shipment).WithOne().HasForeignKey<Label>(""ShipmentId"");
+    }
+}
+public sealed class Store(Db db)
+{
+    public async Task<Shipment?> ByCode(Guid code) =>
+        (await WithCarriers(db.Set<Shipment>().Where(s => s.Code == code))).SingleOrDefault();
+
+    public async Task<Shipment?> Any() =>
+        (await WithCarriers(db.Set<Shipment>().Where(s => s.Id > 0))).SingleOrDefault();
+
+    private async Task<IReadOnlyList<Shipment>> WithCarriers(IQueryable<Shipment> query)
+    {
+        var rows = await query
+            .Select(s => new
+            {
+                Shipment = s,
+                Carrier = db.Set<Label>().Where(l => l.Shipment!.Id == s.Id).Select(l => l.Carrier).SingleOrDefault(),
+            })
+            .ToListAsync();
+        foreach (var row in rows)
+        {
+            row.Shipment.Carrier = row.Carrier;
+        }
+
+        return rows.Select(row => row.Shipment).ToList();
+    }
+}";
+            var r = VerifyEf(source);
+            Assert.DoesNotContain(r.Diagnostics, d => d.Id == "CSV1902" && d.Message.Contains("WithCarriers"));
+            Assert.True(r.Errors("Store.WithCarriers").Length == 0, r.Explain("Store.WithCarriers"));
+            Assert.True(r.Errors("Store.ByCode").Length == 0, r.Explain("Store.ByCode"));
+            Assert.True(r.Errors("Store.Any").SequenceEqual(new[] { "CSV1001" }), r.Explain("Store.Any"));
+            // (--only the caller: the helper isn't selected, and is verified all the same for the fact the caller
+            // assumes of it, so the caller is proved as the whole run proves it; the one that isn't still isn't)
+            var only = VerifyEf(source, options => options.Only.Add("Store.ByCode"));
+            Assert.True(only.Errors("Store.ByCode").Length == 0, only.Explain("Store.ByCode"));
+            Assert.DoesNotContain(only.Diagnostics, d => d.Id == "CSV1902");
+            only = VerifyEf(source, options => options.Only.Add("Store.Any"));
+            Assert.True(only.Errors("Store.Any").SequenceEqual(new[] { "CSV1001" }), only.Explain("Store.Any"));
+        }
+
+        [Fact]
+        public void KeysOfShadowColumns_AndThroughForeignKeys()
+        {
+            // (PR #133's review: a unique foreign key of a WithMany navigation; a composite unique index with a shadow
+            // foreign key, fixed by the owner's key or by EF.Property; keys and columns named by constants, by EF's model)
+            var r = VerifyEf(@"using System.Linq.Expressions;
+using Microsoft.EntityFrameworkCore.Metadata.Builders;
+public readonly record struct OwnerId(Guid Value);
+
+public readonly record struct PaymentId
+{
+    public PaymentId(Guid value)
+    {
+        if (value == Guid.Empty)
+        {
+            throw new ArgumentException(""empty"", nameof(value));
+        }
+
+        Value = value;
+    }
+
+    public Guid Value { get; }
+}
+
+public sealed class Owner
+{
+    public long RowId { get; set; }
+
+    public OwnerId Id { get; set; }
+}
+
+public sealed class Receipt
+{
+    public long RowId { get; set; }
+
+    public string? Number { get; set; }
+}
+
+public sealed class Payment
+{
+    public long RowId { get; set; }
+
+    public PaymentId ExternalId { get; set; }
+
+    public Owner? Holder { get; private set; }
+
+    public long? ReceiptRowId { get; set; }
+
+    public Receipt? Receipt { get; private set; }
+
+    public Guid? IdempotencyKey { get; set; }
+}
+
+public sealed class Order
+{
+    public long RowId { get; set; }
+
+    public Guid? PlatformOrder { get; set; }
+
+    public Payment? Payment { get; set; }
+}
+
+/// <summary>As before: the key named by an expression, a Guid ExternalId when the class has none, an alternate key on it, a soft-delete filter.</summary>
+public abstract class RowConfiguration<T> : IEntityTypeConfiguration<T>
+    where T : class
+{
+    protected abstract Expression<Func<T, long>> Key { get; }
+
+    public virtual void Configure(EntityTypeBuilder<T> builder)
+    {
+        builder.Property(Key).HasColumnName(""Id"");
+        builder.HasKey(((MemberExpression)Key.Body).Member.Name);
+        if (typeof(T).GetProperty(""ExternalId"") is null)
+        {
+            builder.Property<Guid>(""ExternalId"");
+        }
+
+        builder.HasAlternateKey(""ExternalId"");
+        builder.Property<bool>(""IsDeleted"");
+        builder.HasQueryFilter(x => !EF.Property<bool>(x, ""IsDeleted""));
+    }
+}
+
+internal sealed class OwnerConfiguration : IEntityTypeConfiguration<Owner>
+{
+    public void Configure(EntityTypeBuilder<Owner> builder)
+    {
+        builder.HasKey(o => o.RowId);
+        builder.Property(o => o.Id).HasColumnName(""ExternalId"").HasConversion(id => id.Value, v => new OwnerId(v));
+        builder.HasAlternateKey(o => o.Id);
+    }
+}
+
+internal sealed class ReceiptConfiguration : RowConfiguration<Receipt>
+{
+    protected override Expression<Func<Receipt, long>> Key => x => x.RowId;
+
+    public override void Configure(EntityTypeBuilder<Receipt> builder)
+    {
+        base.Configure(builder);
+        builder.HasIndex(r => r.Number).IsUnique().HasFilter(""[Number] IS NOT NULL"");
+    }
+}
+
+internal sealed class PaymentConfiguration : RowConfiguration<Payment>
+{
+    private const string Owner = ""OwnerId"";
+
+    protected override Expression<Func<Payment, long>> Key => x => x.RowId;
+
+    public override void Configure(EntityTypeBuilder<Payment> builder)
+    {
+        builder.Property(x => x.ExternalId).HasConversion(id => id.Value, v => new PaymentId(v));
+        base.Configure(builder);
+        builder.HasOne(x => x.Holder).WithMany().HasForeignKey(Owner).IsRequired();
+        builder.Property(x => x.ReceiptRowId).HasColumnName(""ReceiptId"");
+        builder.HasOne(x => x.Receipt).WithMany().HasForeignKey(x => x.ReceiptRowId);
+        builder.HasIndex(Owner, nameof(Payment.IdempotencyKey)).IsUnique().HasFilter(""[IdempotencyKey] IS NOT NULL AND [IsDeleted] = 0"");
+        builder.HasIndex(x => x.ReceiptRowId).IsUnique().HasFilter(""[ReceiptId] IS NOT NULL"");
+    }
+}
+
+internal sealed class OrderConfiguration : RowConfiguration<Order>
+{
+    protected override Expression<Func<Order, long>> Key => x => x.RowId;
+
+    public override void Configure(EntityTypeBuilder<Order> builder)
+    {
+        base.Configure(builder);
+        builder.HasOne(x => x.Payment).WithOne().HasForeignKey<Order>(""PaymentId"");
+    }
+}
+
+public sealed class Db(DbContextOptions<Db> options) : DbContext(options)
+{
+    protected override void OnModelCreating(ModelBuilder b) => b.ApplyConfigurationsFromAssembly(typeof(Db).Assembly);
+}
+
+public sealed class Store(Db db)
+{
+    // C1. A payment by its receipt's unique number: the receipt is unique, and so is its payment (the filtered index on ReceiptRowId).
+    public async Task<Payment?> ByReceipt(string number) =>
+        await db.Set<Payment>().Where(p => p.Receipt!.Number == number).SingleOrDefaultAsync();
+
+    // C2. A payment by its owner's alternate key and its idempotency key: (OwnerId, IdempotencyKey) is unique among live rows.
+    public async Task<Payment?> ByIdempotencyKey(OwnerId owner, Guid key) =>
+        await db.Set<Payment>().Where(p => p.Holder!.Id == owner && p.IdempotencyKey == key).SingleOrDefaultAsync();
+
+    // C2'. The same, by the foreign key itself.
+    public async Task<Payment?> ByIdempotencyKeyRow(long owner, Guid key) =>
+        await db.Set<Payment>().Where(p => EF.Property<long>(p, ""OwnerId"") == owner && p.IdempotencyKey == key).SingleOrDefaultAsync();
+
+    // C3. A payment by its converted ExternalId, the alternate key the base declares by name.
+    public async Task<Payment?> ById(PaymentId id) =>
+        await db.Set<Payment>().Where(p => p.ExternalId == id).SingleOrDefaultAsync();
+
+    // C3'. C3 through a helper that sets each row's order from a correlated subquery.
+    public async Task<Payment?> ByIdWithOrder(PaymentId id) =>
+        (await WithOrders(db.Set<Payment>().Include(p => p.Holder).Where(p => p.ExternalId == id))).SingleOrDefault();
+
+    // negatives
+    public async Task<Payment?> N1(OwnerId owner) =>
+        await db.Set<Payment>().Where(p => p.Holder!.Id == owner).SingleOrDefaultAsync();
+
+    public async Task<Payment?> N2(Guid key) =>
+        await db.Set<Payment>().Where(p => p.IdempotencyKey == key).SingleOrDefaultAsync();
+
+    public async Task<Payment?> N3(OwnerId owner, Guid key) =>
+        await db.Set<Payment>().IgnoreQueryFilters().Where(p => p.Holder!.Id == owner && p.IdempotencyKey == key).SingleOrDefaultAsync();
+
+    public async Task<Payment?> N4(string? number) =>
+        await db.Set<Payment>().Where(p => p.Receipt!.Number == number).SingleOrDefaultAsync();
+
+    public async Task<Payment?> N5(OwnerId owner, Guid? key) =>
+        await db.Set<Payment>().Where(p => p.Holder!.Id == owner && p.IdempotencyKey == key).SingleOrDefaultAsync();
+
+    public async Task<Order?> N6(PaymentId id) =>
+        await db.Set<Order>().IgnoreQueryFilters().Where(o => o.Payment!.ExternalId == id).SingleOrDefaultAsync();
+
+    // positives beside them
+    public async Task<Order?> P1(PaymentId id) =>
+        await db.Set<Order>().Where(o => o.Payment!.ExternalId == id).SingleOrDefaultAsync();
+
+    public async Task<Payment?> P2(long receipt) =>
+        await db.Set<Payment>().Where(p => p.Receipt!.RowId == receipt).SingleOrDefaultAsync();
+
+    private async Task<IReadOnlyList<Payment>> WithOrders(IQueryable<Payment> query)
+    {
+        var rows = await query
+            .Select(p => new
+            {
+                Payment = p,
+                Order = db.Set<Order>().Where(o => o.Payment!.RowId == p.RowId).Select(o => o.PlatformOrder).SingleOrDefault(),
+            })
+            .ToListAsync();
+        foreach (var row in rows)
+        {
+            row.Payment.IdempotencyKey = row.Order;
+        }
+
+        return rows.Select(r => r.Payment).ToList();
+    }
+}");
+            Assert.DoesNotContain(r.Warnings, w => w.Contains("couldn't be built"));
+            Assert.DoesNotContain(r.Diagnostics, d => d.Id is "CSV1902" or "CSV1901");
+            foreach (var ok in new[] { "ByReceipt", "ByIdempotencyKey", "ByIdempotencyKeyRow", "ById", "ByIdWithOrder", "WithOrders", "N6", "P1", "P2" })
+            {
+                Assert.True(r.Errors("Store." + ok).Length == 0, ok + ": " + r.Explain("Store." + ok));
+            }
+            // (an owner has many payments; an idempotency key alone is none; the composite index is one among live rows
+            // only; a value that may be null; a nullable key compared to a nullable value)
+            foreach (var bad in new[] { "N1", "N2", "N3", "N4", "N5" })
+            {
+                Assert.True(r.Errors("Store." + bad).SequenceEqual(new[] { "CSV1001" }), bad + ": " + r.Explain("Store." + bad));
+            }
+            Assert.Equal(5, r.Diagnostics.Count(d => d.IsError));
+        }
+
+        [Fact]
+        public void AnEntityOnlyEfsModelHas_IsOne()
+        {
+            // (PR #133's review: Login is declared only as the other side of a HasOne<Login>())
+            var r = VerifyEf(@"public sealed class Login
+{
+    public long Id { get; set; }
+    public Holder? Holder { get; set; }
+}
+public sealed class Holder
+{
+    public long Id { get; set; }
+    public string Code { get; set; } = """";
+    public string Name { get; set; } = """";
+}
+public sealed class Db(DbContextOptions<Db> options) : DbContext(options)
+{
+    protected override void OnModelCreating(ModelBuilder b)
+    {
+        b.Entity<Holder>().HasOne<Login>().WithOne(l => l.Holder).HasForeignKey<Holder>(""LoginId"");
+        b.Entity<Holder>().HasIndex(h => h.Code).IsUnique();
+    }
+}
+public sealed class Store(Db db)
+{
+    public async Task<Login?> ByCode(string code) =>
+        await db.Set<Login>().Where(l => l.Holder!.Code == code).SingleOrDefaultAsync();
+    public async Task<Login?> ByName(string name) =>
+        await db.Set<Login>().Where(l => l.Holder!.Name == name).SingleOrDefaultAsync();
+}");
+            Assert.DoesNotContain(r.Diagnostics, d => d.Id == "CSV1902");
+            Assert.True(r.Errors("Store.ByCode").Length == 0, r.Explain("Store.ByCode"));
+            Assert.True(r.Errors("Store.ByName").SequenceEqual(new[] { "CSV1001" }), r.Explain("Store.ByName"));
+        }
+
+        [Fact]
+        public void ALibrarysOwnEntity_IsOneByEfsModel()
+        {
+            // (a library's own class that EF's model has as an entity, Identity's IdentityUser<long> and IdentityRole<long>
+            // through the context's sets: its columns, its key and its unique index are the model's)
+            var r = VerifyEf(@"using Microsoft.AspNetCore.Identity;
+using Microsoft.AspNetCore.Identity.EntityFrameworkCore;
+public sealed class Db(DbContextOptions<Db> options) : IdentityDbContext<IdentityUser<long>, IdentityRole<long>, long>(options)
+{
+}
+public sealed class Store(Db db)
+{
+    public async Task<IdentityUser<long>?> ById(long id) => await db.Users.Where(u => u.Id == id).SingleOrDefaultAsync();
+    public async Task<IdentityUser<long>?> ByNormalizedName(string name) => await db.Users.Where(u => u.NormalizedUserName == name).SingleOrDefaultAsync();
+    public async Task<IdentityRole<long>?> RoleByNormalizedName(string name) => await db.Roles.AsNoTracking().Where(x => x.NormalizedName == name).SingleOrDefaultAsync();
+    public async Task<IdentityUser<long>?> ByEmail(string email) => await db.Users.Where(u => u.Email == email).SingleOrDefaultAsync();
+    public async Task<IdentityUser<long>?> ByMaybeName(string? name) => await db.Users.Where(u => u.NormalizedUserName == name).SingleOrDefaultAsync();
+    public async Task<string?> NameOf(long id) => (await db.Users.AsNoTracking().FirstOrDefaultAsync(u => u.Id == id))?.UserName;
+    public async Task<long> Rename(long id, string name)
+    {
+        var user = await db.Users.Where(u => u.Id == id).SingleOrDefaultAsync();
+        if (user == null) return 0;
+        user.UserName = name;
+        await db.SaveChangesAsync();
+        return user.Id;
+    }
+}");
+            Assert.DoesNotContain(r.Diagnostics, d => d.Id is "CSV1902" or "CSV1032" or "CSV1900");
+            foreach (var ok in new[] { "ById", "ByNormalizedName", "RoleByNormalizedName", "NameOf", "Rename" })
+            {
+                Assert.True(r.Errors("Store." + ok).Length == 0, ok + ": " + r.Explain("Store." + ok));
+            }
+            // (an email isn't unique in Identity's model; a name that may be null matches each user without one)
+            foreach (var bad in new[] { "ByEmail", "ByMaybeName" })
+            {
+                Assert.True(r.Errors("Store." + bad).SequenceEqual(new[] { "CSV1001" }), bad + ": " + r.Explain("Store." + bad));
             }
         }
 

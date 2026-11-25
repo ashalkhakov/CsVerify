@@ -38,13 +38,19 @@ namespace CsVerify.Verifier
             var m = new MetadataEntities();
             foreach (var e in entities)
             {
-                // (a referenced assembly's entity, and its bases there; a library base, of an entity of the program's)
-                var first = IsUserClass(e) ? e.OriginalDefinition : e.Locations.Any(l => l.IsInSource) ? LibraryBase(e) : null;
+                // (a referenced assembly's entity, and its bases there; a library base, of an entity of the program's; a
+                // library's own entity, which EF's model has: Identity's IdentityUser<long> as it is, and its bases)
+                bool library = !e.Locations.Any(l => l.IsInSource) && !IsUserClass(e);
+                var first = library || IsUserClass(e) ? e.OriginalDefinition : LibraryBase(e);
                 if (first != null && first != e.OriginalDefinition)
                 {
                     m.Instantiate(e);
                 }
-                for (var b = first; b != null && (IsUserClass(b) || first != e.OriginalDefinition && b.SpecialType == SpecialType.None); b = b.BaseType?.OriginalDefinition)
+                if (library)
+                {
+                    m.Instantiate(e, itself: true);
+                }
+                for (var b = first; b != null && (IsUserClass(b) || (library || first != e.OriginalDefinition) && b.SpecialType == SpecialType.None); b = b.BaseType?.OriginalDefinition)
                 {
                     if (m.Types.Add(b))
                     {
@@ -57,9 +63,9 @@ namespace CsVerify.Verifier
 
         private readonly HashSet<ITypeSymbol> _ambiguous = new HashSet<ITypeSymbol>(SymbolEqualityComparer.Default);
 
-        private void Instantiate(INamedTypeSymbol e)
+        private void Instantiate(INamedTypeSymbol e, bool itself = false)
         {
-            for (var b = e.BaseType; b != null && b.SpecialType != SpecialType.System_Object; b = b.BaseType)
+            for (var b = itself ? e : e.BaseType; b != null && b.SpecialType != SpecialType.System_Object; b = b.BaseType)
             {
                 if (!b.IsGenericType || b.Locations.Any(l => l.IsInSource) || _ambiguous.Contains(b.OriginalDefinition))
                 {
