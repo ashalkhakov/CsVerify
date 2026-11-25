@@ -277,11 +277,13 @@ checks its sizes aren't negative (CSV1003) and fills its initializer's cells.
 `System` (a referenced project's: its members are the class's own methods, checked against the interface's contract,
 which for a library's is none), and none of CsVerify's attributes: not `[Owned]`, no `[Invariant]`,
 no locks or atomics) is a `Ref`, as an array is. Each of its fields and auto-properties is a map `$F.C.f: [Ref]T`
-(Dafny's heap encoding); a static field is the map's value at `null`, the one object no reference aliases. An integer
-field's map has a `where` clause keeping every value in range.
+(Dafny's heap encoding); a static field is the map's value at `null`, the one object no reference aliases. The map
+of a field whose type has a range (an integer; a decimal; a `DateTime`'s or a `TimeSpan`'s ticks) has a `where`
+clause keeping every value in it.
 - `o.f` reads `$F.C.f[o]`, and `o.f = v` writes it, each asserting `o != null` first (CSV1013; `this` needs none).
 - A field of non-nullable type is never null once its object is built: each write asserts it (CSV1014), each read
-  assumes it (but `this`'s, in its constructor), and a constructor asserts at each return that it set it (CSV1014),
+  assumes it (but `this`'s, in its constructor; and but an EF entity's reference navigation, which EF sets, to the
+  row it loads or to nothing: [Entity Framework](entity-framework.md)), and a constructor asserts at each return that it set it (CSV1014),
   as is a static one whose initializer makes an object, is a string literal or calls a method whose return type isn't
   nullable (a static one that starts null, `= null!`, promises nothing),
   unless it is `required`. A specification that reads one assumes it where it is evaluated.
@@ -539,7 +541,9 @@ query filters, navigations, tokens; Lowering.Ef, Lowering.EfTracker):
   ones that compare them exactly. `First` and `Last` keep a row by
   its place: unless the query is ordered by a key (or a unique index), at most one row may match (CSV1031). A `Join`
   on keys the database and .NET compare alike is LINQ's, in no order.
-- Rows read without tracking are new objects (allocated where read); a reference navigation not included is null, a
+- Rows read without tracking are new objects (allocated where read); a reference navigation not included is null
+  (whatever its type says: a navigation of a non-nullable type is read as it is, never assumed not null, so
+  `order.Customer.Name` of a row read without its customer is CSV1013), a
   collection one as its initializer made it (a new empty `List`, or null), but where an Include path loads its type.
   An included reference is the row its foreign key names (or null, where the key can be), an included `List` (or
   `HashSet`) holds the rows whose foreign key is this row's key, each through its type's filters, new objects each, and so on down a `ThenInclude` path; a path that follows

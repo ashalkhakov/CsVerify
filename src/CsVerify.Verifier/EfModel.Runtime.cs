@@ -67,6 +67,21 @@ namespace CsVerify.Verifier
                     read[e] = r;
                 }
             }
+            // (where EF's model was read of every context, the entity types are its: a class the sources' reading took
+            // for one and EF's model doesn't have, a value object a column converts to, isn't one; one EF's model owns
+            // is an owned one)
+            if (runtime.Failures.Count == 0)
+            {
+                var entities = runtime.Entities.Values.Select(r => EntityType(compilation, r.Type)?.OriginalDefinition).Where(t => t != null).ToHashSet<ITypeSymbol>(SymbolEqualityComparer.Default);
+                foreach (var owned in runtime.Owned.Select(name => EntityType(compilation, name)?.OriginalDefinition).Where(t => t != null && !entities.Contains(t)))
+                {
+                    _owned.Add(owned);
+                }
+                foreach (var t in _entities.Keys.Where(t => !entities.Contains(t)).ToList())
+                {
+                    _entities.Remove(t);
+                }
+            }
             // (an entity only EF's model has, the other side of a HasOne<T>() say: its attributes, and every entity's
             // navigations again, those to it among them)
             foreach (var e in read.Keys.Where(e => !known.Contains(e)))

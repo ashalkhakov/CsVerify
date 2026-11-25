@@ -47,8 +47,7 @@ namespace CsVerify.Verifier.Boogie
                 return Sel(LinqMap("[Ref]bool"), new KVar("q$" + gcf.Symbol.Parameters[0].Name));
             }
             // (in a database query's lambda, a correlated subquery of a scalar: a value of its row not known, #129)
-            if (e is IInvocationOperation sq && (sq.Type?.IsValueType == true || IsString(sq.Type)) && (IsQueryableMethod(sq.TargetMethod) || IsEfMethod(sq.TargetMethod)) &&
-                DatabaseRoot(sq, out _) != null && SubqueryLambda(sq) != null)
+            if (e is IInvocationOperation sq && (IsQueryableMethod(sq.TargetMethod) || IsEfMethod(sq.TargetMethod)) && DatabaseRoot(sq, out _) != null && SubqueryLambda(sq) != null)
             {
                 return SubqueryValue(sq);
             }

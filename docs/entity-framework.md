@@ -25,7 +25,10 @@ references' are searched. A library's own class that EF's model has as an entity
 `IdentityUser<long>` through `db.Users`, used as it is) is an entity here too, its auto-properties its columns, read
 from its assembly. `CSVERIFY_EF_MODEL_TRACE=1` prints what was read, and each reference that couldn't be loaded with why; the warning
 of a model that couldn't be built names the first of those. An entity type only EF's model has (the
-other side of a `HasOne<T>()` that nothing else declares) is one here too.
+other side of a `HasOne<T>()` that nothing else declares) is one here too. And where EF's model was read of every
+context, the entity types are its and no others: a class the sources' reading would take for one, a value object a
+column converts to by a convention (`ConfigureConventions`), is a column's value, and a type EF's model owns is an
+owned one.
 
 A project needn't reference a provider: a library's host picks the database, and the provider is among the host's
 references only. Where the program's references have none, EF's model is built with a provider of the verifier's own,
@@ -245,7 +248,9 @@ A query filter the verifier doesn't read (of a type it doesn't have, say) says n
 out; the query is read all the same. The lambdas the model's builders take (`HasQueryFilter(x => ...)`,
 `HasIndex(x => ...)`) are EF's to read, not run, and aren't verified as C#.
 In a query's lambda, a subquery of a scalar correlated by the row
-(`Owner = db.Owners.Where(o => o.Id == t.OwnerId).Select(o => o.Id).FirstOrDefault()`) is a value of the row not known.
+(`Owner = db.Owners.Where(o => o.Id == t.OwnerId).Select(o => o.Id).FirstOrDefault()`) is a value of the row not known:
+of a type a column holds, a value, a string, or a class the column converts to (a value object; an object of the class
+or null, as the converter makes it).
 `LoadAsync` of a query reads it, tracked: its rows are tracked from there on. A list `ToListAsync` (or LINQ's `ToList`)
 made is the method's own: an `await` leaves its rows as they were, where the method gives it only to LINQ's operators.
 

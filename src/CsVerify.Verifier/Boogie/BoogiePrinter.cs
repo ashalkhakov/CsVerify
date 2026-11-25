@@ -1215,7 +1215,10 @@ namespace CsVerify.Verifier.Boogie
             {
                 var map = FieldMap(f);
                 var t = FieldType(f);
-                var where = IsIntegral(t) ? $" where (forall o: Ref :: {E(MathTypes.InRange(Sel(map, new MVar("o")), t), InProcedure)})" : "";
+                // (a field holds a value of its type: an integer in its range, a decimal in its, a DateTime's and a
+                // TimeSpan's ticks in theirs)
+                var of = IsGhost(t) || IsData(t) ? null : MathTypes.OfType(Sel(map, new MVar("o")), t);
+                var where = of != null ? $" where (forall o: Ref :: {E(of, InProcedure)})" : "";
                 Line($"var {map}: [Ref]{TypeOf(t)}{where};");
             }
             // (each object's ownership tree's root)

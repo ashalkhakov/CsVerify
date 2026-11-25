@@ -932,6 +932,7 @@ public sealed class Db(DbContextOptions<Db> options) : DbContext(options)
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         modelBuilder.Entity<Payee>();
+        modelBuilder.ApplyConfiguration(new TransferConfiguration());
     }
 }
 public abstract class KeyedConfiguration<T> : IEntityTypeConfiguration<T> where T : class
@@ -1125,10 +1126,14 @@ public sealed class Store(Db db)
 }");
             // (the converter's lambdas: EF gives them no null)
             Assert.DoesNotContain(r.Methods.Where(m => m.Name == "Db.OnModelCreating.<lambda:14>").SelectMany(m => m.Diagnostics), d => d.IsError);
-            foreach (var ok in new[] { "ByEmail", "Read", "AddNewCard" })
+            foreach (var ok in new[] { "Read", "AddNewCard" })
             {
                 Assert.True(r.Errors(ok).Length == 0, r.Explain(ok));
             }
+            // (a null member in the lambda is SQL's null, no dereference; First of a filter no index makes unique, in no
+            // order, is reported as Held's is. It passed while MemberId, a record a column converts to, was taken for
+            // an entity whose navigation wasn't included: null and, by its type, not null, so anything followed)
+            Assert.Equal(new[] { "CSV1031" }, r.Errors("ByEmail"));
             // (and these report nothing but what isn't verified yet: a list's task, LINQ's Select)
             foreach (var ok in new[] { "Started", "ById", "Code" })
             {
@@ -2947,6 +2952,126 @@ public sealed class Store(Db db)
             {
                 Assert.True(r.Errors(bad).SequenceEqual(new[] { "CSV1001" }), bad + ": " + r.Explain(bad));
             }
+        }
+
+        [Fact]
+        public void ANavigationNotIncluded_IsNull_WhateverItsTypeSays()
+        {
+            // (a reference navigation of a type that isn't nullable: EF leaves it null where the query doesn't include
+            // it. Read, it may be null (CSV1013); and nothing follows from its type saying otherwise: an assertion
+            // that doesn't hold of the row is reported. v0.5.27 took the row's navigation for null and for not null at
+            // once, and proved anything of such a row)
+            var r = VerifyEf(@"
+public sealed class Owner
+{
+    public int Id { get; set; }
+    public string Name { get; set; } = """";
+}
+public sealed class Pet
+{
+    public int Id { get; set; }
+    public int OwnerId { get; set; }
+    public Owner Owner { get; set; } = null!;
+    public int Weight { get; set; }
+}
+public sealed class Db(DbContextOptions<Db> options) : DbContext(options)
+{
+    public DbSet<Pet> Pets => Set<Pet>();
+}
+public static class Reads
+{
+    public static async Task NotSo(Db db, int id)
+    {
+        var pet = await db.Pets.AsNoTracking().FirstOrDefaultAsync(p => p.Id == id);
+        if (pet == null) return;
+        Spec.Assert(pet.Weight == 12345);
+    }
+    public static async Task<string> NotIncluded(Db db, int id)
+    {
+        var pet = await db.Pets.AsNoTracking().FirstOrDefaultAsync(p => p.Id == id);
+        return pet == null ? """" : pet.Owner.Name;
+    }
+    public static async Task<string> Included(Db db, int id)
+    {
+        var pet = await db.Pets.AsNoTracking().Include(p => p.Owner).FirstOrDefaultAsync(p => p.Id == id);
+        return pet == null ? """" : pet.Owner.Name;
+    }
+}");
+            Assert.NotEmpty(r.Errors("Reads.NotSo"));
+            Assert.True(r.Errors("Reads.NotIncluded").SequenceEqual(new[] { "CSV1013" }), r.Explain("Reads.NotIncluded"));
+            Assert.True(r.Errors("Reads.Included").Length == 0, r.Explain("Reads.Included"));
+        }
+
+        [Fact]
+        public void AValueObjectAColumnConvertsTo_IsNoEntity_AndASubqueryGivesOne()
+        {
+            // (a class a column converts to by a convention the sources' reading doesn't follow: no entity, by EF's
+            // model. A correlated subquery that selects such a column gives an object of the class, or null: the
+            // helper it is in is verified, and its caller's lookup by the alternate key is of one row at most)
+            var r = VerifyEf(@"using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
+public sealed record Reference
+{
+    private Reference(string value) => Value = value;
+    public string Value { get; }
+    public static Reference Parse(string value) => new Reference(value);
+}
+public sealed class ReferenceConverter : ValueConverter<Reference, string>
+{
+    public ReferenceConverter() : base(reference => reference.Value, value => Reference.Parse(value)) { }
+}
+public sealed class Shipment
+{
+    public long Id { get; set; }
+    public Guid Code { get; set; }
+    public Reference? Carrier { get; set; }
+}
+public sealed class Label
+{
+    public long Id { get; set; }
+    public Shipment? Shipment { get; set; }
+    public Reference? Carrier { get; set; }
+}
+public sealed class Db(DbContextOptions<Db> options) : DbContext(options)
+{
+    protected override void ConfigureConventions(ModelConfigurationBuilder configuration) =>
+        configuration.Properties<Reference>().HaveConversion<ReferenceConverter>();
+
+    protected override void OnModelCreating(ModelBuilder b)
+    {
+        b.Entity<Shipment>().HasAlternateKey(s => s.Code);
+        b.Entity<Shipment>().Ignore(s => s.Carrier);
+        b.Entity<Label>().HasOne(l => l.Shipment).WithOne().HasForeignKey<Label>(""ShipmentId"");
+    }
+}
+public sealed class Store(Db db)
+{
+    public async Task<Shipment?> ByCode(Guid code) =>
+        (await WithCarriers(db.Set<Shipment>().Where(s => s.Code == code))).SingleOrDefault();
+
+    public async Task<Shipment?> Any() =>
+        (await WithCarriers(db.Set<Shipment>().Where(s => s.Id > 0))).SingleOrDefault();
+
+    private async Task<IReadOnlyList<Shipment>> WithCarriers(IQueryable<Shipment> query)
+    {
+        var rows = await query
+            .Select(s => new
+            {
+                Shipment = s,
+                Carrier = db.Set<Label>().Where(l => l.Shipment!.Id == s.Id).Select(l => l.Carrier).SingleOrDefault(),
+            })
+            .ToListAsync();
+        foreach (var row in rows)
+        {
+            row.Shipment.Carrier = row.Carrier;
+        }
+
+        return rows.Select(row => row.Shipment).ToList();
+    }
+}");
+            Assert.DoesNotContain(r.Diagnostics, d => d.Id == "CSV1902" && d.Message.Contains("WithCarriers"));
+            Assert.True(r.Errors("Store.WithCarriers").Length == 0, r.Explain("Store.WithCarriers"));
+            Assert.True(r.Errors("Store.ByCode").Length == 0, r.Explain("Store.ByCode"));
+            Assert.True(r.Errors("Store.Any").SequenceEqual(new[] { "CSV1001" }), r.Explain("Store.Any"));
         }
 
         [Fact]

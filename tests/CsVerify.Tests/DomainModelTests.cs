@@ -174,6 +174,35 @@ public static class Dispatch
         }
 
         [Fact]
+        public void AFieldsValue_IsOneOfItsType()
+        {
+            // (a record made of a field's value is a record: the decimal is a decimal, the DateTime's and the TimeSpan's
+            // ticks are in their ranges, as an integer field's value is in its)
+            var r = Harness.Verify(@"public sealed class Fund
+{
+    public decimal Price { get; set; }
+    public DateTime At { get; set; }
+    public TimeSpan Took { get; set; }
+    public long Units { get; set; }
+}
+public sealed record Quote(decimal Price);
+public sealed record Stamp(DateTime At);
+public sealed record Lap(TimeSpan Took);
+public sealed record Count(long Units);
+public static class Reads
+{
+    public static Quote Price(Fund f) => new Quote(f.Price);
+    public static Stamp At(Fund f) => new Stamp(f.At);
+    public static Lap Took(Fund f) => new Lap(f.Took);
+    public static Count Units(Fund f) => new Count(f.Units);
+}");
+            foreach (var m in new[] { "Price", "At", "Took", "Units" })
+            {
+                Assert.True(r.Errors("Reads." + m).Length == 0, r.Explain("Reads." + m));
+            }
+        }
+
+        [Fact]
         public void Decimals_AreExact_WhereTheyAreRepresentable()
         {
             var r = Harness.Verify(@"public sealed record Payment(decimal Amount);

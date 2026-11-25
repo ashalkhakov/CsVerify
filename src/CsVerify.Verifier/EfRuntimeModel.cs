@@ -54,6 +54,8 @@ namespace CsVerify.Verifier
         }
 
         public readonly Dictionary<string, Entity> Entities = new Dictionary<string, Entity>();
+        /// <summary>The types EF's model has as owned ones (their owners' columns).</summary>
+        public readonly HashSet<string> Owned = new HashSet<string>();
         public readonly List<ForeignKey> ForeignKeys = new List<ForeignKey>();
         /// <summary>The contexts read.</summary>
         public readonly List<string> Contexts = new List<string>();
@@ -908,6 +910,10 @@ namespace CsVerify.Verifier
             foreach (var et in Many(Call(model, "GetEntityTypes")))
             {
                 var clr = (Type)Get(et, "ClrType");
+                if (clr != null && clr.FullName != null && Call(et, "FindOwnership") != null)
+                {
+                    Owned.Add(clr.FullName);
+                }
                 if (clr == null || clr.FullName == null || (bool)(Get(et, "HasSharedClrType") ?? false) || Call(et, "FindOwnership") != null || Entities.ContainsKey(clr.FullName))
                 {
                     continue;
