@@ -185,6 +185,9 @@ namespace CsVerify.Verifier.Boogie
                         break;
                     case IInvocationOperation er when EntryReadOnly(er):
                         break;
+                    // (a library's call that reaches none of the program's objects, where a selector maps each element once)
+                    case IInvocationOperation quiet when _quietCalls > 0 && QuietLibraryCall(quiet):
+                        break;
                     // (a method of the program, read as its body where it's called)
                     case IInvocationOperation ic when depth < 3 && InlinedBody(ic) is var (locals, result) &&
                                                       locals.All(l => Pure(l.value, null, depth + 1)) && Pure(result, null, depth + 1):
@@ -201,6 +204,42 @@ namespace CsVerify.Verifier.Boogie
             return true;
         }
 
+        /// <summary>Selectors being read whose library calls of scalars may be values not known (QuietLibraryCall).</summary>
+        private int _quietCalls;
+
+        /// <summary>The index of the element a selector is applied to, while it is (Apply): what such a call's value is of.</summary>
+        private KExpr _applyIndex;
+
+        /// <summary>
+        /// A library's method the program has no contract of, static or of a value or a string, given only values and
+        /// strings: it reaches none of the program's objects, so it changes nothing the program reads. What it gives
+        /// isn't known, nor that it gives the same again; it may throw.
+        /// </summary>
+        private bool QuietLibraryCall(IInvocationOperation inv)
+        {
+            var m = inv.TargetMethod;
+            return m.DeclaringSyntaxReferences.Length == 0 && m.MethodKind == MethodKind.Ordinary && !m.ReturnsVoid && InSubset(m.ReturnType) &&
+                   (m.ReturnType.IsValueType || IsString(m.ReturnType)) &&
+                   !_isFunction(m.OriginalDefinition) && !IsStub(m.OriginalDefinition) && !SpecSymbols.IsSpecClass(m.ContainingType) &&
+                   !IsEnumerableCall(m) && !IsQueryableMethod(m) && !(KernelTypes.Ef != null && IsEfMethod(m)) &&
+                   (inv.Instance == null || inv.Instance.Type is { IsValueType: true } || IsString(inv.Instance.Type)) &&
+                   m.Parameters.All(p => p.RefKind == RefKind.None && (p.Type.IsValueType || IsString(p.Type)) && !IsFunc(p.Type));
+        }
+
+        /// <summary>
+        /// A quiet library call's value in a selector applied to the element at an index: a value of that index, of a
+        /// map made for this reading; its receiver and arguments are still read (they must be well-defined).
+        /// </summary>
+        private KExpr QuietValue(IInvocationOperation inv, IParameterSymbol result)
+        {
+            KExpr value = Sel(new KVar(LinqMap("[int]" + TypeOf(inv.Type))), _applyIndex);
+            foreach (var read in new[] { inv.Instance }.Concat(inv.Arguments.Select(a => a.Value)).Where(x => x != null))
+            {
+                value = KLet.Of("q$u" + _temps++, Spec(read, result), value);
+            }
+            return value;
+        }
+
         /// <summary>
         /// A method of the program a lambda calls, read as its body where it's called: an ordinary one, not virtual, async
         /// or generic, of plain parameters, static or of this object, whose body declares locals, each with a value, and
@@ -211,7 +250,9 @@ namespace CsVerify.Verifier.Boogie
             var m = call.TargetMethod;
             // (the program's own: not a stub's, a function's or the Spec library's)
             if (m.MethodKind != MethodKind.Ordinary || _isFunction(m.OriginalDefinition) || IsStub(m.OriginalDefinition) || SpecSymbols.IsSpecClass(m.ContainingType) ||
-                m.ContainingNamespace?.ToDisplayString().StartsWith(SpecSymbols.Namespace) == true || m.IsVirtual || m.IsAbstract || m.IsOverride || m.IsExtern || m.IsAsync || m.IsGenericMethod ||
+                m.ContainingNamespace?.ToDisplayString().StartsWith(SpecSymbols.Namespace) == true || m.IsVirtual || m.IsAbstract || m.IsOverride || m.IsExtern || m.IsAsync ||
+                // (a generic one only where it gives an EF entry, of its type parameter's entity: Lowering.EfEntries reads it by name)
+                m.IsGenericMethod && !IsEntryType(m.ReturnType) ||
                 m.Parameters.Any(p => p.RefKind != RefKind.None) || !(m.IsStatic ? call.Instance == null : call.Instance is IInstanceReferenceOperation) ||
                 call.Arguments.Any(a => a.ArgumentKind != ArgumentKind.Explicit) ||
                 m.DeclaringSyntaxReferences.Length != 1 || m.DeclaringSyntaxReferences[0].GetSyntax() is not Microsoft.CodeAnalysis.CSharp.Syntax.MethodDeclarationSyntax decl ||
@@ -236,7 +277,10 @@ namespace CsVerify.Verifier.Boogie
         private readonly Dictionary<IParameterSymbol, KExpr> _boundParams = new Dictionary<IParameterSymbol, KExpr>(SymbolEqualityComparer.Default);
 
         /// <summary>A call InlinedBody reads, in a specification: its body, of the call's arguments and its locals' values.</summary>
-        private KExpr SpecInlined(IInvocationOperation call, IParameterSymbol result)
+        private KExpr SpecInlined(IInvocationOperation call, IParameterSymbol result) => WithInlined(call, result, value => Spec(value, result));
+
+        /// <summary>What is read of a call's body (InlinedBody), its parameters the call's arguments and its locals their values.</summary>
+        private T WithInlined<T>(IInvocationOperation call, IParameterSymbol result, System.Func<IOperation, T> read)
         {
             var (locals, value) = InlinedBody(call).Value;
             var args = call.Arguments.Select(a => (a.Parameter.OriginalDefinition, Spec(a.Value, result))).ToList();
@@ -249,16 +293,9 @@ namespace CsVerify.Verifier.Boogie
                 }
                 foreach (var (l, init) in locals)
                 {
-                    if (IsEntryType(l.Type))
-                    {
-                        _specEntries[l] = SpecEntryAt(init, result) ?? throw new NotTranslated("EF's entry, of what the verifier can't follow");
-                    }
-                    else
-                    {
-                        _bound[l] = Spec(init, result);
-                    }
+                    _bound[l] = Spec(init, result);
                 }
-                return Spec(value, result);
+                return read(value);
             }
             finally
             {
@@ -270,7 +307,6 @@ namespace CsVerify.Verifier.Boogie
                 foreach (var (l, _) in locals)
                 {
                     _bound.Remove(l);
-                    _specEntries.Remove(l);
                 }
             }
         }
@@ -373,15 +409,28 @@ namespace CsVerify.Verifier.Boogie
         /// <summary>
         /// A selector that makes an object of a class: a positional record's constructor of values, or a constructor
         /// that runs nothing with an initializer setting auto-properties to values; each value pure, of the lambda's
-        /// parameter. The creation, the parameter, and each property with its value; else null.
+        /// parameter. Written in the lambda, or in a method of the program the lambda (or a method group) calls and
+        /// does nothing else, read as its body (InlinedBody). The creation, the parameter, each property with its
+        /// value, and that call; else null.
         /// </summary>
-        private (IObjectCreationOperation made, IParameterSymbol p, List<(IPropertySymbol member, IOperation value)> members)? MadeSelector(IOperation arg)
+        private (IObjectCreationOperation made, IParameterSymbol p, List<(IPropertySymbol member, IOperation value)> members, IInvocationOperation through)? MadeSelector(IOperation arg)
         {
-            var fn = Unconverted(arg) is IDelegateCreationOperation dc ? dc.Target as IAnonymousFunctionOperation ?? LambdaOf(dc.Target) ?? LambdaBySymbol(dc.Target)
+            var fn = Unconverted(arg) is IDelegateCreationOperation dc ? dc.Target as IAnonymousFunctionOperation ?? LambdaOf(dc.Target) ?? LambdaBySymbol(dc.Target) ?? MethodGroupLambda(dc.Target)
                    : Unconverted(arg) is IAnonymousFunctionOperation quoted ? quoted
                    : Unconverted(arg) is IFlowAnonymousFunctionOperation fq ? LambdaBySymbol(fq) : null;
-            if (fn == null || fn.Symbol.Parameters.Length != 1 || fn.Body.Operations.Length != 1 || fn.Body.Operations[0] is not IReturnOperation { ReturnedValue: { } body } ||
-                Unconverted(body) is not IObjectCreationOperation { Constructor: { } ctor } oc || !IsClass(oc.Type) || IsCollection(oc.Type))
+            if (fn == null || fn.Symbol.Parameters.Length != 1 || fn.Body.Operations.Length != 1 || fn.Body.Operations[0] is not IReturnOperation { ReturnedValue: { } body })
+            {
+                return null;
+            }
+            IInvocationOperation through = null;
+            var locals = new List<(ILocalSymbol local, IOperation value)>();
+            if (_inDatabase == 0 && Unconverted(body) is IInvocationOperation call && call.TargetMethod.DeclaringSyntaxReferences.Length > 0 && InlinedBody(call) is var (ls, value))
+            {
+                through = call;
+                locals = ls;
+                body = value;
+            }
+            if (Unconverted(body) is not IObjectCreationOperation { Constructor: { } ctor } oc || !IsClass(oc.Type) || IsCollection(oc.Type))
             {
                 return null;
             }
@@ -415,24 +464,35 @@ namespace CsVerify.Verifier.Boogie
             {
                 return null;
             }
-            // (each value pure, as a lambda's body is)
-            foreach (var (_, v) in members)
+            // (each value pure, as a lambda's body is: the call's arguments and its locals' values too; LINQ to Objects'
+            // may call a library's method of scalars, QuietLibraryCall)
+            _quietCalls += _inDatabase == 0 ? 1 : 0;
+            try
             {
-                if (v.DescendantsAndSelf().Any(op => op is IAssignmentOperation or IIncrementOrDecrementOperation or IObjectCreationOperation or IArrayCreationOperation or IAnonymousFunctionOperation or IAwaitOperation ||
-                                                    op is IInvocationOperation inv && !(_isFunction(inv.TargetMethod.OriginalDefinition) || IsStub(inv.TargetMethod.OriginalDefinition) || StringEquals(inv) != null || DatabaseFunction(inv) || EfProperty(inv) != null)))
+                var read = members.Select(m => m.Item2).Concat(locals.Select(x => x.value)).Concat(through?.Arguments.Select(a => a.Value) ?? Enumerable.Empty<IOperation>());
+                if (!read.All(v => Pure(v, null, 0)))
                 {
                     return null;
                 }
             }
-            return (oc, fn.Symbol.Parameters[0], members);
+            finally
+            {
+                _quietCalls -= _inDatabase == 0 ? 1 : 0;
+            }
+            return (oc, fn.Symbol.Parameters[0], members, through);
         }
 
         /// <summary>
         /// Select's new objects (MadeSelector): one of each element, different, none allocated before and each allocated
         /// now, its properties the values of its element.
         /// </summary>
-        private LSeq MadeSequence(LSeq src, IObjectCreationOperation made, IParameterSymbol p, List<(IPropertySymbol member, IOperation value)> members, SyntaxNode at)
+        private LSeq MadeSequence(LSeq src, IObjectCreationOperation made, IParameterSymbol p, List<(IPropertySymbol member, IOperation value)> members, IInvocationOperation through, SyntaxNode at)
         {
+            // (a library's call of scalars in a value: it may throw where the elements are made)
+            if (_inDatabase == 0 && (members.Any(m => HasQuietCalls(m.value, 0)) || through != null && HasQuietCalls(through, 0)))
+            {
+                MayThrow();
+            }
             var objs = new KVar(LinqMap("[int]Ref"));
             var index = new KVar(LinqMap("[Ref]int"));
             var n = src.Length;
@@ -447,7 +507,7 @@ namespace CsVerify.Verifier.Boogie
             {
                 _p.AddField(m.OriginalDefinition);
                 var j = Atom();
-                ShapeFact(Over(KLit.Zero, n, j, Eq(Column(m, Sel(objs, j)), Apply((v, p, null), src.Elem.At(j)))), at);
+                ShapeFact(Over(KLit.Zero, n, j, Eq(Column(m, Sel(objs, j)), Apply((v, p, null), src.Elem.At(j), j, through))), at);
             }
             // (allocated: these, and no other)
             _p.AddModifies("$Alloc");
@@ -500,20 +560,47 @@ namespace CsVerify.Verifier.Boogie
         }
 
         /// <summary>A lambda applied to an element (and its index): its body, its parameters bound.</summary>
-        /// <summary>Lambdas being applied (Apply): where a call of the program's may be read as its body (InlinedBody).</summary>
-        private int _applying;
-
-        private KExpr Apply((IOperation body, IParameterSymbol p1, IParameterSymbol p2) f, KExpr x, KExpr i = null)
+        /// <summary>Is an operator's lambda pure: for LINQ to Objects' Select, a library's calls of scalars aside (QuietLibraryCall)?</summary>
+        private bool PureSelector(IMethodSymbol m, IOperation lambda)
         {
-            KExpr e;
-            _applying++;
+            bool quiet = m.Name == "Select" && _inDatabase == 0;
+            _quietCalls += quiet ? 1 : 0;
             try
             {
-                e = Spec(f.body, null);
+                return PureLambda(lambda) != null;
             }
             finally
             {
+                _quietCalls -= quiet ? 1 : 0;
+            }
+        }
+
+        /// <summary>Does an expression (and the bodies of the program's methods it calls, read in its place) call a quiet library method?</summary>
+        private bool HasQuietCalls(IOperation body, int depth) =>
+            body.DescendantsAndSelf().OfType<IInvocationOperation>().Any(c => QuietLibraryCall(c) ||
+                depth < 3 && c.TargetMethod.DeclaringSyntaxReferences.Length > 0 && InlinedBody(c) is var (locals, value) &&
+                (locals.Any(x => HasQuietCalls(x.value, depth + 1)) || HasQuietCalls(value, depth + 1)));
+
+        /// <summary>Lambdas being applied (Apply): where a call of the program's may be read as its body (InlinedBody).</summary>
+        private int _applying;
+
+        /// <param name="through">A call of the program's whose body f.body is of (MadeSelector): read with its parameters and locals bound.</param>
+        private KExpr Apply((IOperation body, IParameterSymbol p1, IParameterSymbol p2) f, KExpr x, KExpr i = null, IInvocationOperation through = null)
+        {
+            KExpr e;
+            var outer = _applyIndex;
+            _applying++;
+            _applyIndex = i;
+            _quietCalls += through != null || i != null && f.p2 == null && _inDatabase == 0 ? 1 : 0;
+            try
+            {
+                e = through != null ? WithInlined(through, null, _ => Spec(f.body, null)) : Spec(f.body, null);
+            }
+            finally
+            {
+                _quietCalls -= through != null || i != null && f.p2 == null && _inDatabase == 0 ? 1 : 0;
                 _applying--;
+                _applyIndex = outer;
             }
             if (f.p2 != null)
             {
@@ -877,7 +964,8 @@ namespace CsVerify.Verifier.Boogie
             }
             // (a lazy operator whose lambda isn't pure, of LINQ to Objects: the lambda must accept anything (it may change
             // what it is called with), what it may change changes, and what it gives isn't known)
-            if (IsEnumerableCall(m) && args.Count == 2 && IsFunc(args[1].Parameter.Type) && PureLambda(args[1].Value) == null &&
+            if (IsEnumerableCall(m) && args.Count == 2 && IsFunc(args[1].Parameter.Type) && !PureSelector(m, args[1].Value) &&
+                !(m.Name == "Select" && MadeSelector(args[1].Value) != null) &&
                 m.Name is "Where" or "Select" or "TakeWhile" or "SkipWhile" or "OrderBy" or "OrderByDescending" && resultElem != null && InSubset(resultElem))
             {
                 var src = Sequence(args[0].Value);
@@ -924,12 +1012,26 @@ namespace CsVerify.Verifier.Boogie
             switch (m.Name)
             {
                 // (a selector that makes an object: a new object of each element, #129)
-                case "Select" when args.Count == 2 && MadeSelector(args[1].Value) is var (made, mp, members):
-                    return MadeSequence(Sequence(args[0].Value), made, mp, members, q.Syntax);
+                case "Select" when args.Count == 2 && MadeSelector(args[1].Value) is var (made, mp, members, through):
+                    return MadeSequence(Sequence(args[0].Value), made, mp, members, through, q.Syntax);
                 case "Select" when args.Count == 2:
                 {
                     var src = Sequence(args[0].Value);
-                    var f = LambdaArg(q, 1);
+                    (IOperation body, IParameterSymbol p1, IParameterSymbol p2) f;
+                    // (LINQ to Objects': a library's call of scalars in it is a value of each element, which may throw)
+                    _quietCalls += _inDatabase == 0 ? 1 : 0;
+                    try
+                    {
+                        f = LambdaArg(q, 1);
+                        if (_inDatabase == 0 && HasQuietCalls(f.body, 0))
+                        {
+                            MayThrow();
+                        }
+                    }
+                    finally
+                    {
+                        _quietCalls -= _inDatabase == 0 ? 1 : 0;
+                    }
                     // (of groups: the selector's parameter is one)
                     if (src.Groups != null && _groupsOf.TryGetValue(src.Groups, out var gi))
                     {

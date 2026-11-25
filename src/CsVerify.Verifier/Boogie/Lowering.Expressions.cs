@@ -449,7 +449,10 @@ namespace CsVerify.Verifier.Boogie
                     return AnyToken(e);
                 case IPropertyReferenceOperation { Property.Name: "Result", Instance: ILocalReferenceOperation resultOf } when _tasks.TryGetValue(resultOf.Local, out var resultTask):
                     return ResultOf(resultTask, e.Syntax);
-                // (EF's tracker: Database.CurrentTransaction, Entry(o).State)
+                // (EF's entries: an entry's State, a property entry's values)
+                case IPropertyReferenceOperation entryRead when EntryRead(entryRead, null, spec: false) is KExpr entryValue:
+                    return entryValue;
+                // (EF's tracker: Database.CurrentTransaction)
                 case IPropertyReferenceOperation trackerRead when TrackerRead(trackerRead) is KExpr tracked:
                     return tracked;
                 // (a context's table, ctx.Orders or ctx.Set<T>(): a reference that changes nothing; what reads it is Lowering.Ef's)

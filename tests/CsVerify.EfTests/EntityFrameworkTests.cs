@@ -2580,6 +2580,14 @@ public sealed class Db(DbContextOptions<Db> options) : DbContext(options)
     }
 }
 public sealed record Stamped(Invoice Invoice, DateTime Created);
+public static class Columns
+{
+    internal const string CreatedName = ""Created"";
+    public static Microsoft.EntityFrameworkCore.ChangeTracking.PropertyEntry<T, DateTime> Created<T>(this Microsoft.EntityFrameworkCore.ChangeTracking.EntityEntry<T> row)
+        where T : class => row.Property<DateTime>(CreatedName);
+    public static Microsoft.EntityFrameworkCore.ChangeTracking.PropertyEntry<Invoice, string> Note(this Microsoft.EntityFrameworkCore.ChangeTracking.EntityEntry<Invoice> row) =>
+        row.Property(i => i.Note);
+}
 public sealed class Store(Db db)
 {
     public async Task<Stamped?> StampedInvoice(Guid invoice) =>
@@ -2606,6 +2614,13 @@ public sealed class Store(Db db)
     }
     public void Handed(Invoice invoice) => Keep(db.Entry(invoice));
     private static void Keep(object o) { }
+    public DateTime CreatedBy(Invoice invoice) => db.Entry(invoice).Created().CurrentValue;
+    public string NoteBy(Invoice invoice)
+    {
+        var note = db.Entry(invoice).Note().CurrentValue;
+        Spec.Assert(note == invoice.Note);
+        return note;
+    }
     public void Original(Invoice invoice)
     {
         var entry = db.Entry(invoice);
@@ -2618,11 +2633,15 @@ public sealed class Store(Db db)
             {
                 Assert.True(r.Errors("Store." + ok).Length == 0, ok + ": " + r.Explain("Store." + ok));
             }
-            // (a column the model hasn't; an entry handed on, which the model doesn't follow)
-            foreach (var unread in new[] { "Missing", "Handed" })
+            // (a column the model hasn't)
+            Assert.Contains(r["Store.Missing"].Diagnostics, d => d.Id == "CSV1902");
+            // (an entry is a value: handed on, returned by the program's own methods, a generic extension's among them, #132)
+            foreach (var ok in new[] { "Handed", "CreatedBy", "NoteBy" })
             {
-                Assert.Contains(r["Store." + unread].Diagnostics, d => d.Id == "CSV1902");
+                Assert.True(r.Errors("Store." + ok).Length == 0, ok + ": " + r.Explain("Store." + ok));
             }
+            Assert.True(r.Errors("Columns.Created").Length == 0, r.Explain("Columns.Created"));
+            Assert.DoesNotContain(r.Diagnostics, d => d.Id == "CSV1902" && d.Message.Contains("Columns."));
             // (the original value isn't the current one; an entry of what may be null throws)
             Assert.NotEmpty(r.Errors("Store.Original"));
             Assert.Contains(r.Diagnostics, d => d.Id == "CSV1013" && d.Message.Contains("db.Entry(i!)"));

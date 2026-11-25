@@ -280,6 +280,14 @@ namespace CsVerify.Verifier.Boogie
             Line("const null: Ref;");
             Line("var $Alloc: [Ref]bool;");
             Line("function len(a: Ref): int;");
+            Optional("$entry(|$ectx(|$eobj(|$pentry(|$pof(", "// EF's entries: an entity's entry of a context, and a property entry of one and a column");
+            Optional("$entry(|$ectx(|$eobj(|$pentry(|$pof(", "function $entry(c: Ref, o: Ref): Ref;");
+            Optional("$entry(|$ectx(|$eobj(|$pentry(|$pof(", "function $ectx(e: Ref): Ref;");
+            Optional("$entry(|$ectx(|$eobj(|$pentry(|$pof(", "function $eobj(e: Ref): Ref;");
+            Optional("$entry(|$ectx(|$eobj(|$pentry(|$pof(", "function $pentry(e: Ref, k: int): Ref;");
+            Optional("$entry(|$ectx(|$eobj(|$pentry(|$pof(", "function $pof(p: Ref): Ref;");
+            Optional("$entry(|$ectx(|$eobj(|$pentry(|$pof(", "axiom (forall c: Ref, o: Ref :: { $entry(c, o) } $entry(c, o) != null && $ectx($entry(c, o)) == c && $eobj($entry(c, o)) == o);");
+            Optional("$entry(|$ectx(|$eobj(|$pentry(|$pof(", "axiom (forall e: Ref, k: int :: { $pentry(e, k) } $pentry(e, k) != null && $pof($pentry(e, k)) == e);");
             Optional("$arr(|$coll(|$aempty(", "// what a collection behind an interface is: an array, or a modeled collection (List, Dictionary, ...), never both");
             Optional("$arr(|$coll(|$aempty(", "function $arr(r: Ref): bool;");
             Optional("$arr(|$coll(|$aempty(", "function $coll(r: Ref): bool;");

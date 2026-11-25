@@ -1633,14 +1633,19 @@ namespace CsVerify.Verifier.Boogie
         /// <summary>The value a local is declared with, where nothing else writes it (no assignment, no ref or out); else null.</summary>
         private static IOperation Initializer(ILocalReferenceOperation l)
         {
-            if (l.Local.IsRef || l.Local.DeclaringSyntaxReferences.FirstOrDefault()?.GetSyntax() is not Microsoft.CodeAnalysis.CSharp.Syntax.VariableDeclaratorSyntax declarator ||
-                l.SemanticModel?.GetOperation(declarator) is not IVariableDeclaratorOperation { Initializer.Value: { } value })
+            if (l.Local.IsRef || l.Local.DeclaringSyntaxReferences.FirstOrDefault()?.GetSyntax() is not Microsoft.CodeAnalysis.CSharp.Syntax.VariableDeclaratorSyntax declarator)
+            {
+                return null;
+            }
+            // (a reference of the control flow graph's has no model of its own: its tree's)
+            var model = l.SemanticModel ?? KernelTypes.Compilation.ModelOf(declarator.SyntaxTree);
+            if (model.GetOperation(declarator) is not IVariableDeclaratorOperation { Initializer.Value: { } value })
             {
                 return null;
             }
             // (the method's, lambdas in it included)
             if (l.Local.ContainingSymbol?.DeclaringSyntaxReferences.FirstOrDefault()?.GetSyntax() is not SyntaxNode body ||
-                body.SyntaxTree != declarator.SyntaxTree || l.SemanticModel.GetOperation(body) is not IOperation root)
+                body.SyntaxTree != declarator.SyntaxTree || model.GetOperation(body) is not IOperation root)
             {
                 return null;
             }

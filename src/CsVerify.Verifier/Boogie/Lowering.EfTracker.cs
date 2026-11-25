@@ -395,11 +395,7 @@ namespace CsVerify.Verifier.Boogie
             }
             var name = Plain(m);
             var at = inv.Syntax;
-            // (an entry made or taken a column of where it isn't read, set or reloaded: a value the model doesn't follow)
-            if (EntryReadOnly(inv))
-            {
-                throw new NotTranslated("EF's entry, used as a value");
-            }
+
             var args = inv.Arguments.OrderBy(a => a.Parameter.Ordinal).Where(a => !IsToken(a.Parameter.Type)).ToList();
             if (name is "ExecuteUpdate" or "ExecuteDelete" && IsEfMethod(m))
             {
@@ -413,20 +409,26 @@ namespace CsVerify.Verifier.Boogie
                 return (true, null);
             }
             // (an entry: Entry(o).Reload())
-            if (name == "Reload" && inv.Instance != null && IsEntryType(inv.Instance.Type) && EntryAt(inv.Instance) is { IsColumn: false } reloaded)
+            if (name == "Reload" && inv.Instance != null && IsEntryType(inv.Instance.Type) && !IsPropertyEntry(inv.Instance.Type))
             {
-                var (ec, eo, ee) = (reloaded.C, reloaded.O, reloaded.E);
+                var (ec0, eo0, ee) = EntryParts(inv.Instance, null, spec: false);
+                if (ee == null)
+                {
+                    throw new NotTranslated("EF's Reload of an entry of what isn't an entity");
+                }
+                var ec = RefOnce(ec0);
+                var eo = RefOnce(eo0);
                 UsableContext(ec, at);
                 foreach (var p in EfModel.PropertiesOf(ee.Type).Where(IsField))
                 {
                     _p.AddField(p.OriginalDefinition);
-                    var v = Declare("t$" + _temps++, p.Type);
-                    Emit(KHavoc.Of(v));
+                    // (the row's value: of the column's type, not null where the column isn't nullable)
+                    var v = Unknown(null, p.Type, notNull: ee.NotNullColumn(p));
                     Emit(new KFieldStore
                     {
                         Field = p.OriginalDefinition,
                         Instance = eo,
-                        Value = new KVar(v),
+                        Value = v,
                         At = at,
                         InstanceAt = at,
                     });
@@ -921,11 +923,6 @@ namespace CsVerify.Verifier.Boogie
                 Emit(KAssume.Of(Eq(Ne(new KVar(t), Null), InTx(c))));
                 return new KVar(t);
             }
-            // (an entry's State, a property entry's values: EntryRead's)
-            if (EntryRead(pr) is KExpr entryValue)
-            {
-                return entryValue;
-            }
             // (a local view's Count)
             if (pr.Property.Name == "Count" && IsLocalView(pr.Instance))
             {
@@ -941,11 +938,17 @@ namespace CsVerify.Verifier.Boogie
             {
                 return false;
             }
-            if (pr.Property.Name != "State" || EntryAt(held) is not { IsColumn: false } en)
+            if (pr.Property.Name != "State" || IsPropertyEntry(held.Type))
             {
                 throw new NotTranslated("EF's " + pr.Property.Name + " of an entry, set");
             }
-            var (c, o, e) = (en.C, en.O, en.E);
+            var (c0, o0, e) = EntryParts(held, null, spec: false);
+            if (e == null)
+            {
+                throw new NotTranslated("EF's State of an entry of what isn't an entity, set");
+            }
+            var c = RefOnce(c0);
+            var o = RefOnce(o0);
             var at = target.Parent?.Syntax ?? target.Syntax;
             if (target.Parent is ISimpleAssignmentOperation a && a.Value.ConstantValue.HasValue && a.Value.ConstantValue.Value is int s)
             {

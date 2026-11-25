@@ -850,6 +850,11 @@ namespace CsVerify.Verifier.Boogie
                 return span;
             }
             // (EF's change tracker: Lowering.EfTracker)
+            // (EF's entries: Entry(o) and Property(...), the values they are)
+            if (KernelTypes.Ef != null && call.Instance != null && EntryReadOnly(call))
+            {
+                return EntryTerm(call, null, spec: false);
+            }
             var (tracker, trackerValue) = TrackerCall(call);
             if (tracker)
             {
