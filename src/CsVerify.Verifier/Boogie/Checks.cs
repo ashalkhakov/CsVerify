@@ -326,6 +326,8 @@ namespace CsVerify.Verifier.Boogie
         /// it reads one; quantified ones are left out.
         /// </summary>
         private readonly List<MExpr> _facts = new List<MExpr>();
+        /// <summary>Those of a quantifier's variable, until its quantifier closes them over it.</summary>
+        private readonly List<MExpr> _boundFacts = new List<MExpr>();
         private readonly HashSet<string> _bound = new HashSet<string>();
 
         private int _opened;

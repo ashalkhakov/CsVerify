@@ -63,8 +63,21 @@ namespace CsVerify.Verifier.Boogie
             // (again, of only the procedures whose facts failed: the others' results stand)
             // (first, each whole in a quarter of the time: one that is hard whole is mostly easy split, which gets all of it;
             // only one that split doesn't decide is tried whole again, for all of it)
+            int given = timeoutMs;
             int quick = (timeoutMs <= 10000 ? timeoutMs : Math.Max(10000, timeoutMs / 4)) * TimeScale;
             timeoutMs *= TimeScale;
+            // (an inferred fact a later run finds false, one the whole didn't decide: left out, with what assumes it, and
+            // all of it verified again; it was assumed of everything after it)
+            bool Late(List<(MethodResult method, VerificationDiagnostic diagnostic)> found)
+            {
+                var late = found.Where(f => f.diagnostic.Id == Checks.Candidate).Select(f => int.Parse(f.diagnostic.Message)).Where(l => !program.Disabled.Contains(l)).ToList();
+                foreach (var line in late)
+                {
+                    program.AddDisabled(line);
+                }
+                program.LeaveOutUses();
+                return late.Count > 0;
+            }
             var names = new Dictionary<MethodResult, string>();
             var (failures, undecided, factsIn) = Run(cores, program, z3Path, quick, null, only, names, times);
             for (int round = 1; factsIn.Count > 0; round++)
@@ -109,6 +122,10 @@ namespace CsVerify.Verifier.Boogie
                 return failures;
             }
             var (again, _, _) = Run(cores, program, z3Path, timeoutMs, splitProcs, times: times);
+            if (Late(again))
+            {
+                return Verify(program, z3Path, given, cores, only, times);
+            }
             // (a failure split finds that the whole didn't: Boogie reports the solver's unknown, where it gives up, as a
             // failure, and split, without what it learned from the others, it gives up more. So the method is verified
             // whole again, with four times the time: what that finds too is a failure, what it proves is proved; where the
@@ -123,6 +140,10 @@ namespace CsVerify.Verifier.Boogie
                 var failing = new HashSet<MethodResult>(failed);
                 var recheck = fresh.Select(f => f.method).Distinct().Where(names.ContainsKey).Where(m => !failing.Contains(m)).ToHashSet();
                 var (confirm, _, _) = Run(cores, program, z3Path, timeoutMs * 4, null, recheck.Select(m => names[m]).ToList(), times: times);
+                if (Late(confirm))
+                {
+                    return Verify(program, z3Path, given, cores, only, times);
+                }
                 var kept = confirm.Where(f => f.diagnostic.Id != "CSV1900").Select(f => (f.method, DiagnosticKey(f))).ToHashSet();
                 var timedOut = confirm.Where(f => f.diagnostic.Id == "CSV1900" && recheck.Contains(f.method)).ToList();
                 var outOfTime = timedOut.Select(f => f.method).ToHashSet();
@@ -168,6 +189,10 @@ namespace CsVerify.Verifier.Boogie
             {
                 var stillOpen = undecidedAgain.Select(u => u.Item1).Where(names.ContainsKey).Distinct().ToList();
                 var (whole, _, _) = Run(cores, program, z3Path, timeoutMs, null, stillOpen.Select(m => names[m]).ToList(), times: times);
+                if (Late(whole))
+                {
+                    return Verify(program, z3Path, given, cores, only, times);
+                }
                 var proved = stillOpen.Where(m => !whole.Any(f => f.method == m)).ToHashSet();
                 undecidedAgain = undecidedAgain.Where(u => !proved.Contains(u.Item1)).ToList();
             }

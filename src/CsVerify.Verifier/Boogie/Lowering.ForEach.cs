@@ -471,7 +471,7 @@ namespace CsVerify.Verifier.Boogie
         /// </summary>
         private void BuiltListFacts()
         {
-            foreach (var fe in _forEachAt.Values.Where(f => f.Collection != null && f.Version == null && f.Mat == null && !f.Opaque && f.View == null))
+            foreach (var fe in _forEachAt.Values.Where(f => f.Collection != null && f.Mat == null && !f.Opaque && f.View == null))
             {
                 if (fe.At.Parent is not CommonForEachStatementSyntax loop)
                 {

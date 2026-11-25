@@ -591,7 +591,10 @@ namespace CsVerify.Verifier.Boogie
             t is INamedTypeSymbol { TypeKind: TypeKind.Delegate } d && d.ContainingNamespace?.ToDisplayString() == "System" && d.Name is "Func" or "Action" or "Predicate" or "Comparison" or "Converter" &&
             d.DelegateInvokeMethod is IMethodSymbol inv && inv.Parameters.All(p => p.RefKind == RefKind.None && FuncValue(p.Type)) && (inv.ReturnsVoid || FuncValue(inv.ReturnType));
 
-        private static bool FuncValue(ITypeSymbol t) => Scalar(t) || IsArray(t) || IsClass(t) || IsString(t) || IsToken(t) || IsGivenTask(t) || t?.SpecialType == SpecialType.System_Object;
+        // (a data value, a record's, is a reference as an object is)
+        private static bool FuncValue(ITypeSymbol t) =>
+            Scalar(t) || IsArray(t) || IsClass(t) || IsString(t) || IsToken(t) || IsGivenTask(t) || t?.SpecialType == SpecialType.System_Object ||
+            t is INamedTypeSymbol { IsGenericType: false } && IsData(t);
 
         /// <summary>A Func's or an Action's signature, as Boogie's types: its parameters', then its result's (or void).</summary>
         public static string FuncKey(ITypeSymbol t)
