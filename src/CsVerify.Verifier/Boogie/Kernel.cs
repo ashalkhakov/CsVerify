@@ -725,6 +725,17 @@ namespace CsVerify.Verifier.Boogie
     }
 
     /// <summary>A check Lowering decides on: a specification (mathematics, its own well-definedness not checked), reported as given.</summary>
+    /// <summary>
+    /// A callee's inferred fact, assumed where it's called: it stands only while the fact's candidates (the KChecks of
+    /// its key) hold in the callee; where one doesn't, this is left out and its procedure verified again.
+    /// </summary>
+    internal sealed class KFactUse : KStmt
+    {
+        public KExpr Cond;
+        public string Key;
+        public SyntaxNode At;
+    }
+
     internal sealed class KCheck : KStmt
     {
         public KExpr Cond;
@@ -732,6 +743,8 @@ namespace CsVerify.Verifier.Boogie
         public SyntaxNode At;
         /// <summary>Not assumed after it: a report, not a fact.</summary>
         public bool NotAssumedAfter;
+        /// <summary>Of an inferred fact (Id Checks.Candidate) other procedures use (KFactUse): what names it.</summary>
+        public string Key;
 
         public static KCheck Of(KExpr cond, string id, SyntaxNode at, string message, bool notAssumedAfter = false) => new KCheck
         {

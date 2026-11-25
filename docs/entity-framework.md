@@ -7,7 +7,25 @@ operation at a time. Nothing needs to be written for this: the model comes from 
 
 ## The model
 
-Read from the sources, as EF reads them:
+The model is EF's own. The verifier emits the program and loads it apart from itself, with the EF Core and the
+provider the program references, makes each context as EF's design-time tools do (the program's
+`IDesignTimeDbContextFactory<T>`, else its constructor with the provider's options; a context that takes none and has
+no `OnConfiguring` is given the provider in the copy loaded), and reads the model EF builds: keys and alternate keys,
+unique indexes with their filters, columns' names and nullability, value conversions, shadow columns, concurrency
+tokens, relationships and which are one-to-one, query filters' soft-delete flags. So it is the model the program runs
+with, however it configures it: conventions, attributes, configuration classes and their bases, constants, loops over
+the entity types, a provider's conventions. The configuration's own code is verified like any other; `typeof(T)` and a
+lambda quoted as an expression tree are objects of the library's there, never null. This runs the program's contexts' constructors and model configuration,
+never a query; the provider is never connected to. `CSVERIFY_EF_MODEL_TRACE=1` prints what was read.
+
+Where a context can't be made (no provider among the references, a constructor that needs what the verifier can't
+give), a warning says why, and the configuration is read from the sources instead, as below; `--ef-static-model`
+reads only the sources. A unique index with a filter counts where the filter is that its columns are not null, and,
+among the rows the entity's query filter keeps, where it is that a flag the query filter requires false is false
+(`HasFilter("[IsDeleted] = 0")` with `HasQueryFilter(x => !x.IsDeleted)`): not for a query with `IgnoreQueryFilters`.
+
+Read from the sources, as EF reads them (entity types, their classes' columns, query filters' bodies, and all of it
+where EF's own model isn't read):
 - **Entity types:** a context's `DbSet<T>` properties, the types its configuration names (`modelBuilder.Entity<T>()`,
   an `IEntityTypeConfiguration<T>`), and what their navigations lead to, in the program or in an assembly it references
   (a domain project's). A referenced entity's auto-properties (the compiler's backing field beside them, read from the
@@ -241,13 +259,21 @@ modified). Their `...Async` forms are the same, read where they're awaited; an e
 (`await set.AddAsync(new T { ... })`) is no other code's while it runs.
 
 An entry is a value: `ctx.Entry(o)` is its context and its entity, and `entry.Property(x => x.P)`, `Property("P")` or
-`Property<T>("Shadow")` of one is that and a column (a property of the class, or a shadow column the model declares
-with `Property<T>("Name")`). Entries may be kept in locals, read in LINQ's lambdas and in the methods those call. Their
-`State` is read and set as the tracker has it; a property entry's `CurrentValue` is `o.P` (a shadow column's, a value
-of its type), and its `OriginalValue` a value of its type; reading them changes nothing. `Entry` of a null entity
-throws, as EF does. An entry handed to other code, a column the model hasn't, or a value set through one, isn't
-translated. A method of the program that a LINQ lambda calls (`list.Select(Stamp)`), static or of this object, whose
-body declares locals and returns a value, is read as that body where it's called.
+`Property<T>("Shadow")` of one is that and a column of the model (a property of the class, or a shadow column).
+Entries are kept in locals, passed to methods and returned like any reference; a method of the program that only
+gives an entry of its arguments (an extension naming a column, a generic one over the entity too) is read as its body
+where it's called. An entry's `State` is read and set as the tracker has it; a property entry's `CurrentValue` is
+`o.P` where the column is known where it's read (a shadow column's, a value of its type), and its `OriginalValue` a
+value of its type; reading them changes nothing. `Entry` of a null entity throws, as EF does. A column the model
+hasn't, or a value set through an entry, isn't translated.
+
+In LINQ to Objects' `Select`, a method of the program the lambda (or a method group) calls, static or of this object,
+whose body declares locals and returns a value or a new object, is read as that body; and a library's method given
+only values and strings (`Guid.Parse`) is a value of each element, not known, which may throw: it reaches none of the
+program's objects, so the lambda is still a function of its element. The rows a database query gives differ in each
+key of one column their elements have, a projection's member or one reached through one-to-one navigations too, so
+`ToDictionary` by such a key meets its precondition.
+
 A context made here (`new`, or `IDbContextFactory.CreateDbContext`) tracks nothing; one passed in may track
 anything.
 
@@ -294,6 +320,13 @@ A context isn't thread safe, and EF throws when two of its operations overlap.
     `ThreadPool`, a `Thread`). Each such task makes its own (`IDbContextFactory`).
 
 ## Across calls
+
+A method that takes a query (`IQueryable<T>`) and returns a list or an array is verified once, whatever its body does:
+other queries, loops, dictionaries, calls. Of each query it takes, the verifier infers, and proves in its body, that
+where the query has one row at most its result has one element at most, and is a new list no other code holds. A
+caller whose argument's relational type says one row at most (`Where(a => a.ExternalId == id)`) then knows that of
+the result. Where the body doesn't keep it (it adds a row twice, returns a list a field holds), the fact isn't
+inferred, and the caller's `SingleOrDefault` is reported.
 
 A failed save, a rollback, entities read and the tokens read, a bulk update's stale rows and saves outside a
 transaction are each method's own record, none at its start: what a caller did to a context passed in isn't seen. A

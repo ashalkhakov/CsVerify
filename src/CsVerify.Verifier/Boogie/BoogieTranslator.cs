@@ -19,6 +19,8 @@ namespace CsVerify.Verifier.Boogie
         public MethodResult Method;
         /// <summary>For a requires or an ensures (Id Aux): the diagnostic a failure of it is (CSV1001 or CSV1014; CSV1002 or CSV1014).</summary>
         public string ReportAs;
+        /// <summary>An inferred fact's name, of its candidates (Id Checks.Candidate) and of what assumes it (Id Checks.FactUse).</summary>
+        public string Key;
         /// <summary>What the unknown values its conditions read come from (the library report's causes).</summary>
         public readonly HashSet<string> Causes = new HashSet<string>();
 
@@ -1090,6 +1092,54 @@ namespace CsVerify.Verifier.Boogie
         private HashSet<string> _classFields;
 
         public bool AddDisabled(int disabled) => Disabled.Add(disabled);
+
+        /// <summary>
+        /// Where a candidate of an inferred fact is left out, every candidate and assumption of that fact is: those newly
+        /// left out here, each with its method and that method's procedures.
+        /// </summary>
+        public List<(MethodResult method, List<string> procedures)> LeaveOutUses()
+        {
+            var keys = new HashSet<string>(Disabled.Where(Lines.ContainsKey).Select(l => Lines[l].Key).Where(k => k != null));
+            var touched = new List<(MethodResult, List<string>)>();
+            foreach (var (line, c) in Lines)
+            {
+                if (c.Key != null && keys.Contains(c.Key) && Disabled.Add(line) && c.Method != null)
+                {
+                    touched.Add((c.Method, Procedures.TryGetValue(c.Method, out var ps) ? ps : new List<string>()));
+                }
+            }
+            return touched;
+        }
+
+        /// <summary>
+        /// The inferred facts' procedures, by fact: those that prove it and those that assume it. They are verified
+        /// together: an assumption stands only by a proof of this run.
+        /// </summary>
+        public Dictionary<string, (HashSet<string> proving, HashSet<string> assuming)> FactProcedures()
+        {
+            var groups = new Dictionary<string, (HashSet<string>, HashSet<string>)>();
+            foreach (var c in Lines.Values.Where(c => c.Key != null && c.Method != null))
+            {
+                if (!groups.TryGetValue(c.Key, out var g))
+                {
+                    groups[c.Key] = g = (new HashSet<string>(), new HashSet<string>());
+                }
+                (c.Id == Checks.Candidate ? g.Item1 : g.Item2).UnionWith(Procedures.TryGetValue(c.Method, out var ps) ? ps : new List<string>());
+            }
+            return groups;
+        }
+
+        /// <summary>Leaves out every assumption of a fact (one no candidate of this run proves).</summary>
+        public void LeaveOutFact(string key)
+        {
+            foreach (var (line, c) in Lines)
+            {
+                if (c.Key == key)
+                {
+                    Disabled.Add(line);
+                }
+            }
+        }
 
         /// <summary>A set of globals of each procedure's, with those of everything it calls.</summary>
         /// <param name="selfWrites">With the fields of the new object a constructor not translated sets (written there only).</param>

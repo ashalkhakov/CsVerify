@@ -26,6 +26,11 @@ namespace CsVerify.Verifier
         /// the verifier know anything is not null.
         /// </summary>
         public NullableContextOptions Nullable = NullableContextOptions.Enable;
+        /// <summary>
+        /// Read the EF model from the configuration's source only, without loading the program to ask EF for its own
+        /// (which runs the program's contexts' constructors and model configuration).
+        /// </summary>
+        public bool EfStaticModel;
         public int TimeoutMs = 10000;
         public int MaxPaths = 5000;
         /// <summary>
@@ -312,7 +317,7 @@ namespace CsVerify.Verifier
                 .Select(d => compilation.ModelOf(t).GetDeclaredSymbol(d)).OfType<INamedTypeSymbol>()).ToList();
             Levels = new LockLevels(compilation, Locks, SourceTypes);
             Atomics = new Atomics(SourceTypes);
-            Ef = EfModel.For(compilation, UserTrees, SourceTypes);
+            Ef = EfModel.For(compilation, UserTrees, SourceTypes, !options.EfStaticModel);
             MetadataEntities.Current = Ef == null ? null : MetadataEntities.For(compilation, Ef.Entities.Select(e => e.Type));
             Predicates = SourceTypes.SelectMany(t => t.GetMembers().OfType<IMethodSymbol>()).Where(SpecSymbols.IsPredicate).ToList();
             // (a predicate needs the permission state even with no [Owned] class: over arrays alone, say)
@@ -1028,6 +1033,12 @@ namespace CsVerify.Verifier
 
             var declarations = new List<(SyntaxNode decl, MethodResult result)>();
             using var engine = new Engine(compilation, options, userTrees, program.ProjectTrees.Where(t => !IsGenerated(t)));
+            foreach (var (context, why) in engine.Ef?.RuntimeFailures ?? new List<(string, string)>())
+            {
+                var w = $"EF's model of '{context}' couldn't be built ({why}): its configuration is read from the source instead, which may miss what the source doesn't say plainly";
+                result.Warnings.Add(w);
+                Console.Error.WriteLine("csverify: warning: " + w);
+            }
             Boogie.KernelTypes.Data = engine.Data;
             Boogie.KernelTypes.Compilation = compilation;
             Boogie.KernelTypes.RefArrays = Boogie.KernelTypes.NamesRefArrays(compilation);
@@ -1616,6 +1627,8 @@ namespace CsVerify.Verifier
             var only = !engine.Partial ? null
                 : included.Where(x => x.result.Name != null).SelectMany(x => translator.Procedures.TryGetValue(x.result, out var p) ? p : new List<string>()).Distinct().ToList();
             included = included.Where(x => only == null || x.result.Name != null).ToList();
+            // (the procedures selected, before those proved before are taken out)
+            var selected = only;
             // (--cache: a method proved before, what its proof depends on unchanged, is proved; it isn't given to the solver)
             var cache = engine.Options.CachePath != null ? Boogie.ResultCache.Load(engine.Options.CachePath) : null;
             var keys = new Dictionary<MethodResult, string>();
@@ -1634,6 +1647,24 @@ namespace CsVerify.Verifier
                 }
                 only = (only ?? named.SelectMany(x => translator.Procedures[x.result]).Distinct().ToList())
                     .Where(p => !named.Any(x => x.result.Cached && translator.Procedures[x.result].Contains(p))).ToList();
+            }
+            // (inferred facts: one no candidate proves, or whose prover isn't among the methods selected, is left out; else
+            // those that prove it and those that assume it are verified together, a proof kept from before aside)
+            foreach (var (key, (proving, assuming)) in translator.FactProcedures())
+            {
+                if (proving.Count == 0 || selected != null && !proving.All(selected.Contains))
+                {
+                    translator.LeaveOutFact(key);
+                    continue;
+                }
+                if (only != null && proving.Concat(assuming).Any(only.Contains) && !proving.Concat(assuming).All(only.Contains))
+                {
+                    only = only.Union(proving).Union(assuming).ToList();
+                    foreach (var x in included.Where(x => x.result.Cached && translator.Procedures.TryGetValue(x.result, out var ps) && ps.Any(p => proving.Contains(p) || assuming.Contains(p))))
+                    {
+                        x.result.Cached = false;
+                    }
+                }
             }
             try
             {

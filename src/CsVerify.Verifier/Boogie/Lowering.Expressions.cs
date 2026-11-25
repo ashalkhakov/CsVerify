@@ -414,6 +414,12 @@ namespace CsVerify.Verifier.Boogie
                 case IFieldReferenceOperation: return ExprOfFieldReference(e);
                 case IDefaultValueOperation: return ExprOfDefaultValue(e);
                 case IInvocationOperation: return ExprOfInvocation(e);
+                // (a lambda quoted as an expression tree, and typeof(T): objects of the library's, never null, that the
+                // program only hands on; the lambda isn't run where it's quoted)
+                case IConversionOperation { Operand: IAnonymousFunctionOperation or IFlowAnonymousFunctionOperation, Type: INamedTypeSymbol { Name: "Expression", Arity: 1 } quoted }
+                    when quoted.ContainingNamespace?.ToDisplayString() == "System.Linq.Expressions":
+                case ITypeOfOperation:
+                    return LibraryObject();
                 case IConversionOperation: return ExprOfConversion(e);
                 case ILocalReferenceOperation: return ExprOfLocalReference(e);
                 case IParameterReferenceOperation: return ExprOfParameterReference(e);
@@ -449,7 +455,10 @@ namespace CsVerify.Verifier.Boogie
                     return AnyToken(e);
                 case IPropertyReferenceOperation { Property.Name: "Result", Instance: ILocalReferenceOperation resultOf } when _tasks.TryGetValue(resultOf.Local, out var resultTask):
                     return ResultOf(resultTask, e.Syntax);
-                // (EF's tracker: Database.CurrentTransaction, Entry(o).State)
+                // (EF's entries: an entry's State, a property entry's values)
+                case IPropertyReferenceOperation entryRead when EntryRead(entryRead, null, spec: false) is KExpr entryValue:
+                    return entryValue;
+                // (EF's tracker: Database.CurrentTransaction)
                 case IPropertyReferenceOperation trackerRead when TrackerRead(trackerRead) is KExpr tracked:
                     return tracked;
                 // (a context's table, ctx.Orders or ctx.Set<T>(): a reference that changes nothing; what reads it is Lowering.Ef's)
@@ -491,7 +500,16 @@ namespace CsVerify.Verifier.Boogie
                     return ResultOf(rt, e.Syntax);
                 // (a list's Count and indexer: its stub's getters)
                 case IPropertyReferenceOperation kp when IsPair(kp.Instance?.Type) && kp.Property.Name is "Key" or "Value":
-                    return Pair(Expr(kp.Instance), kp.Instance.Type, kp.Property.Name);
+                {
+                    var member = Pair(Expr(kp.Instance), kp.Instance.Type, kp.Property.Name);
+                    // (a pair's Key and Value are of its type arguments: not null where those aren't nullable, as C#'s
+                    // nullable analysis has them where they're read, as a field's value is of its type)
+                    if (IsNullable(kp.Type) && kp.Syntax.SyntaxTree == _model.SyntaxTree && _model.GetTypeInfo(kp.Syntax).Nullability.FlowState == NullableFlowState.NotNull)
+                    {
+                        Emit(KAssume.Of(NotNull(member)));
+                    }
+                    return member;
+                }
                 // (a given task's Result: a value not known)
                 case IPropertyReferenceOperation { Property.Name: "Result" } tr when tr.Instance != null && IsGivenTask(tr.Instance.Type) && InSubset(tr.Type):
                     return GivenTaskResult(tr);
@@ -1388,6 +1406,16 @@ AndAlso(Eq(Sel(r, new KVar(t)), Sel(r, instance)), Ne(Sel(r, new KVar(t)), new K
                 Emit(KCheck.Of(Ge(vs[1], KLit.Zero), "CSV1001", ns.Syntax, $"'{ns.Syntax}' might throw: its count might be negative"));
                 Emit(KAssume.Of(Eq(new KOp("slen", new KVar(t)), vs[1])));
             }
+            return new KVar(t);
+        }
+
+        /// <summary>An object of the library's the program makes and only hands on: some reference, not null.</summary>
+        private KExpr LibraryObject()
+        {
+            var t = "t$" + _temps++;
+            _p.AddLocal(KLocal.Of(t, "Ref"));
+            Emit(KHavoc.Of(t));
+            Emit(KAssume.Of(NotNull(new KVar(t))));
             return new KVar(t);
         }
 

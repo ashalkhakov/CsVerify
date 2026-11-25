@@ -265,11 +265,13 @@ namespace CsVerify.Verifier.Boogie
                     {
                         _facts[k] = _facts[k].Substitute(bound);
                     }
-                    // (a fact of the local's value that now names a quantifier's variable isn't one of the state: dropped)
+                    // (a fact of the local's value that now names a quantifier's variable isn't one of the state: its
+                    // quantifier states it of each value, where it closes)
                     for (int k = _facts.Count - 1; k >= facts; k--)
                     {
                         if (_facts[k].Mentions(_bound))
                         {
+                            _boundFacts.Add(_facts[k]);
                             _facts.RemoveAt(k);
                         }
                     }
@@ -393,9 +395,10 @@ namespace CsVerify.Verifier.Boogie
                         AddWellDefinedness(NotNull(o), wf, guard);
                     }
                     var v = Sel(FieldMap(fd.Field), o);
-                    if (NonNullField(fd.Field) && !(_p.IsCtor && fd.OnThis) && !o.Mentions(_bound))
+                    if (NonNullField(fd.Field) && !(_p.IsCtor && fd.OnThis))
                     {
-                        _facts.Add(Implies(NotNull(o), NotNull(v)));
+                        // (of a quantifier's variable: a fact of each value of it, stated where its quantifier closes)
+                        (o.Mentions(_bound) ? _boundFacts : _facts).Add(Implies(NotNull(o), NotNull(v)));
                     }
                     if (IsRef(FieldType(fd.Field)) && !o.Mentions(_bound))
                     {
@@ -417,6 +420,7 @@ namespace CsVerify.Verifier.Boogie
                     finally
                     {
                         _bound.Remove(name);
+                        _boundFacts.RemoveAll(f => f.Mentions(new HashSet<string> { name }));
                     }
                 }
                 case KQuant q:
@@ -440,6 +444,15 @@ namespace CsVerify.Verifier.Boogie
                     finally
                     {
                         _bound.Remove(name);
+                    }
+                    // (what reading its body lets one assume of its variable, a field not nullable isn't null: of each
+                    // value in its range)
+                    var its = new HashSet<string> { name };
+                    foreach (var f in _boundFacts.Where(f => f.Mentions(its)).ToList())
+                    {
+                        _boundFacts.Remove(f);
+                        var each = MQuant.ForAll(name, f, range);
+                        (each.Mentions(_bound) || range.Mentions(_bound) ? _boundFacts : _facts).Add(each);
                     }
                     foreach (var c in inner)
                     {

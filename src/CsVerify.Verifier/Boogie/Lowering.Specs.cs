@@ -20,9 +20,17 @@ namespace CsVerify.Verifier.Boogie
         private KExpr Spec(IOperation e, IParameterSymbol result)
         {
             // (EF's entries: Lowering.EfEntries'; a method of the program a lambda calls: its body, InlinedBody's)
-            if (e is IPropertyReferenceOperation { Instance: { } entry } er && IsEntryType(entry.Type))
+            if (e is IPropertyReferenceOperation er && EntryRead(er, result, spec: true) is KExpr entryValue)
             {
-                return SpecEntryRead(er, result);
+                return entryValue;
+            }
+            if (KernelTypes.Ef != null && e is IInvocationOperation { Instance: not null } ei && EntryReadOnly(ei))
+            {
+                return EntryTerm(ei, result, spec: true);
+            }
+            if (_applying > 0 && _applyIndex != null && e is IInvocationOperation qc && qc.TargetMethod.DeclaringSyntaxReferences.Length == 0 && QuietLibraryCall(qc))
+            {
+                return QuietValue(qc, result);
             }
             if (_applying > 0 && e is IInvocationOperation ic && ic.TargetMethod.DeclaringSyntaxReferences.Length > 0 && InlinedBody(ic) != null)
             {

@@ -86,11 +86,12 @@ namespace CsVerify.Tests
             Assert.Empty(Errors("M", "static bool M(List<int> l) { Spec.Ensures<bool>(r => !r || Spec.Forall(0, l.Count, i => l[i] > 0)); " +
                                      "foreach (var x in l) { Spec.Invariant(Spec.Forall(0, Spec.Index(x), i => l[i] > 0)); if (x <= 0) return false; } return true; }"));
             Assert.Equal(new[] { "CSV1010" }, Errors("M", "static int M(List<int> l) { int s = 0; foreach (var x in l) s += x; return s; }"));
-            // a loop that may change a list goes through the enumerator: its elements are unknown, but it is still verified
+            // a loop that may change a list goes through the enumerator: each element is still the list's at its index (what
+            // MoveNext has just taken), so nothing of it is reported as not modeled
             // (o is another list: if it could be l, its next MoveNext could throw, EnumerationTests)
             var r = Verify("public static class C { static void M(List<int> l, List<int> o) { Spec.Requires(l != o); Spec.Modifies(ObjSet.Of(o)); foreach (var x in l) o.Add(x); } }");
             Assert.Empty(r.Errors("M"));
-            Assert.Contains(r["M"].Diagnostics, d => d.Id == "CSV1900" && d.Message.Contains("Current"));
+            Assert.DoesNotContain(r["M"].Diagnostics, d => d.Id == "CSV1900");
         }
 
         [Fact]

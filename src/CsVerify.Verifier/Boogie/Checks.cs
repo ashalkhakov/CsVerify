@@ -193,6 +193,9 @@ namespace CsVerify.Verifier.Boogie
         /// <summary>The id of a loop's inferred fact, a candidate of Houdini's: never reported.</summary>
         public const string Candidate = "HOUDINI";
 
+        /// <summary>The id of an assumption of a callee's inferred fact: left out where the fact doesn't hold.</summary>
+        public const string FactUse = "HOUDINI-USE";
+
         private int _unfoldingAssert;
         private readonly List<MExpr> _unfoldedFacts = new List<MExpr>();
 
@@ -323,6 +326,8 @@ namespace CsVerify.Verifier.Boogie
         /// it reads one; quantified ones are left out.
         /// </summary>
         private readonly List<MExpr> _facts = new List<MExpr>();
+        /// <summary>Those of a quantifier's variable, until its quantifier closes them over it.</summary>
+        private readonly List<MExpr> _boundFacts = new List<MExpr>();
         private readonly HashSet<string> _bound = new HashSet<string>();
 
         private int _opened;

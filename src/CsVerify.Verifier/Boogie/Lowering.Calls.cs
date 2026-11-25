@@ -638,6 +638,9 @@ namespace CsVerify.Verifier.Boogie
                 // (a parameter not nullable: the caller proves its argument isn't null, CSV1014)
                 if (a.Parameter.RefKind == RefKind.None && IsNullable(a.Value.Type) && StaticChecks.IsNonNullable(a.Parameter))
                 {
+                    // (read once, as code reads it: what the argument itself dereferences is checked there, CSV1013,
+                    // not lost in this check's condition)
+                    av = RefOnce(av);
                     Emit(KCheck.Of(
                         NotNull(av),
                         "CSV1014",
@@ -850,6 +853,11 @@ namespace CsVerify.Verifier.Boogie
                 return span;
             }
             // (EF's change tracker: Lowering.EfTracker)
+            // (EF's entries: Entry(o) and Property(...), the values they are)
+            if (KernelTypes.Ef != null && call.Instance != null && EntryReadOnly(call))
+            {
+                return EntryTerm(call, null, spec: false);
+            }
             var (tracker, trackerValue) = TrackerCall(call);
             if (tracker)
             {
@@ -875,6 +883,11 @@ namespace CsVerify.Verifier.Boogie
             if (!_awaiting && WrapperGate(call, acquiring: true) is IFieldSymbol taken)
             {
                 Take(taken, call.Syntax);
+            }
+            // (a method that takes queries, not async: what is inferred of its result, Lowering.HelperFacts)
+            if (!_awaiting && !call.TargetMethod.IsAsync)
+            {
+                HelperFacts(call, value);
             }
             // (a call of the program's: what it may have done to a context, in this method's record)
             if (call.TargetMethod.DeclaringSyntaxReferences.Length > 0)

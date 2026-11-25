@@ -870,7 +870,8 @@ A `foreach` over a collection: a `List<T>` whose loop changes no list (it calls 
 `Spec.Index` the index. A loop that may change a list, and one over any other collection, goes through the
 enumerator, as C# does: `GetEnumerator()` keeps the collection's `Version()`, each `MoveNext()` checks the
 collection's is still that (else it throws: CSV1001) and gives an unknown answer, and `Current` is unknown, but for a
-dictionary's: a pair it has (`Domain[key]`, and `Entries[key]` its value; a `KeyValuePair`'s `Key` and `Value` are
+list's, the element at the index (`Items()[i]`: `MoveNext`, which has just returned true, took it from the list as it
+is), and a dictionary's: a pair it has (`Domain[key]`, and `Entries[key]` its value; a `KeyValuePair`'s `Key` and `Value` are
 functions of it, `$kvp.Key.`*K* and `$kvp.Value.`*V*). `Spec.Index` of such a loop is the number of edges back to
 its head, as for an array, at most the `Count` the collection had where the loop began (`fe$`*n*`$c`): `MoveNext`
 gives another only while fewer have gone, and, where the `Count` is still that, all of them (a dictionary's `Remove`

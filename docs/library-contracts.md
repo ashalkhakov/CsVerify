@@ -330,8 +330,8 @@ apart from this. `Sort` gives the frame and the count only.
 **`foreach` over a `List<T>`** runs like a `foreach` over an array, over the list's model: the iteration variable is
 `Items()[i]` for `i` from 0 to `Size()`, `Spec.Index(x)` is `i`, and the loop ends by itself. That holds only if the loop
 changes no list. In .NET, changing the list makes the next `MoveNext` throw. So if the loop may change any model state,
-it goes through the enumerator instead: `GetEnumerator`, `MoveNext` and `Current` are calls, and the elements are
-unknown values (CSV1900). Either way the enumerator's `Dispose`, which does nothing for a list, is left out.
+it goes through the enumerator instead: `GetEnumerator` and `MoveNext` are calls, the version checked at each, and
+`Current` is still `Items()[i]`, the element `MoveNext` has just taken. Either way the enumerator's `Dispose`, which does nothing for a list, is left out.
 
 `Map<K, V>` is a ghost total map, like `Seq<T>` but indexed by keys: `m[k]`, `m.Update(k, v)`, `Map.Const<K, V>(v)`, `==`.
 

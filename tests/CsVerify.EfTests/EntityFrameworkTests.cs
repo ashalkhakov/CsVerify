@@ -164,7 +164,10 @@ public sealed class Users : IdentityDbContext<AppUser, IdentityRole<long>, long>
         [Fact]
         public void AnEntityALibrarysContextConfigures_WithoutAModel_IsReadNoFurther()
         {
-            // (a library context's OnModelCreating, of no model of the Spec library's: its key and tokens unknown)
+            // (a library context's OnModelCreating, of no model of the Spec library's: read from the source alone, its key
+            // and tokens are unknown; EF's own model has them)
+            foreach (var staticModel in new[] { true, false })
+            {
             var r = EfHarness.VerifyEfWithContextLibrary(@"namespace Lib
 {
     public class Member { public long Id { get; set; } public string Name { get; set; } = """"; }
@@ -179,9 +182,18 @@ public static class Store
 {
     public static async Task<Mine?> ById(Club db, long id) => await db.All.AsNoTracking().FirstOrDefaultAsync(m => m.Id == id);
     public static async Task Attach(Mine m) { using var db = new Club(); db.Attach(m); await db.SaveChangesAsync(); }
-}", sources: false);
+}", sources: false, staticModel: staticModel);
+            // (the key is Name, as the library says: an order by Id is none)
             Assert.Equal(new[] { "CSV1031" }, r.Errors("ById"));
-            Assert.Contains(r["Attach"].Diagnostics, d => d.Id == "CSV1902" && d.Message.Contains("a library's OnModelCreating configures it"));
+            if (staticModel)
+            {
+                Assert.Contains(r["Attach"].Diagnostics, d => d.Id == "CSV1902" && d.Message.Contains("a library's OnModelCreating configures it"));
+            }
+            else
+            {
+                Assert.DoesNotContain(r["Attach"].Diagnostics, d => d.Id == "CSV1902");
+            }
+            }
         }
 
         [Fact]
@@ -1353,12 +1365,13 @@ public sealed class Store(Db db)
     public static async Task<IReadOnlyList<Item>> LoadPublic(IQueryable<Item> query) =>
         await query.OrderBy(t => t.Id).ToListAsync();
 }");
-            foreach (var ok in new[] { "Inline", "ThroughHelper", "ThroughIncluding", "ThroughTaking", "Load", "LoadWithTags", "LoadSome", "LoadPublic" })
+            // (a public helper's too: what is inferred of its result is proved in its body, whoever calls it, #132)
+            foreach (var ok in new[] { "Inline", "ThroughHelper", "ThroughIncluding", "ThroughTaking", "ThroughPublic", "Load", "LoadWithTags", "LoadSome", "LoadPublic" })
             {
                 Assert.True(r.Errors("Store." + ok).Length == 0, ok + ": " + r.Explain("Store." + ok));
             }
-            // (a column no index makes unique; a public helper is read by its contract, which says nothing of its rows)
-            foreach (var bad in new[] { "ByColumn", "ThroughPublic" })
+            // (a column no index makes unique)
+            foreach (var bad in new[] { "ByColumn" })
             {
                 Assert.True(r.Errors("Store." + bad).SequenceEqual(new[] { "CSV1001" }), bad + ": " + r.Explain("Store." + bad));
             }
@@ -2567,6 +2580,14 @@ public sealed class Db(DbContextOptions<Db> options) : DbContext(options)
     }
 }
 public sealed record Stamped(Invoice Invoice, DateTime Created);
+public static class Columns
+{
+    internal const string CreatedName = ""Created"";
+    public static Microsoft.EntityFrameworkCore.ChangeTracking.PropertyEntry<T, DateTime> Created<T>(this Microsoft.EntityFrameworkCore.ChangeTracking.EntityEntry<T> row)
+        where T : class => row.Property<DateTime>(CreatedName);
+    public static Microsoft.EntityFrameworkCore.ChangeTracking.PropertyEntry<Invoice, string> Note(this Microsoft.EntityFrameworkCore.ChangeTracking.EntityEntry<Invoice> row) =>
+        row.Property(i => i.Note);
+}
 public sealed class Store(Db db)
 {
     public async Task<Stamped?> StampedInvoice(Guid invoice) =>
@@ -2593,6 +2614,13 @@ public sealed class Store(Db db)
     }
     public void Handed(Invoice invoice) => Keep(db.Entry(invoice));
     private static void Keep(object o) { }
+    public DateTime CreatedBy(Invoice invoice) => db.Entry(invoice).Created().CurrentValue;
+    public string NoteBy(Invoice invoice)
+    {
+        var note = db.Entry(invoice).Note().CurrentValue;
+        Spec.Assert(note == invoice.Note);
+        return note;
+    }
     public void Original(Invoice invoice)
     {
         var entry = db.Entry(invoice);
@@ -2605,14 +2633,309 @@ public sealed class Store(Db db)
             {
                 Assert.True(r.Errors("Store." + ok).Length == 0, ok + ": " + r.Explain("Store." + ok));
             }
-            // (a column the model hasn't; an entry handed on, which the model doesn't follow)
-            foreach (var unread in new[] { "Missing", "Handed" })
+            // (a column the model hasn't)
+            Assert.Contains(r["Store.Missing"].Diagnostics, d => d.Id == "CSV1902");
+            // (an entry is a value: handed on, returned by the program's own methods, a generic extension's among them, #132)
+            foreach (var ok in new[] { "Handed", "CreatedBy", "NoteBy" })
             {
-                Assert.Contains(r["Store." + unread].Diagnostics, d => d.Id == "CSV1902");
+                Assert.True(r.Errors("Store." + ok).Length == 0, ok + ": " + r.Explain("Store." + ok));
             }
+            Assert.True(r.Errors("Columns.Created").Length == 0, r.Explain("Columns.Created"));
+            Assert.DoesNotContain(r.Diagnostics, d => d.Id == "CSV1902" && d.Message.Contains("Columns."));
             // (the original value isn't the current one; an entry of what may be null throws)
             Assert.NotEmpty(r.Errors("Store.Original"));
             Assert.Contains(r.Diagnostics, d => d.Id == "CSV1013" && d.Message.Contains("db.Entry(i!)"));
+        }
+
+        [Fact]
+        public void TheModelEfBuilds_HelpersOfQueries_AndEntriesAsValues()
+        {
+            // (#132: the model is EF's own, of configuration classes, a base one's constants and a renamed column; a
+            // helper with a second query proves its result's count itself; an entry goes through the program's methods;
+            // rows mapped through one-to-one navigations keep distinct keys)
+            var r = VerifyEf(@"using System.Linq.Expressions;
+using Microsoft.EntityFrameworkCore.ChangeTracking;
+using Microsoft.EntityFrameworkCore.Metadata.Builders;
+public sealed record Ref
+{
+    private Ref(string value) => Value = value;
+
+    public string Value { get; }
+
+    public static Ref Parse(string? value) => new(Text.Required(value));
+}
+
+public static class Text
+{
+    public static string Required(string? value) => value ?? throw new ArgumentException(""required"");
+}
+
+public sealed class Login
+{
+    public long Id { get; set; }
+
+    public Guid ExternalId { get; set; }
+
+    public Holder Holder { get; set; } = null!;
+}
+
+public sealed class Holder
+{
+    public long RowId { get; set; }
+
+    public Tag? Tag { get; private set; }
+
+    public Profile? Profile { get; private set; }
+}
+
+public sealed class Tag
+{
+    public long RowId { get; set; }
+
+    public Ref? Code { get; set; }
+}
+
+public sealed class Profile
+{
+    public long RowId { get; set; }
+
+    public Ref? Client { get; set; }
+
+    public List<Account> Accounts { get; } = [];
+}
+
+public sealed class Account
+{
+    public long RowId { get; set; }
+
+    public Guid ExternalId { get; set; }
+
+    public Profile? Client { get; internal set; }
+}
+
+/// <summary>The shadow columns every row has, read by name.</summary>
+public static class Columns
+{
+    internal const string CreatedName = ""Created"";
+
+    public static PropertyEntry<T, DateTime> Created<T>(this EntityEntry<T> row)
+        where T : class =>
+        row.Property<DateTime>(CreatedName);
+}
+
+/// <summary>A base configuration: the key named by an expression, shadow bookkeeping columns and a soft-delete filter.</summary>
+public abstract class RowConfiguration<T> : IEntityTypeConfiguration<T>
+    where T : class
+{
+    protected abstract Expression<Func<T, long>> Key { get; }
+
+    public virtual void Configure(EntityTypeBuilder<T> builder)
+    {
+        builder.Property(Key).HasColumnName(""Id"");
+        builder.HasKey(((MemberExpression)Key.Body).Member.Name);
+        builder.Property<DateTime>(Columns.CreatedName);
+        builder.Property<bool>(""IsDeleted"");
+        builder.HasQueryFilter(x => !EF.Property<bool>(x, ""IsDeleted""));
+    }
+}
+
+internal sealed class LoginConfiguration : IEntityTypeConfiguration<Login>
+{
+    public void Configure(EntityTypeBuilder<Login> builder)
+    {
+        builder.Navigation(l => l.Holder).AutoInclude();
+    }
+}
+
+internal sealed class HolderConfiguration : RowConfiguration<Holder>
+{
+    protected override Expression<Func<Holder, long>> Key => x => x.RowId;
+
+    public override void Configure(EntityTypeBuilder<Holder> builder)
+    {
+        base.Configure(builder);
+        builder.HasOne<Login>().WithOne(l => l.Holder).HasForeignKey<Holder>(""LoginId"");
+        builder.HasOne(h => h.Tag).WithOne().HasForeignKey<Tag>(""HolderId"");
+        builder.HasOne(h => h.Profile).WithOne().HasForeignKey<Profile>(""HolderId"");
+    }
+}
+
+internal sealed class TagConfiguration : RowConfiguration<Tag>
+{
+    protected override Expression<Func<Tag, long>> Key => x => x.RowId;
+
+    public override void Configure(EntityTypeBuilder<Tag> builder)
+    {
+        base.Configure(builder);
+        builder.Property<long>(""HolderId"");
+        builder.HasIndex(""HolderId"").IsUnique();
+        builder.Property(x => x.Code)
+            .HasColumnName(""CodeId"")
+            .HasMaxLength(128)
+            .HasConversion(r => r!.Value, v => Ref.Parse(v));
+        builder.HasIndex(x => x.Code).IsUnique().HasFilter(""[CodeId] IS NOT NULL"");
+    }
+}
+
+internal sealed class ProfileConfiguration : RowConfiguration<Profile>
+{
+    protected override Expression<Func<Profile, long>> Key => x => x.RowId;
+
+    public override void Configure(EntityTypeBuilder<Profile> builder)
+    {
+        base.Configure(builder);
+        builder.Property<long>(""HolderId"");
+        builder.HasMany(p => p.Accounts).WithOne(a => a.Client).HasForeignKey(""ProfileId"").IsRequired();
+        builder.HasIndex(""HolderId"").IsUnique().HasFilter(""[IsDeleted] = 0"");
+        builder.Property(x => x.Client).HasConversion(r => r!.Value, v => Ref.Parse(v));
+    }
+}
+
+internal sealed class AccountConfiguration : RowConfiguration<Account>
+{
+    protected override Expression<Func<Account, long>> Key => x => x.RowId;
+
+    public override void Configure(EntityTypeBuilder<Account> builder)
+    {
+        base.Configure(builder);
+        builder.HasAlternateKey(x => x.ExternalId);
+    }
+}
+
+public sealed class Db(DbContextOptions<Db> options) : DbContext(options)
+{
+    protected override void OnModelCreating(ModelBuilder b)
+    {
+        b.ApplyConfigurationsFromAssembly(typeof(Db).Assembly);
+        b.Entity<Slot>().HasIndex(x => x.Name).IsUnique().HasFilter(""[Spare] = 0"");
+    }
+}
+
+public sealed class Slot
+{
+    public long Id { get; set; }
+
+    public string Name { get; set; } = """";
+
+    public bool Spare { get; set; }
+}
+
+public sealed record HeldClient(long Row, long LoginId, Guid Client, DateTime Created, Profile Profile);
+
+public sealed record HeldAccount(long Row, Account Account, HeldClient Client);
+
+public sealed class Store(Db db)
+{
+    // A. The login of a tag's unique code, through two one-to-one navigations, as configured above.
+    public async Task<Login?> LoginOfTag(Ref code) =>
+        await db.Set<Login>().Where(l => l.Holder.Tag!.Code == code).SingleOrDefaultAsync();
+
+    // B. An account by its alternate key, through a helper that pairs each account with its client.
+    public async Task<HeldAccount?> AccountOf(Guid account) =>
+        (await HeldAsync(db.Set<Account>().Where(a => a.ExternalId == account))).SingleOrDefault();
+
+    private IQueryable<ClientOfLogin> Clients() =>
+        db.Set<Login>()
+            .Where(l => l.Holder.Profile != null)
+            .Select(l => new ClientOfLogin { Profile = l.Holder.Profile!, LoginId = l.Id });
+
+    private sealed class ClientOfLogin
+    {
+        public required Profile Profile { get; init; }
+
+        public required long LoginId { get; init; }
+    }
+
+    private async Task<IReadOnlyList<HeldAccount>> HeldAsync(IQueryable<Account> query)
+    {
+        var accounts = await query.Include(a => a.Client).OrderBy(a => a.RowId).ToListAsync();
+        var clientRows = accounts.Where(a => a.Client is not null).Select(a => a.Client!.RowId).Distinct().ToList();
+        var clients = (await Clients().Where(c => clientRows.Contains(c.Profile.RowId)).ToListAsync())
+            .Select(c => Held(c.Profile, c.LoginId))
+            .ToDictionary(c => c.Row);
+        var held = new List<HeldAccount>();
+        foreach (var account in accounts)
+        {
+            if (account.Client is { } client && clients.TryGetValue(client.RowId, out var heldClient))
+            {
+                held.Add(new HeldAccount(account.RowId, account, heldClient));
+            }
+        }
+
+        return held;
+    }
+
+    // (an index unique only among the rows of a flag no query filter keeps)
+    public async Task<Slot?> SlotOf(string name) =>
+        await db.Set<Slot>().Where(s => s.Name == name).SingleOrDefaultAsync();
+
+    // (with the query filters, a holder has one profile at most; ignoring them, a deleted one too)
+    public async Task<Holder?> HolderOfProfile(long row) =>
+        await db.Set<Holder>().Where(h => h.Profile!.RowId == row).SingleOrDefaultAsync();
+
+    public async Task<Holder?> HolderOfProfileIgnoring(long row) =>
+        await db.Set<Holder>().IgnoreQueryFilters().Where(h => h.Profile!.RowId == row).SingleOrDefaultAsync();
+
+    // (a helper whose list other code can reach says nothing of its count)
+    private List<Account> _kept = new();
+
+    public async Task<Account?> KeptOf(Guid account) =>
+        (await Kept(db.Set<Account>().Where(a => a.ExternalId == account))).SingleOrDefault();
+
+    private async Task<IReadOnlyList<Account>> Kept(IQueryable<Account> query)
+    {
+        _kept = await query.ToListAsync();
+        return _kept;
+    }
+
+    // (a helper that may add an account twice)
+    public async Task<Account?> TwiceOf(Guid account) =>
+        (await Twice(db.Set<Account>().Where(a => a.ExternalId == account))).SingleOrDefault();
+
+    private async Task<List<Account>> Twice(IQueryable<Account> query)
+    {
+        var twice = new List<Account>();
+        foreach (var a in await query.ToListAsync())
+        {
+            twice.Add(a);
+            twice.Add(a);
+        }
+
+        return twice;
+    }
+
+    private HeldClient Held(Profile profile, long loginId)
+    {
+        var entry = db.Entry(profile);
+        return new HeldClient(
+            entry.Property(r => r.RowId).CurrentValue,
+            loginId,
+            Guid.Parse(profile.Client!.Value),
+            entry.Created().CurrentValue,
+            profile);
+    }
+}");
+            Assert.DoesNotContain(r.Warnings, w => w.Contains("couldn't be built"));
+            // (every check, not only the contracts the issue ran: the dictionary's distinct keys, what TryGetValue gives)
+            foreach (var ok in new[] { "Store.LoginOfTag", "Store.AccountOf", "Store.HeldAsync", "Columns.Created", "Store.HolderOfProfile", "Store.Kept", "Store.Twice",
+                                       "Db.OnModelCreating", "HolderConfiguration.get_Key", "RowConfiguration.Configure" })
+            {
+                Assert.True(r.Errors(ok).Length == 0, ok + ": " + r.Explain(ok));
+            }
+            // (every method is verified: the configuration's typeof and quoted lambdas, the loop over a list by its enumerator)
+            Assert.DoesNotContain(r.Diagnostics, d => d.Id is "CSV1902" or "CSV1901");
+            Assert.DoesNotContain(r.Diagnostics, d => d.Message.Contains("'Current'"));
+            // (what the file does leave to chance, by a null-forgiving operator the verifier doesn't take on trust: a
+            // nullable column dereferenced, reported as that and not as the argument it is part of; a navigation left null)
+            Assert.True(r.Errors("Store.Held").SequenceEqual(new[] { "CSV1013" }), r.Explain("Store.Held"));
+            Assert.Contains(r.Diagnostics, d => d.Id == "CSV1013" && d.Message.Contains("'profile.Client' might be null"));
+            Assert.Contains(r.Diagnostics, d => d.Id == "CSV1014" && d.Message.Contains("'Holder' is not nullable"));
+            Assert.Equal(6, r.Diagnostics.Count(d => d.IsError));
+            // (a soft-deleted profile's holder; a list other code reaches; two a row; an index filtered by another flag)
+            foreach (var bad in new[] { "Store.HolderOfProfileIgnoring", "Store.KeptOf", "Store.TwiceOf", "Store.SlotOf" })
+            {
+                Assert.True(r.Errors(bad).SequenceEqual(new[] { "CSV1001" }), bad + ": " + r.Explain(bad));
+            }
         }
 
         [Fact]
