@@ -71,9 +71,6 @@ namespace CsVerify.Verifier.Boogie
                     case IFlowCaptureReferenceOperation c when _captured.TryGetValue(c.Id, out var cv):
                         op = cv;
                         continue;
-                    case IParameterReferenceOperation qp when _queryArgs.TryGetValue(qp.Parameter, out var qa):
-                        op = qa;
-                        continue;
                     case IInvocationOperation sh when SourceHelper(sh) is IOperation shv:
                         op = shv;
                         continue;

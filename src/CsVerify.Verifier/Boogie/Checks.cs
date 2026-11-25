@@ -193,6 +193,9 @@ namespace CsVerify.Verifier.Boogie
         /// <summary>The id of a loop's inferred fact, a candidate of Houdini's: never reported.</summary>
         public const string Candidate = "HOUDINI";
 
+        /// <summary>The id of an assumption of a callee's inferred fact: left out where the fact doesn't hold.</summary>
+        public const string FactUse = "HOUDINI-USE";
+
         private int _unfoldingAssert;
         private readonly List<MExpr> _unfoldedFacts = new List<MExpr>();
 

@@ -1914,7 +1914,7 @@ namespace CsVerify.Verifier.Boogie
                     Line($"    assert {E(a.Cond, cx)};", a.Check);
                     return;
                 case MAssume a:
-                    Line($"    assume {E(a.Cond, cx)};");
+                    Line($"    assume {E(a.Cond, cx)};", a.Check);
                     return;
                 case MHavoc h:
                     Line($"    havoc {h.Var};");

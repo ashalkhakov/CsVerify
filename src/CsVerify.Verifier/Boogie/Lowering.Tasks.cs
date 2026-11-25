@@ -64,14 +64,14 @@ namespace CsVerify.Verifier.Boogie
             {
                 op = nc.Operand;
             }
-            // (a query helper's, #126: its body, here; an async one's await is its own)
-            if (op is IInvocationOperation helper && helper.TargetMethod.IsAsync && QueryHelper(helper) is IBlockOperation helped)
-            {
-                return InlineQueryHelper(helper, helped);
-            }
             var awaited = Awaiting(op, aw);
             OthersRun(aw);
             var value = awaited.ValueAfter != null ? awaited.ValueAfter() : awaited.Value;
+            // (a method that takes queries: what is inferred of its result, new and no one else's, Lowering.HelperFacts)
+            if (op is IInvocationOperation helper)
+            {
+                HelperFacts(helper, value);
+            }
             // (where exceptions are seen: a library's await may throw, a cancellation say; not an async method of the
             // program's, whose call says how it throws, nor what says so itself)
             if (!(op is IInvocationOperation call && IsTaskMethod(call.TargetMethod) && call.TargetMethod.DeclaringSyntaxReferences.Length > 0) && !awaited.ThrowsAlready &&
@@ -1370,8 +1370,7 @@ namespace CsVerify.Verifier.Boogie
             {
                 return _confined;
             }
-            // (and those of the query helpers read here, #129)
-            var roots = new[] { _decl }.Concat(_inlinedBodies).ToList();
+            var roots = new List<SyntaxNode> { _decl };
             var locals = roots.SelectMany(r => r.DescendantNodes()).OfType<VariableDeclaratorSyntax>().Select(d => _model.GetDeclaredSymbol(d) as ILocalSymbol).Where(l => l != null).ToList();
             foreach (var l in locals.Where(l => IsClass(l.Type) || IsArray(l.Type) || IsCollection(l.Type)))
             {
@@ -1400,6 +1399,8 @@ namespace CsVerify.Verifier.Boogie
                                                                  (cms.Name is "Add" or "Insert" ||
                                                                   ci.ArgumentList.Arguments.All(a => _model.GetTypeInfo(a.Expression).Type is ITypeSymbol at && (Scalar(at) || IsString(at)))): continue;
                         case ElementAccessExpressionSyntax ea when ea.Expression == id: continue;
+                        // (enumerated: read, its elements the loop's)
+                        case ForEachStatementSyntax fe when fe.Expression == id && fe.AwaitKeyword.RawKind == 0: continue;
                         // (LINQ's operators read it, and change nothing of it: those that may give it back aside, #129)
                         case MemberAccessExpressionSyntax lq when lq.Expression == id && lq.Parent is InvocationExpressionSyntax li && _model.GetSymbolInfo(li).Symbol is IMethodSymbol lm &&
                                                                  lm.ReducedFrom?.ContainingType?.ToDisplayString() == "System.Linq.Enumerable" && lm.Name is not ("AsEnumerable" or "Cast" or "OfType"): continue;

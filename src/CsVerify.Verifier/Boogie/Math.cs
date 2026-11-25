@@ -741,6 +741,8 @@ namespace CsVerify.Verifier.Boogie
         public MExpr Cond;
         /// <summary>True in every state (what a field's type says of its value): not put under a guard or a quantifier.</summary>
         public bool Always;
+        /// <summary>Of a callee's inferred fact (Checks.FactUse): left out where the fact doesn't hold.</summary>
+        public Check Check;
 
         public static MAssume Of(MExpr cond, bool always = false) => new MAssume
         {

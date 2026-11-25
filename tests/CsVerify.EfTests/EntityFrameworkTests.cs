@@ -1365,12 +1365,13 @@ public sealed class Store(Db db)
     public static async Task<IReadOnlyList<Item>> LoadPublic(IQueryable<Item> query) =>
         await query.OrderBy(t => t.Id).ToListAsync();
 }");
-            foreach (var ok in new[] { "Inline", "ThroughHelper", "ThroughIncluding", "ThroughTaking", "Load", "LoadWithTags", "LoadSome", "LoadPublic" })
+            // (a public helper's too: what is inferred of its result is proved in its body, whoever calls it, #132)
+            foreach (var ok in new[] { "Inline", "ThroughHelper", "ThroughIncluding", "ThroughTaking", "ThroughPublic", "Load", "LoadWithTags", "LoadSome", "LoadPublic" })
             {
                 Assert.True(r.Errors("Store." + ok).Length == 0, ok + ": " + r.Explain("Store." + ok));
             }
-            // (a column no index makes unique; a public helper is read by its contract, which says nothing of its rows)
-            foreach (var bad in new[] { "ByColumn", "ThroughPublic" })
+            // (a column no index makes unique)
+            foreach (var bad in new[] { "ByColumn" })
             {
                 Assert.True(r.Errors("Store." + bad).SequenceEqual(new[] { "CSV1001" }), bad + ": " + r.Explain("Store." + bad));
             }

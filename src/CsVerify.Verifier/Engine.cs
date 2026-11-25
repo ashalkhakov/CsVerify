@@ -1627,6 +1627,8 @@ namespace CsVerify.Verifier
             var only = !engine.Partial ? null
                 : included.Where(x => x.result.Name != null).SelectMany(x => translator.Procedures.TryGetValue(x.result, out var p) ? p : new List<string>()).Distinct().ToList();
             included = included.Where(x => only == null || x.result.Name != null).ToList();
+            // (the procedures selected, before those proved before are taken out)
+            var selected = only;
             // (--cache: a method proved before, what its proof depends on unchanged, is proved; it isn't given to the solver)
             var cache = engine.Options.CachePath != null ? Boogie.ResultCache.Load(engine.Options.CachePath) : null;
             var keys = new Dictionary<MethodResult, string>();
@@ -1645,6 +1647,24 @@ namespace CsVerify.Verifier
                 }
                 only = (only ?? named.SelectMany(x => translator.Procedures[x.result]).Distinct().ToList())
                     .Where(p => !named.Any(x => x.result.Cached && translator.Procedures[x.result].Contains(p))).ToList();
+            }
+            // (inferred facts: one no candidate proves, or whose prover isn't among the methods selected, is left out; else
+            // those that prove it and those that assume it are verified together, a proof kept from before aside)
+            foreach (var (key, (proving, assuming)) in translator.FactProcedures())
+            {
+                if (proving.Count == 0 || selected != null && !proving.All(selected.Contains))
+                {
+                    translator.LeaveOutFact(key);
+                    continue;
+                }
+                if (only != null && proving.Concat(assuming).Any(only.Contains) && !proving.Concat(assuming).All(only.Contains))
+                {
+                    only = only.Union(proving).Union(assuming).ToList();
+                    foreach (var x in included.Where(x => x.result.Cached && translator.Procedures.TryGetValue(x.result, out var ps) && ps.Any(p => proving.Contains(p) || assuming.Contains(p))))
+                    {
+                        x.result.Cached = false;
+                    }
+                }
             }
             try
             {

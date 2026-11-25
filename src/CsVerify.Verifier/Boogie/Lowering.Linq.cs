@@ -538,10 +538,10 @@ namespace CsVerify.Verifier.Boogie
             for (int depth = 0; depth < 64 && op != null; depth++)
             {
                 op = Unconverted(op);
-                while (op is IFlowCaptureReferenceOperation r && _captured.TryGetValue(r.Id, out var v) || op is IParameterReferenceOperation qp && _queryArgs.ContainsKey(qp.Parameter) ||
+                while (op is IFlowCaptureReferenceOperation r && _captured.TryGetValue(r.Id, out var v) ||
                        SourceHelper(op) != null)
                 {
-                    op = Unconverted(op is IParameterReferenceOperation bp ? _queryArgs[bp.Parameter] : op is IFlowCaptureReferenceOperation fc ? _captured[fc.Id] : SourceHelper(op));
+                    op = Unconverted(op is IFlowCaptureReferenceOperation fc ? _captured[fc.Id] : SourceHelper(op));
                 }
                 if (TableOf(op) != null)
                 {
@@ -565,7 +565,7 @@ namespace CsVerify.Verifier.Boogie
             {
                 op = Unconverted(c.Arguments.OrderBy(a => a.Parameter.Ordinal).First().Value);
             }
-            return op is IParameterReferenceOperation p && IsQueryHandle(p.Type) && !_queryArgs.ContainsKey(p.Parameter);
+            return op is IParameterReferenceOperation p && IsQueryHandle(p.Type);
         }
 
         /// <summary>A LINQ source as a sequence, read now: a query of the members here, or an array, a List, a list interface.</summary>
@@ -574,15 +574,13 @@ namespace CsVerify.Verifier.Boogie
             var src = Unconverted(op);
             // (a query the control flow graph captured: what it captured)
             // (and query syntax: the calls it is)
-            // (and an inlined helper's query parameter: the caller's argument)
             while (src is IFlowCaptureReferenceOperation r && _captured.TryGetValue(r.Id, out var v) || src is ITranslatedQueryOperation ||
-                   src is ILocalReferenceOperation lq && _lazyQueries.ContainsKey(lq.Local) || src is IParameterReferenceOperation qp && _queryArgs.ContainsKey(qp.Parameter) ||
+                   src is ILocalReferenceOperation lq && _lazyQueries.ContainsKey(lq.Local) ||
                    SourceHelper(src) != null)
             {
                 src = SourceHelper(src) is IOperation helped ? helped
                     : src is ITranslatedQueryOperation tq ? Unconverted(tq.Operation)
                     : src is ILocalReferenceOperation lazy ? Unconverted(_lazyQueries[lazy.Local])
-                    : src is IParameterReferenceOperation bp ? Unconverted(_queryArgs[bp.Parameter])
                     : Unconverted(_captured[((IFlowCaptureReferenceOperation)src).Id]);
             }
             // (an EF operator of the whole query written past a filter, an order or a page, Include after Where: applied to
@@ -682,6 +680,12 @@ namespace CsVerify.Verifier.Boogie
                 if (IsLinqGroup(type))
                 {
                     ShapeFact(Lt(KLit.Zero, new KVar(n)), src.Syntax);
+                }
+                // (a query this method is given: one row at most, where its ghost input says so, Lowering.HelperFacts)
+                if (IsQueryHandle(type) && src is IParameterReferenceOperation one && _m != null && SummarizedResult(_m) != null &&
+                    SymbolEqualityComparer.Default.Equals(one.Parameter.ContainingSymbol, _m) && !_assigned.ContainsKey(one.Parameter))
+                {
+                    ShapeFact(Implies(new KVar(OneRow(one.Parameter)), Le(new KVar(n), KLit.One)), src.Syntax);
                 }
                 // (a query's rows of a non-nullable type aren't null, as C#'s nullable analysis has it, as a list's elements)
                 if (IsQueryHandle(type) && elem.IsReferenceType && NotNullable(elem))

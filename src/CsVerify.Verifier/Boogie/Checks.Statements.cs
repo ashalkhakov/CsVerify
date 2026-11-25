@@ -171,7 +171,16 @@ namespace CsVerify.Verifier.Boogie
                     var cond = Spec(ck.Cond, out _);
                     // (what its reads give, free: a field not nullable isn't null)
                     Facts();
-                    Assert(cond, At(ck.Id, ck.At, ck.Message), ck.NotAssumedAfter);
+                    var check = At(ck.Id, ck.At, ck.Message);
+                    check.Key = ck.Key;
+                    Assert(cond, check, ck.NotAssumedAfter);
+                    return;
+                }
+                case KFactUse use:
+                {
+                    var check = At(FactUse, use.At, "a callee's inferred fact");
+                    check.Key = use.Key;
+                    Emit(new MAssume { Cond = Code(use.Cond), Check = check });
                     return;
                 }
                 case KLambda lam:

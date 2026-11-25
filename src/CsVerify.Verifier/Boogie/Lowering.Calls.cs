@@ -876,6 +876,11 @@ namespace CsVerify.Verifier.Boogie
             {
                 Take(taken, call.Syntax);
             }
+            // (a method that takes queries, not async: what is inferred of its result, Lowering.HelperFacts)
+            if (!_awaiting && !call.TargetMethod.IsAsync)
+            {
+                HelperFacts(call, value);
+            }
             // (a call of the program's: what it may have done to a context, in this method's record)
             if (call.TargetMethod.DeclaringSyntaxReferences.Length > 0)
             {

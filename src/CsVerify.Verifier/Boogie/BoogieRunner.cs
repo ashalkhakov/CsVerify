@@ -88,6 +88,12 @@ namespace CsVerify.Verifier.Boogie
                         program.AddDisabled(line);
                     }
                 }
+                // (an inferred fact other procedures use, left out: what assumes it too, those procedures verified again)
+                foreach (var (use, procedures) in program.LeaveOutUses())
+                {
+                    redo.Add(use);
+                    factsIn = factsIn.Union(procedures.Where(p => only == null || only.Contains(p))).ToList();
+                }
                 var (redone0, undecidedAgain0, factsAgain) = Run(cores, program, z3Path, quick, null, factsIn, names, times);
                 failures = failures.Where(f => !redo.Contains(f.method)).Concat(redone0).ToList();
                 undecided = undecided.Where(u => !factsIn.Contains(u)).Concat(undecidedAgain0).Distinct().ToList();
