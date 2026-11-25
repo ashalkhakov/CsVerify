@@ -589,6 +589,14 @@ public static class Store
             "var o = await db.Orders.AsNoTracking().Include(x => x.Customer).FirstOrDefaultAsync(x => x.Id == id); if (o == null) return; " +
             "db.Update(o); await db.SaveChangesAsync(); } }"));
 
+        // (a failure the solver has to search for: found in a fraction of a second, so within a small limit. Whether an
+        // object is a row is a question that makes no row; where it did, the search went on to the limit, CSV1902)
+        [Fact]
+        public void Update_ALoadedGraph_IsReportedWithinASmallLimit() => Assert.Equal(new[] { "CSV1033" }, VerifyEf(Model +
+            "public static class C { public static async Task M(int id) { using var db = new Shop(); " +
+            "var o = await db.Orders.AsNoTracking().Include(x => x.Customer).FirstOrDefaultAsync(x => x.Id == id); if (o == null) return; " +
+            "db.Update(o); await db.SaveChangesAsync(); } }", o => o.TimeoutMs = 3000).Errors("M"));
+
         [Fact]
         public void Update_ARowAlone_Verifies() => Assert.Empty(Errors("M",
             "public static class C { public static async Task M(int id) { using var db = new Shop(); " +

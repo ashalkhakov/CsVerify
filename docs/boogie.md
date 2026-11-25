@@ -545,7 +545,10 @@ query filters, navigations, tokens; Lowering.Ef, Lowering.EfTracker):
   `HashSet`) holds the rows whose foreign key is this row's key, each through its type's filters, new objects each, and so on down a `ThenInclude` path; a path that follows
   a navigation back by its inverse (or one the model doesn't pair, back to the type it left) is CSV1032. An await leaves their columns as they were where no other code reaches them (the
   method lets none out: `EntitiesStayHere`): the columns of the entities the method's code can reach, those of its
-  expressions' types and what their navigations lead to, not the whole model's.
+  expressions' types and what their navigations lead to, not the whole model's. Which objects are a read's rows is a
+  map of its own, and which row an object is (the inverse of the rows' map) is stated of an object that is one, at
+  the question whether it is: so the question, asked of any object (is it allocated, was it read), makes no term for
+  a row, whose included objects would be asked the same without end.
 - Rows read with tracking may be instances the context tracked already, as the program left them: what LINQ says of
   them (a filter's predicate, an order) holds only where the context tracked no entity of the type before
   (`Known`), and the count's bounds and the results' definitions whatever they hold, one row at most among them
@@ -1334,6 +1337,10 @@ whole's are (the others' assertions assumed), and the whole, which stops looking
 find them again. One that split doesn't decide all of is tried whole once more, with the whole limit, and if that
 doesn't prove it either it is undecided: not verified (CSV1902), with the failures it did decide. A method is verified
 only where Boogie said its procedure was correct.
+
+The solver is given the same input each time the same program is verified: Boogie emits the declarations in the
+program's order (`/normalizeDeclarationOrder:0`; its own order of them differs from one process to the next, and the
+solver's time with it, tenfold for a query it has to search). So a method that verifies, or fails, does so again.
 
 At most two runs go at a time, sharing the cores, each on a thread pool of its own. A run that does nothing for five
 time limits (five minutes at least) has lost a solver's answer and is ended; a run that a solver ended (Boogie's fatal

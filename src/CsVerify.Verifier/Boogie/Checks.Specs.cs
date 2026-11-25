@@ -415,7 +415,8 @@ namespace CsVerify.Verifier.Boogie
                     try
                     {
                         var body = Spec(opened.body, new List<MExpr>(), new List<MExpr>());
-                        return MQuant.Of(q, name, null, body);
+                        var trigger = opened.trigger?.Select(t => Spec(t, new List<MExpr>(), new List<MExpr>())).ToArray();
+                        return MQuant.Of(q, name, null, body, trigger);
                     }
                     finally
                     {
