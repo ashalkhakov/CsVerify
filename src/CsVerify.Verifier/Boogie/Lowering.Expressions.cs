@@ -494,7 +494,16 @@ namespace CsVerify.Verifier.Boogie
                     return ResultOf(rt, e.Syntax);
                 // (a list's Count and indexer: its stub's getters)
                 case IPropertyReferenceOperation kp when IsPair(kp.Instance?.Type) && kp.Property.Name is "Key" or "Value":
-                    return Pair(Expr(kp.Instance), kp.Instance.Type, kp.Property.Name);
+                {
+                    var member = Pair(Expr(kp.Instance), kp.Instance.Type, kp.Property.Name);
+                    // (a pair's Key and Value are of its type arguments: not null where those aren't nullable, as C#'s
+                    // nullable analysis has them where they're read, as a field's value is of its type)
+                    if (IsNullable(kp.Type) && kp.Syntax.SyntaxTree == _model.SyntaxTree && _model.GetTypeInfo(kp.Syntax).Nullability.FlowState == NullableFlowState.NotNull)
+                    {
+                        Emit(KAssume.Of(NotNull(member)));
+                    }
+                    return member;
+                }
                 // (a given task's Result: a value not known)
                 case IPropertyReferenceOperation { Property.Name: "Result" } tr when tr.Instance != null && IsGivenTask(tr.Instance.Type) && InSubset(tr.Type):
                     return GivenTaskResult(tr);

@@ -223,8 +223,21 @@ namespace CsVerify.Verifier.Boogie
                    !_isFunction(m.OriginalDefinition) && !IsStub(m.OriginalDefinition) && !SpecSymbols.IsSpecClass(m.ContainingType) &&
                    !IsEnumerableCall(m) && !IsQueryableMethod(m) && !(KernelTypes.Ef != null && IsEfMethod(m)) &&
                    (inv.Instance == null || inv.Instance.Type is { IsValueType: true } || IsString(inv.Instance.Type)) &&
-                   m.Parameters.All(p => p.RefKind == RefKind.None && (p.Type.IsValueType || IsString(p.Type)) && !IsFunc(p.Type));
+                   m.Parameters.All(p => p.RefKind == RefKind.None && (p.Type.IsValueType || IsString(p.Type)) && !IsFunc(p.Type)) &&
+                   new[] { inv.Instance }.Concat(inv.Arguments.Select(a => a.Value)).Where(x => x != null).All(PlainRead);
         }
+
+        /// <summary>
+        /// What a quiet library call is given, read as a specification reads it: parameters, locals, constants, and the
+        /// fields and auto-properties of the program's objects (a library's property isn't one: not known there).
+        /// </summary>
+        private static bool PlainRead(IOperation x) => x.DescendantsAndSelf().All(o => o switch
+        {
+            IParameterReferenceOperation or ILocalReferenceOperation or ILiteralOperation or IConversionOperation or IInstanceReferenceOperation or IArgumentOperation => true,
+            IFieldReferenceOperation f => f.Field.DeclaringSyntaxReferences.Length > 0 || f.Field.IsConst,
+            IPropertyReferenceOperation p => IsField(p.Property) && p.Property.DeclaringSyntaxReferences.Length > 0,
+            _ => o.ConstantValue.HasValue,
+        });
 
         /// <summary>
         /// A quiet library call's value in a selector applied to the element at an index: a value of that index, of a
