@@ -129,10 +129,17 @@ namespace CsVerify.Verifier
             "UseInMemoryDatabase", "UseCosmos", "UseFirebird", "UseJet", "UseDb2", "UseSpanner",
         };
 
+        /// <summary>
+        /// A library's own classes that are entities of this run's model, as EF's own model has them (Identity's
+        /// IdentityUser&lt;TKey&gt; used as it is): their properties are read as an entity's of the program's are.
+        /// </summary>
+        [System.ThreadStatic] internal static HashSet<ITypeSymbol> LibraryEntities;
+
         /// <summary>The model, or null for a program that does not reference EF Core.</summary>
         public static EfModel For(Compilation compilation, IReadOnlyList<SyntaxTree> userTrees, IReadOnlyList<INamedTypeSymbol> sourceTypes, bool runtime = true,
             IReadOnlyList<string> nativeLibraries = null)
         {
+            LibraryEntities = new HashSet<ITypeSymbol>(SymbolEqualityComparer.Default);
             var dbContext = compilation.GetTypeByMetadataName("Microsoft.EntityFrameworkCore.DbContext");
             if (dbContext == null)
             {
@@ -540,7 +547,7 @@ namespace CsVerify.Verifier
         {
             var seen = new HashSet<string>();
             // (and a library base's, as EF maps them: Identity's IdentityUser<TKey>)
-            bool entity = t.Locations.Any(l => l.IsInSource) || MetadataEntities.IsUserClass(t);
+            bool entity = t.Locations.Any(l => l.IsInSource) || MetadataEntities.IsUserClass(t) || LibraryEntities?.Contains(t.OriginalDefinition) == true;
             for (var b = t; b != null && b.SpecialType != SpecialType.System_Object && entity; b = b.BaseType)
             {
                 foreach (var p in b.GetMembers().OfType<IPropertySymbol>().Where(p => !p.IsStatic))

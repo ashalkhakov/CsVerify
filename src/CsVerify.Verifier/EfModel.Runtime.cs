@@ -51,8 +51,14 @@ namespace CsVerify.Verifier
                 {
                     continue;
                 }
+                // (a library's own class: an entity because EF's model has it)
+                if (!type.Locations.Any(l => l.IsInSource) && !MetadataEntities.IsUserClass(type))
+                {
+                    LibraryEntities.Add(type.OriginalDefinition);
+                }
                 Add(type);
-                if (EntityOf(type) is Entity e)
+                // (of a generic class, the instantiation the model has; another of the same class isn't followed)
+                if (EntityOf(type) is Entity e && SymbolEqualityComparer.Default.Equals(e.Type, type) && !read.ContainsKey(e))
                 {
                     read[e] = r;
                 }
@@ -253,12 +259,24 @@ namespace CsVerify.Verifier
         }
 
         /// <summary>
-        /// An entity's class by its reflection name: one the verifier models, a class of the program or of a project or
-        /// library of the user's it references. A library's own entity (Identity's IdentityUser&lt;TKey&gt; used as it
-        /// is) isn't one here: its properties aren't the kernel's fields.
+        /// An entity's class by its reflection name: a class of the compilation, or a generic one of such arguments (a
+        /// library's, IdentityUser`1[[System.Int64, ...]]).
         /// </summary>
-        private static INamedTypeSymbol EntityType(Compilation compilation, string name) =>
-            compilation.GetTypeByMetadataName(name) is INamedTypeSymbol { IsGenericType: false } t && (t.Locations.Any(l => l.IsInSource) || MetadataEntities.IsUserClass(t)) ? t : null;
+        private static INamedTypeSymbol EntityType(Compilation compilation, string name)
+        {
+            int open = name.IndexOf("[[", StringComparison.Ordinal);
+            if (open < 0)
+            {
+                return compilation.GetTypeByMetadataName(name) is INamedTypeSymbol { IsGenericType: false, TypeKind: TypeKind.Class } plain ? plain : null;
+            }
+            if (compilation.GetTypeByMetadataName(name.Substring(0, open)) is not INamedTypeSymbol { TypeKind: TypeKind.Class } definition)
+            {
+                return null;
+            }
+            // (each argument [Name, Assembly...]: a class or a struct that isn't generic itself)
+            var arguments = Regex.Matches(name.Substring(open + 1), @"\[([^,\[\]]+),[^\[\]]*\]").Select(m => compilation.GetTypeByMetadataName(m.Groups[1].Value)).ToList();
+            return arguments.Count == definition.Arity && arguments.All(a => a != null) ? definition.Construct(arguments.ToArray<ITypeSymbol>()) : null;
+        }
 
         /// <summary>A CLR type by its reflection name: a type of the compilation, or Nullable of one.</summary>
         private static ITypeSymbol TypeOf(Compilation compilation, string name)

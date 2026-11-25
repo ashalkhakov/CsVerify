@@ -126,6 +126,17 @@ public sealed class Store(Db db)
 {
     public async Task<Tag?> ByCode(string code) => await db.Set<Tag>().Where(t => t.Code == code).SingleOrDefaultAsync();
     public async Task<Tag?> ByName(string name) => await db.Set<Tag>().Where(t => t.Name == name).SingleOrDefaultAsync();
+    public async Task<IdentityUser<long>?> ById(long id) => await db.Users.Where(u => u.Id == id).SingleOrDefaultAsync();
+    public async Task<IdentityUser<long>?> ByNormalizedName(string name) => await db.Users.Where(u => u.NormalizedUserName == name).SingleOrDefaultAsync();
+    public async Task<IdentityUser<long>?> ByEmail(string email) => await db.Users.Where(u => u.Email == email).SingleOrDefaultAsync();
+    public async Task<long> Rename(long id, string name)
+    {
+        var user = await db.Users.Where(u => u.Id == id).SingleOrDefaultAsync();
+        if (user == null) return 0;
+        user.UserName = name;
+        await db.SaveChangesAsync();
+        return user.Id;
+    }
 }", options =>
             {
                 // (as a build has them: the framework's, in place of the packages' of the same names)
@@ -133,7 +144,14 @@ public sealed class Store(Db db)
                 options.References.AddRange(pack);
             });
             Assert.DoesNotContain(r.Diagnostics, d => d.Id == "CSV1902");
-            Assert.True(r.Errors("Store.ByCode").Length == 0, r.Explain("Store.ByCode"));
+            // (a library's own entity, Identity's IdentityUser<long> through db.Users: its key and its unique index, as
+            // EF's model has them)
+            foreach (var ok in new[] { "ByCode", "ById", "ByNormalizedName", "Rename" })
+            {
+                Assert.True(r.Errors("Store." + ok).Length == 0, ok + ": " + r.Explain("Store." + ok));
+            }
+            // (an email isn't unique by Identity's model)
+            Assert.True(r.Errors("Store.ByEmail").SequenceEqual(new[] { "CSV1001" }), r.Explain("Store.ByEmail"));
             Assert.True(r.Errors("Store.ByName").SequenceEqual(new[] { "CSV1001" }), r.Explain("Store.ByName"));
         }
     }

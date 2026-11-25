@@ -3195,6 +3195,45 @@ public sealed class Store(Db db)
         }
 
         [Fact]
+        public void ALibrarysOwnEntity_IsOneByEfsModel()
+        {
+            // (a library's own class that EF's model has as an entity, Identity's IdentityUser<long> and IdentityRole<long>
+            // through the context's sets: its columns, its key and its unique index are the model's)
+            var r = VerifyEf(@"using Microsoft.AspNetCore.Identity;
+using Microsoft.AspNetCore.Identity.EntityFrameworkCore;
+public sealed class Db(DbContextOptions<Db> options) : IdentityDbContext<IdentityUser<long>, IdentityRole<long>, long>(options)
+{
+}
+public sealed class Store(Db db)
+{
+    public async Task<IdentityUser<long>?> ById(long id) => await db.Users.Where(u => u.Id == id).SingleOrDefaultAsync();
+    public async Task<IdentityUser<long>?> ByNormalizedName(string name) => await db.Users.Where(u => u.NormalizedUserName == name).SingleOrDefaultAsync();
+    public async Task<IdentityRole<long>?> RoleByNormalizedName(string name) => await db.Roles.AsNoTracking().Where(x => x.NormalizedName == name).SingleOrDefaultAsync();
+    public async Task<IdentityUser<long>?> ByEmail(string email) => await db.Users.Where(u => u.Email == email).SingleOrDefaultAsync();
+    public async Task<IdentityUser<long>?> ByMaybeName(string? name) => await db.Users.Where(u => u.NormalizedUserName == name).SingleOrDefaultAsync();
+    public async Task<string?> NameOf(long id) => (await db.Users.AsNoTracking().FirstOrDefaultAsync(u => u.Id == id))?.UserName;
+    public async Task<long> Rename(long id, string name)
+    {
+        var user = await db.Users.Where(u => u.Id == id).SingleOrDefaultAsync();
+        if (user == null) return 0;
+        user.UserName = name;
+        await db.SaveChangesAsync();
+        return user.Id;
+    }
+}");
+            Assert.DoesNotContain(r.Diagnostics, d => d.Id is "CSV1902" or "CSV1032" or "CSV1900");
+            foreach (var ok in new[] { "ById", "ByNormalizedName", "RoleByNormalizedName", "NameOf", "Rename" })
+            {
+                Assert.True(r.Errors("Store." + ok).Length == 0, ok + ": " + r.Explain("Store." + ok));
+            }
+            // (an email isn't unique in Identity's model; a name that may be null matches each user without one)
+            foreach (var bad in new[] { "ByEmail", "ByMaybeName" })
+            {
+                Assert.True(r.Errors("Store." + bad).SequenceEqual(new[] { "CSV1001" }), bad + ": " + r.Explain("Store." + bad));
+            }
+        }
+
+        [Fact]
         public void Smoke_CompilesAndRuns() => Assert.NotNull(VerifyEf(Model +
             "public static class C { public static int M(Shop db) { return db.Orders.Where(o => o.Total > 0).Count(); } }").Methods);
     }

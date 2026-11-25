@@ -449,16 +449,7 @@ namespace CsVerify.Verifier
                     var found = new List<MethodInfo>();
                     foreach (var a in All())
                     {
-                        Type[] types;
-                        try
-                        {
-                            types = a.GetExportedTypes();
-                        }
-                        catch (Exception)
-                        {
-                            continue;
-                        }
-                        foreach (var t in types.Where(t => t.IsAbstract && t.IsSealed && (t.Name.EndsWith("DbContextOptionsBuilderExtensions") || t.Name.EndsWith("DbContextOptionsExtensions"))))
+                        foreach (var t in Types(a).Where(x => x.IsPublic).Where(t => t.IsAbstract && t.IsSealed && (t.Name.EndsWith("DbContextOptionsBuilderExtensions") || t.Name.EndsWith("DbContextOptionsExtensions"))))
                         {
                             found.AddRange(t.GetMethods(BindingFlags.Public | BindingFlags.Static).Where(m =>
                                 m.Name.StartsWith("Use") && !m.IsGenericMethodDefinition && m.GetParameters() is { Length: >= 2 } ps &&
@@ -573,7 +564,8 @@ namespace CsVerify.Verifier
         /// </summary>
         private static object Make(Type context, Loader load, List<string> providersNamed)
         {
-            var factory = context.Assembly.GetTypes().FirstOrDefault(t => !t.IsAbstract && t.GetInterfaces().Any(i =>
+            // (the context's assembly's, or the program's: a startup project's factory for a library project's context)
+            var factory = new[] { context.Assembly, load.Program() }.Distinct().SelectMany(Types).FirstOrDefault(t => !t.IsAbstract && Interfaces(t).Any(i =>
                 i.IsGenericType && i.GetGenericTypeDefinition().FullName == "Microsoft.EntityFrameworkCore.Design.IDesignTimeDbContextFactory`1" && i.GetGenericArguments()[0] == context));
             if (factory != null)
             {
@@ -612,6 +604,31 @@ namespace CsVerify.Verifier
                 }
             }
             throw new InvalidOperationException(last?.Message ?? (configured ? "it has no constructor the verifier can call" : "no database provider is found among the program's references"));
+        }
+
+        /// <summary>An assembly's types that can be loaded: one that can't (a dependency the program doesn't have) doesn't hide the others.</summary>
+        private static IEnumerable<Type> Types(Assembly a)
+        {
+            try
+            {
+                return a.GetTypes();
+            }
+            catch (ReflectionTypeLoadException e)
+            {
+                return e.Types.Where(t => t != null);
+            }
+        }
+
+        private static Type[] Interfaces(Type t)
+        {
+            try
+            {
+                return t.GetInterfaces();
+            }
+            catch (Exception)
+            {
+                return Type.EmptyTypes;
+            }
         }
 
         private static object DesignTimeModel(object context)

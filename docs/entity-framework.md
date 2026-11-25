@@ -21,7 +21,9 @@ framework's targeting pack, ASP.NET Core's, where the project has a `FrameworkRe
 has no code: the assembly that runs in its place is loaded, the shared framework's of the pack's version. A provider's
 native library (SQLite's `e_sqlite3`) is loaded from
 the program's packages: the MSBuild targets name them (`--native`), and without those the packages beside the
-references' are searched. `CSVERIFY_EF_MODEL_TRACE=1` prints what was read, and each reference that couldn't be loaded with why; the warning
+references' are searched. A library's own class that EF's model has as an entity (ASP.NET Core Identity's
+`IdentityUser<long>` through `db.Users`, used as it is) is an entity here too, its auto-properties its columns, read
+from its assembly. `CSVERIFY_EF_MODEL_TRACE=1` prints what was read, and each reference that couldn't be loaded with why; the warning
 of a model that couldn't be built names the first of those. An entity type only EF's model has (the
 other side of a `HasOne<T>()` that nothing else declares) is one here too.
 

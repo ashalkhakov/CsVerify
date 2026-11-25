@@ -156,7 +156,7 @@ grep -F -- "--native" EfSqlite/obj/Debug/net10.0/csverify.rsp > /dev/null
 cp -R "$repo/samples/EfAspNet" EfAspNet
 dotnet build EfAspNet/App -p:CsVerifyEnabled=true 2>&1 | tee efaspnet.txt
 grep -F "csverify: 13 of 13 methods verified" efaspnet.txt
-grep -F "csverify: 3 of 3 methods verified" efaspnet.txt
+grep -F "csverify: 4 of 4 methods verified" efaspnet.txt
 if grep -F "couldn't be built" efaspnet.txt; then
     echo "error: EF's model of the ASP.NET sample wasn't built" >&2
     exit 1
