@@ -162,6 +162,16 @@ namespace CsVerify.Tests
             return result;
         }
 
+        /// <summary>As VerifyEf, with the options changed first (other references, say).</summary>
+        public static VerificationResult VerifyEf(string source, Action<VerifierOptions> set)
+        {
+            var options = Options();
+            set(options);
+            var result = Engine.VerifySources(new[] { ("Test.cs", Usings + source) }, options);
+            Xunit.Assert.True(result.CompilationErrors.Count == 0, string.Join("\n", result.CompilationErrors));
+            return ModelBuilt(result);
+        }
+
         public static VerificationResult VerifyEf(string source, bool overflow = true, bool sqlite = false)
         {
             var result = Engine.VerifySources(new[] { ("Test.cs", Usings + source) }, Options(overflow, sqlite));

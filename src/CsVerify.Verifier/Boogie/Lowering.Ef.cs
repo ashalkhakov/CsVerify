@@ -1856,6 +1856,13 @@ namespace CsVerify.Verifier.Boogie
             {
                 return null;
             }
+            // (a context's OnModelCreating, OnConfiguring or ConfigureConventions calling its base's, a library context's:
+            // the library's part of the model and the options, which EF's own model has; nothing of the program's state)
+            if (m.Name is "OnModelCreating" or "OnConfiguring" or "ConfigureConventions" && inv.Instance is IInstanceReferenceOperation &&
+                _m != null && _m.Name == m.Name && _m.IsOverride)
+            {
+                return null;
+            }
             // (a context's constructor calling DbContext's)
             if (m.MethodKind == MethodKind.Constructor && inv.Instance is IInstanceReferenceOperation && m.ContainingType?.ToDisplayString() == "Microsoft.EntityFrameworkCore.DbContext")
             {

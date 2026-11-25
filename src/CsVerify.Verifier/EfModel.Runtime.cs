@@ -47,7 +47,7 @@ namespace CsVerify.Verifier
             var read = new Dictionary<Entity, EfRuntimeModel.Entity>();
             foreach (var r in runtime.Entities.Values)
             {
-                if (compilation.GetTypeByMetadataName(r.Type) is not INamedTypeSymbol type || type.IsGenericType)
+                if (EntityType(compilation, r.Type) is not INamedTypeSymbol type)
                 {
                     continue;
                 }
@@ -168,8 +168,8 @@ namespace CsVerify.Verifier
             }
             foreach (var fk in runtime.ForeignKeys)
             {
-                if (fk.Dependent == null || fk.Principal == null || compilation.GetTypeByMetadataName(fk.Dependent) is not INamedTypeSymbol dt || EntityOf(dt) is not Entity d ||
-                    compilation.GetTypeByMetadataName(fk.Principal) is not INamedTypeSymbol pt || EntityOf(pt) is not Entity p || !read.ContainsKey(d) || !read.ContainsKey(p))
+                if (fk.Dependent == null || fk.Principal == null || EntityType(compilation, fk.Dependent) is not INamedTypeSymbol dt || EntityOf(dt) is not Entity d ||
+                    EntityType(compilation, fk.Principal) is not INamedTypeSymbol pt || EntityOf(pt) is not Entity p || !read.ContainsKey(d) || !read.ContainsKey(p))
                 {
                     continue;
                 }
@@ -251,6 +251,14 @@ namespace CsVerify.Verifier
             }
             return kind;
         }
+
+        /// <summary>
+        /// An entity's class by its reflection name: one the verifier models, a class of the program or of a project or
+        /// library of the user's it references. A library's own entity (Identity's IdentityUser&lt;TKey&gt; used as it
+        /// is) isn't one here: its properties aren't the kernel's fields.
+        /// </summary>
+        private static INamedTypeSymbol EntityType(Compilation compilation, string name) =>
+            compilation.GetTypeByMetadataName(name) is INamedTypeSymbol { IsGenericType: false } t && (t.Locations.Any(l => l.IsInSource) || MetadataEntities.IsUserClass(t)) ? t : null;
 
         /// <summary>A CLR type by its reflection name: a type of the compilation, or Nullable of one.</summary>
         private static ITypeSymbol TypeOf(Compilation compilation, string name)

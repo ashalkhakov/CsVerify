@@ -16,9 +16,13 @@ tokens, relationships and which are one-to-one, query filters' soft-delete flags
 with, however it configures it: conventions, attributes, configuration classes and their bases, constants, loops over
 the entity types, a provider's conventions. The configuration's own code is verified like any other; `typeof(T)` and a
 lambda quoted as an expression tree are objects of the library's there, never null. This runs the program's contexts' constructors and model configuration,
-never a query; the provider is never connected to. A provider's native library (SQLite's `e_sqlite3`) is loaded from
+never a query; the provider is never connected to. A reference assembly among the program's references (a shared
+framework's targeting pack, ASP.NET Core's, where the project has a `FrameworkReference`; a package's `ref` folder)
+has no code: the assembly that runs in its place is loaded, the shared framework's of the pack's version. A provider's
+native library (SQLite's `e_sqlite3`) is loaded from
 the program's packages: the MSBuild targets name them (`--native`), and without those the packages beside the
-references' are searched. `CSVERIFY_EF_MODEL_TRACE=1` prints what was read. An entity type only EF's model has (the
+references' are searched. `CSVERIFY_EF_MODEL_TRACE=1` prints what was read, and each reference that couldn't be loaded with why; the warning
+of a model that couldn't be built names the first of those. An entity type only EF's model has (the
 other side of a `HasOne<T>()` that nothing else declares) is one here too.
 
 Where a context can't be made (no provider among the references, a constructor that needs what the verifier can't

@@ -1,3 +1,5 @@
+using System;
+using System.IO;
 using System.Linq;
 using Xunit;
 using static CsVerify.Tests.EfHarness;
@@ -88,6 +90,51 @@ public sealed class Shop : IdentityDbContext<User, IdentityRole<long>, long>
                 Assert.True(r.Errors(m).Length == 0, r.Explain(m));
             }
             Assert.Contains(r["IsDuplicate"].Diagnostics, d => d.Id == "CSV1902" && d.Message.Contains("unboxing"));
+        }
+
+        [Fact]
+        public void AContextOfAFrameworksTargetingPack_HasEfsModel()
+        {
+            // (PR #134's review: a project with <FrameworkReference Include="Microsoft.AspNetCore.App" /> gives the verifier
+            // the targeting pack's reference assemblies, which can't be loaded; the shared framework's are, in their
+            // place, and the context, derived from ASP.NET Core Identity's, gets EF's own model)
+            var dotnet = Path.GetFullPath(Path.Combine(Path.GetDirectoryName(typeof(object).Assembly.Location), "..", "..", ".."));
+            var packs = Path.Combine(dotnet, "packs", "Microsoft.AspNetCore.App.Ref");
+            Assert.True(Directory.Exists(packs), "the SDK's ASP.NET Core targeting pack, at " + packs);
+            var major = Environment.Version.Major.ToString();
+            var version = Directory.GetDirectories(packs).Where(d => Path.GetFileName(d).Split('.')[0] == major).OrderBy(d => d, StringComparer.Ordinal).Last();
+            var pack = Directory.EnumerateFiles(Directory.GetDirectories(Path.Combine(version, "ref")).Single(), "*.dll").ToList();
+            var names = pack.Select(Path.GetFileNameWithoutExtension).ToHashSet(StringComparer.OrdinalIgnoreCase);
+            var r = EfHarness.VerifyEf(@"using Microsoft.AspNetCore.Identity;
+using Microsoft.AspNetCore.Identity.EntityFrameworkCore;
+public sealed class Tag
+{
+    public long Id { get; set; }
+    public string? Code { get; set; }
+    public string Name { get; set; } = """";
+}
+public sealed class Db(DbContextOptions<Db> options) : IdentityDbContext<IdentityUser<long>, IdentityRole<long>, long>(options)
+{
+    protected override void OnModelCreating(ModelBuilder b)
+    {
+        base.OnModelCreating(b);
+        b.Entity<Tag>().Property(t => t.Code).HasColumnName(""CodeId"");
+        b.Entity<Tag>().HasIndex(t => t.Code).IsUnique().HasFilter(""[CodeId] IS NOT NULL"");
+    }
+}
+public sealed class Store(Db db)
+{
+    public async Task<Tag?> ByCode(string code) => await db.Set<Tag>().Where(t => t.Code == code).SingleOrDefaultAsync();
+    public async Task<Tag?> ByName(string name) => await db.Set<Tag>().Where(t => t.Name == name).SingleOrDefaultAsync();
+}", options =>
+            {
+                // (as a build has them: the framework's, in place of the packages' of the same names)
+                options.References.RemoveAll(reference => names.Contains(Path.GetFileNameWithoutExtension(reference)));
+                options.References.AddRange(pack);
+            });
+            Assert.DoesNotContain(r.Diagnostics, d => d.Id == "CSV1902");
+            Assert.True(r.Errors("Store.ByCode").Length == 0, r.Explain("Store.ByCode"));
+            Assert.True(r.Errors("Store.ByName").SequenceEqual(new[] { "CSV1001" }), r.Explain("Store.ByName"));
         }
     }
 }

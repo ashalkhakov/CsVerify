@@ -150,4 +150,18 @@ if grep -F "couldn't be built" efsqlite.txt; then
 fi
 grep -F -- "--native" EfSqlite/obj/Debug/net10.0/csverify.rsp > /dev/null
 
+# the same model in a library project, its context derived from ASP.NET Core Identity's, both projects referencing the
+# ASP.NET Core shared framework (samples/EfAspNet): the verifier is given the targeting pack's reference assemblies,
+# and loads the shared framework's in their place. Both projects verify, by EF's model
+cp -R "$repo/samples/EfAspNet" EfAspNet
+dotnet build EfAspNet/App -p:CsVerifyEnabled=true 2>&1 | tee efaspnet.txt
+grep -F "csverify: 13 of 13 methods verified" efaspnet.txt
+grep -F "csverify: 3 of 3 methods verified" efaspnet.txt
+if grep -F "couldn't be built" efaspnet.txt; then
+    echo "error: EF's model of the ASP.NET sample wasn't built" >&2
+    exit 1
+fi
+tr '\\' '/' < EfAspNet/App/obj/Debug/net10.0/csverify.rsp > efaspnet-rsp.txt
+grep -E "packs/Microsoft\.AspNetCore\.App\.Ref/.*/ref/" efaspnet-rsp.txt > /dev/null
+
 echo "e2e: OK"

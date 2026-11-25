@@ -104,7 +104,7 @@ namespace CsVerify.Verifier
                 }
                 catch (Exception e)
                 {
-                    model.Failures.AddRange(wanted.Select(c => (EfModel.MetadataName(c), "the program couldn't be loaded: " + Inner(e).Message)));
+                    model.Failures.AddRange(wanted.Select(c => (EfModel.MetadataName(c), "the program couldn't be loaded: " + Inner(e).Message.Split('\n')[0] + NotLoaded(load))));
                     return model;
                 }
                 if (hooked)
@@ -133,16 +133,28 @@ namespace CsVerify.Verifier
                         {
                             Console.Error.WriteLine(Inner(e));
                         }
-                        model.Failures.Add((name, Inner(e).Message));
+                        model.Failures.Add((name, Inner(e).Message.Split('\n')[0] + NotLoaded(load)));
                     }
                 }
             }
             finally
             {
+                if (Environment.GetEnvironmentVariable("CSVERIFY_EF_MODEL_TRACE") != null)
+                {
+                    foreach (var (reference, why) in load.Shared.Failed)
+                    {
+                        Console.Error.WriteLine($"[ef-model] not loaded: {reference}: {why}");
+                    }
+                }
                 load.Unload();
             }
             return model;
         }
+
+        /// <summary>What a failure owes to references that couldn't be loaded: how many, and the first, with why.</summary>
+        private static string NotLoaded(Loader load) =>
+            load.Shared.Failed.Count == 0 ? ""
+            : $"; {load.Shared.Failed.Count} of the program's references couldn't be loaded, the first '{load.Shared.Failed.First().Key}': {load.Shared.Failed.First().Value}";
 
         private static Exception Inner(Exception e)
         {
@@ -254,9 +266,20 @@ namespace CsVerify.Verifier
                 var runtime = Path.GetDirectoryName(typeof(object).Assembly.Location) ?? "";
                 foreach (var path in paths)
                 {
-                    if (!File.Exists(Path.Combine(runtime, Path.GetFileName(path))))
+                    if (File.Exists(Path.Combine(runtime, Path.GetFileName(path))))
                     {
-                        _paths.TryAdd(Path.GetFileNameWithoutExtension(path), path);
+                        continue;
+                    }
+                    // (a reference assembly, a targeting pack's or a package's ref folder's, has no code: the assembly
+                    // that runs in its place)
+                    var name = Path.GetFileNameWithoutExtension(path);
+                    if (Implementation(path) is string runs)
+                    {
+                        _paths.TryAdd(name, runs);
+                    }
+                    else
+                    {
+                        _failed.TryAdd(name, "a reference assembly whose implementation isn't found (" + path + ")");
                     }
                 }
                 // (a provider beside EF Core that the program doesn't reference itself, as an application's output folder has it)
@@ -269,6 +292,13 @@ namespace CsVerify.Verifier
                 }
             }
 
+            private readonly Dictionary<string, string> _failed = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+
+            /// <summary>The references that couldn't be loaded, each with why: said where a model can't be built for it.</summary>
+            public IReadOnlyDictionary<string, string> Failed => _failed;
+
+            public void AddFailure(string name, Exception e) => _failed.TryAdd(name, Inner(e).GetType().Name + ": " + Inner(e).Message.Split('\n')[0]);
+
             public IEnumerable<Assembly> All()
             {
                 foreach (var a in _paths.Keys.ToList())
@@ -278,8 +308,9 @@ namespace CsVerify.Verifier
                     {
                         loaded = LoadFromAssemblyName(new AssemblyName(a));
                     }
-                    catch (Exception)
+                    catch (Exception e)
                     {
+                        AddFailure(a, e);
                     }
                     if (loaded != null)
                     {
@@ -303,52 +334,108 @@ namespace CsVerify.Verifier
                         return null;
                     }
                 }
-                foreach (var candidate in Implementations(path, name.Name))
-                {
-                    try
-                    {
-                        return LoadFromAssemblyPath(candidate);
-                    }
-                    catch (BadImageFormatException)
-                    {
-                        // (a reference assembly: its implementation, next)
-                    }
-                }
-                return null;
+                // (what is beside a reference may be a reference assembly too)
+                return Implementation(path) is string runs ? LoadFromAssemblyPath(runs) : null;
             }
 
-            /// <summary>The assembly, then where its implementation is if it is a reference assembly: a package's lib folder, a shared framework.</summary>
-            private static IEnumerable<string> Implementations(string path, string name)
+            /// <summary>Does the assembly say it is a reference assembly (ReferenceAssemblyAttribute): metadata without code?</summary>
+            private static bool IsReferenceAssembly(string path)
             {
-                yield return path;
+                try
+                {
+                    using var stream = File.OpenRead(path);
+                    using var pe = new System.Reflection.PortableExecutable.PEReader(stream);
+                    if (!pe.HasMetadata)
+                    {
+                        return false;
+                    }
+                    var md = System.Reflection.Metadata.PEReaderExtensions.GetMetadataReader(pe);
+                    foreach (var handle in md.GetAssemblyDefinition().GetCustomAttributes())
+                    {
+                        var ctor = md.GetCustomAttribute(handle).Constructor;
+                        if (ctor.Kind == System.Reflection.Metadata.HandleKind.MemberReference &&
+                            md.GetMemberReference((System.Reflection.Metadata.MemberReferenceHandle)ctor).Parent is { Kind: System.Reflection.Metadata.HandleKind.TypeReference } parent &&
+                            md.GetString(md.GetTypeReference((System.Reflection.Metadata.TypeReferenceHandle)parent).Name) == "ReferenceAssemblyAttribute")
+                        {
+                            return true;
+                        }
+                    }
+                    return false;
+                }
+                catch (Exception)
+                {
+                    return false;
+                }
+            }
+
+            /// <summary>
+            /// The assembly that runs for a reference: itself, unless it is a reference assembly. Then, for a targeting
+            /// pack's (packs/Name.Ref/version/ref/tfm/x.dll), the shared framework's of that name (shared/Name/version/x.dll:
+            /// the pack's version, else the latest of its major version), in the pack's dotnet or the running one; for a
+            /// package's ref folder, its lib folder's; else any shared framework's of the running dotnet. Null where none is.
+            /// </summary>
+            private static string Implementation(string path)
+            {
+                if (!IsReferenceAssembly(path))
+                {
+                    return path;
+                }
+                var file = Path.GetFileName(path);
+                var running = Path.GetDirectoryName(Path.GetDirectoryName(Path.GetDirectoryName(Path.GetDirectoryName(typeof(object).Assembly.Location))));
+                var parts = path.Split(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+                int packs = Array.FindLastIndex(parts, x => string.Equals(x, "packs", StringComparison.OrdinalIgnoreCase));
+                if (packs >= 0 && packs + 2 < parts.Length && parts[packs + 1].EndsWith(".Ref", StringComparison.OrdinalIgnoreCase))
+                {
+                    var framework = parts[packs + 1].Substring(0, parts[packs + 1].Length - ".Ref".Length);
+                    var version = parts[packs + 2];
+                    var root = string.Join(Path.DirectorySeparatorChar.ToString(), parts.Take(packs));
+                    foreach (var dotnet in new[] { root, running }.Where(d => !string.IsNullOrEmpty(d)).Distinct())
+                    {
+                        var shared = Path.Combine(dotnet, "shared", framework);
+                        if (!Directory.Exists(shared))
+                        {
+                            continue;
+                        }
+                        var major = version.Split('.')[0];
+                        var versions = Directory.GetDirectories(shared).Select(Path.GetFileName).ToList();
+                        foreach (var v in new[] { version }.Concat(versions.Where(v => v.Split('.')[0] == major).OrderByDescending(ParsedVersion)))
+                        {
+                            var candidate = Path.Combine(shared, v, file);
+                            if (File.Exists(candidate))
+                            {
+                                return candidate;
+                            }
+                        }
+                    }
+                }
                 var sep = Path.DirectorySeparatorChar;
                 var inRef = path.LastIndexOf(sep + "ref" + sep, StringComparison.OrdinalIgnoreCase);
                 if (inRef >= 0)
                 {
                     var lib = path.Substring(0, inRef) + sep + "lib" + sep + path.Substring(inRef + 5);
-                    if (File.Exists(lib))
+                    if (File.Exists(lib) && !IsReferenceAssembly(lib))
                     {
-                        yield return lib;
+                        return lib;
                     }
                 }
-                // (a framework's reference pack: the shared framework of the same name the runtime has)
-                var shared = Path.GetDirectoryName(Path.GetDirectoryName(Path.GetDirectoryName(typeof(object).Assembly.Location)));
-                if (shared != null && Directory.Exists(shared))
+                if (running != null && Directory.Exists(Path.Combine(running, "shared")))
                 {
-                    foreach (var framework in Directory.GetDirectories(shared))
+                    foreach (var framework in Directory.GetDirectories(Path.Combine(running, "shared")))
                     {
-                        foreach (var version in Directory.GetDirectories(framework).OrderByDescending(v => v, StringComparer.Ordinal))
+                        foreach (var version in Directory.GetDirectories(framework).OrderByDescending(v => ParsedVersion(Path.GetFileName(v))))
                         {
-                            var file = Path.Combine(version, name + ".dll");
-                            if (File.Exists(file))
+                            var candidate = Path.Combine(version, file);
+                            if (File.Exists(candidate))
                             {
-                                yield return file;
-                                break;
+                                return candidate;
                             }
                         }
                     }
                 }
+                return null;
             }
+
+            private static Version ParsedVersion(string v) => Version.TryParse(v.Split('-')[0], out var parsed) ? parsed : new Version(0, 0);
 
             /// <summary>
             /// The provider's options: Use...(builder, connection string) of a provider among the references, the one the
@@ -469,8 +556,9 @@ namespace CsVerify.Verifier
                 {
                     return Shared.LoadFromAssemblyName(name);
                 }
-                catch (Exception)
+                catch (Exception e)
                 {
+                    Shared.AddFailure(name.Name, e);
                     return null;
                 }
             }
