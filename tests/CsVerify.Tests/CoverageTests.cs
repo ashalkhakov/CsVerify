@@ -205,7 +205,7 @@ public static class P
             const string source = @"
 public static class P
 {
-    public static Type T() => typeof(int);
+    public static IntPtr T() => IntPtr.Zero;
     public static int F(int[] a) => a.Length;
 }";
             var all = VerifyWith(source, null);

@@ -64,7 +64,8 @@ public static class P
         [Fact]
         public void AMethodNotTranslated_IsNotVerified_NotAFailure()
         {
-            var r = Harness.Verify("public static class N { public static Type T() => typeof(int); public static int F(int[] a) => a[0]; }");
+            // (a native integer's value is outside the subset)
+            var r = Harness.Verify("public static class N { public static IntPtr T() => IntPtr.Zero; public static int F(int[] a) => a[0]; }");
             var report = LibraryReport.Render(r).Replace("\r", "");
             Assert.Contains("2 methods: 0 verified, 1 with failed obligations, 1 not verified", report);
             Assert.Contains("  1 failed obligations", report);
