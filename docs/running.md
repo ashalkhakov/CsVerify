@@ -63,7 +63,11 @@ Arguments are `.cs` files, directories (searched recursively, skipping `bin/` an
 virtual call may run; and of each type they use its invariants, operators, conversions, constructors and the members C#
 calls without naming them (`GetEnumerator`, `Dispose`, `Deconstruct`, `GetAwaiter`...). The rest of the program isn't
 translated, so a run of a few methods costs the compilation and the analyses of the whole program, and those methods.
-What isn't translated can only be assumed less, never more, so a method `--only` proves is proved. Where what the
+What isn't translated can only be assumed less, never more, so a method `--only` proves is proved. A fact a selected
+method assumes of a helper it calls (what a query helper's result is, given its query) is proved in the same run: the
+helper's body is translated and verified for it though it isn't selected, and is reported only as part of that, so a
+method is proved alone as a run of every method proves it. The same holds of a project's run for the helpers of the
+projects it references. Where what the
 selected methods reach doesn't type check in Boogie on its own, the whole program is translated instead (with
 `CSVERIFY_TRACE`, a line says so).
 

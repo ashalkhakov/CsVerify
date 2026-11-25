@@ -3008,7 +3008,7 @@ public static class Reads
             // (a class a column converts to by a convention the sources' reading doesn't follow: no entity, by EF's
             // model. A correlated subquery that selects such a column gives an object of the class, or null: the
             // helper it is in is verified, and its caller's lookup by the alternate key is of one row at most)
-            var r = VerifyEf(@"using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
+            var source = @"using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 public sealed record Reference
 {
     private Reference(string value) => Value = value;
@@ -3067,11 +3067,19 @@ public sealed class Store(Db db)
 
         return rows.Select(row => row.Shipment).ToList();
     }
-}");
+}";
+            var r = VerifyEf(source);
             Assert.DoesNotContain(r.Diagnostics, d => d.Id == "CSV1902" && d.Message.Contains("WithCarriers"));
             Assert.True(r.Errors("Store.WithCarriers").Length == 0, r.Explain("Store.WithCarriers"));
             Assert.True(r.Errors("Store.ByCode").Length == 0, r.Explain("Store.ByCode"));
             Assert.True(r.Errors("Store.Any").SequenceEqual(new[] { "CSV1001" }), r.Explain("Store.Any"));
+            // (--only the caller: the helper isn't selected, and is verified all the same for the fact the caller
+            // assumes of it, so the caller is proved as the whole run proves it; the one that isn't still isn't)
+            var only = VerifyEf(source, options => options.Only.Add("Store.ByCode"));
+            Assert.True(only.Errors("Store.ByCode").Length == 0, only.Explain("Store.ByCode"));
+            Assert.DoesNotContain(only.Diagnostics, d => d.Id == "CSV1902");
+            only = VerifyEf(source, options => options.Only.Add("Store.Any"));
+            Assert.True(only.Errors("Store.Any").SequenceEqual(new[] { "CSV1001" }), only.Explain("Store.Any"));
         }
 
         [Fact]

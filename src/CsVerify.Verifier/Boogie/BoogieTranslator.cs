@@ -1129,6 +1129,9 @@ namespace CsVerify.Verifier.Boogie
             return groups;
         }
 
+        /// <summary>Is the fact of this key one this method would prove (of its results, given its queries)?</summary>
+        public static bool FactOf(string key, IMethodSymbol method) => key.StartsWith(Lowering.FactPrefix(method), StringComparison.Ordinal);
+
         /// <summary>Leaves out every assumption of a fact (one no candidate of this run proves).</summary>
         public void LeaveOutFact(string key)
         {

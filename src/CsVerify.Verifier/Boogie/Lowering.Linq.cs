@@ -111,6 +111,10 @@ namespace CsVerify.Verifier.Boogie
         {
             var name = LinqMap("[Ref]" + TypeOf(t));
             var v = Sel(new KVar(name), new KVar("o$"));
+            if (ColumnClass(t))
+            {
+                _p.AddClassType(t.OriginalDefinition);
+            }
             var of = ValueOfType(v, t) ?? (ColumnClass(t)
                 ? OrElse(Eq(v, KLit.Null), AndAlso(Sel("$Alloc", v), new KOp("sub", new KOp("dtype", v), new KLit(TypeConst(t.WithNullableAnnotation(NullableAnnotation.None))))))
                 : null);
