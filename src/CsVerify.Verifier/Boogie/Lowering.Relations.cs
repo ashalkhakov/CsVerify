@@ -86,20 +86,44 @@ namespace CsVerify.Verifier.Boogie
         private static Rel Scan(EfModel.Entity e) => new Rel { Table = e, Keys = KeysOf(e, "", 0, true, filtered: true).ToList() };
 
         /// <summary>
-        /// An entity's keys, as paths from its row: its key and unique indexes, then, of each one-to-one navigation, the
-        /// keys of the entity it leads to (a row of either end has one row of the other at most). Those, and a nullable
-        /// column's, identify a row only where they aren't null.
+        /// An entity's keys, as paths from its row. Its own: its key, alternate keys and unique indexes, by their columns,
+        /// shadow ones too. A key that holds a reference navigation's foreign key is also one with that foreign key
+        /// replaced by any key of the row it leads to (the foreign key names that row, and each of its keys names it).
+        /// And of each one-to-one navigation, the keys of the entity it leads to (a row of either end has one row of the
+        /// other at most). Those through a navigation, and a nullable column's, identify a row only where they aren't
+        /// null.
         /// </summary>
         private static IEnumerable<RelKey> KeysOf(EfModel.Entity e, string prefix, int depth, bool total, bool filtered)
         {
             // (filtered: of the rows the query filters keep, where a unique index is one only among those)
-            foreach (var set in e.Identifying.Concat(filtered ? e.UniqueWhereFiltered : Enumerable.Empty<List<IPropertySymbol>>()).Where(s => s.Count > 0))
+            var own = e.KeyColumns != null
+                ? e.KeyColumns.Where(k => filtered || !k.whereFiltered).Select(k => k.columns).ToList()
+                : e.Identifying.Concat(filtered ? e.UniqueWhereFiltered : Enumerable.Empty<List<IPropertySymbol>>()).Where(s => s.Count > 0).Select(s => s.Select(p => p.Name).ToList()).ToList();
+            foreach (var key in own)
             {
-                yield return new RelKey { Columns = set.Select(p => prefix + p.Name).ToHashSet(), Total = total && set.All(e.NotNullColumn) };
+                yield return new RelKey { Columns = key.Select(c => prefix + c).ToHashSet(), Total = total && key.All(c => ColumnNamed(e, c) is { NotNull: true }) };
             }
             if (depth >= 3)
             {
                 yield break;
+            }
+            var references = e.KeyColumns != null
+                ? e.ReferenceColumns.Select(x => (nav: x.Key, columns: x.Value)).ToList()
+                : e.ForeignKeys.Select(x => (nav: x.Key, columns: new List<string> { x.Value.Name })).ToList();
+            foreach (var (nav, columns) in references)
+            {
+                if (KernelTypes.Ef.EntityOf(nav.Type) is not EfModel.Entity to || ReferenceEquals(to, e))
+                {
+                    continue;
+                }
+                foreach (var key in own.Where(k => columns.All(k.Contains)))
+                {
+                    var rest = key.Where(c => !columns.Contains(c)).Select(c => prefix + c).ToList();
+                    foreach (var k in KeysOf(to, prefix + nav.Name + ".", depth + 1, false, filtered))
+                    {
+                        yield return new RelKey { Columns = rest.Concat(k.Columns).ToHashSet(), Total = false };
+                    }
+                }
             }
             foreach (var nav in e.References.Where(n => KernelTypes.Ef.OneToOne(n, filtered)))
             {
@@ -111,6 +135,39 @@ namespace CsVerify.Verifier.Boogie
                     }
                 }
             }
+        }
+
+        /// <summary>A column of the model: a property of the class or a shadow column; its type and what the model says of it.</summary>
+        private sealed class RelColumn
+        {
+            public EfModel.Entity Owner;
+            public string Name;
+            /// <summary>The class's property; null for a shadow column.</summary>
+            public IPropertySymbol Property;
+            public ITypeSymbol Type;
+            public bool NotNull;
+            /// <summary>Compared alike in the database and here: of a value type, a string, or stored by a converter.</summary>
+            public bool Scalar;
+        }
+
+        /// <summary>An entity's column by its name; else null.</summary>
+        private static RelColumn ColumnNamed(EfModel.Entity owner, string name)
+        {
+            if (EfModel.PropertiesOf(owner.Type).FirstOrDefault(x => x.Name == name) is IPropertySymbol p && IsField(p))
+            {
+                return new RelColumn
+                {
+                    Owner = owner,
+                    Name = name,
+                    Property = p,
+                    Type = p.Type,
+                    NotNull = owner.NotNullColumn(p),
+                    Scalar = p.Type.IsValueType || p.Type.SpecialType == SpecialType.System_String || owner.Converted.Contains(p.OriginalDefinition),
+                };
+            }
+            return owner.Shadow.TryGetValue(name, out var type)
+                ? new RelColumn { Owner = owner, Name = name, Type = type, NotNull = owner.ShadowNotNull.Contains(name), Scalar = type.IsValueType || type.SpecialType == SpecialType.System_String }
+                : null;
         }
 
         private Rel Step(IInvocationOperation c)
@@ -292,7 +349,8 @@ namespace CsVerify.Verifier.Boogie
             foreach (var key in r.Keys.Where(k => k.Columns.Count == 1))
             {
                 var path = key.Columns.First();
-                if (ColumnAt(r.Table, path) is not var (owner, col) || !owner.NotNullColumn(col) || !(col.Type.IsValueType || IsString(col.Type)))
+                // (a column the elements have: a property of a class, not null, a value or a string)
+                if (ColumnAt(r.Table, path) is not { Property: { } col, NotNull: true, Owner: var owner } || !(col.Type.IsValueType || IsString(col.Type)))
                 {
                     continue;
                 }
@@ -337,10 +395,23 @@ namespace CsVerify.Verifier.Boogie
         {
             var names = new List<string>();
             var at = Unconverted(e);
-            while (at is IPropertyReferenceOperation { Property.IsStatic: false } pr)
+            // (a property of the row, or a column by its name, EF.Property(row, "Name"): a shadow column's)
+            while (true)
             {
-                names.Insert(0, pr.Property.Name);
-                at = Unconverted(pr.Instance);
+                if (at is IPropertyReferenceOperation { Property.IsStatic: false } pr)
+                {
+                    names.Insert(0, pr.Property.Name);
+                    at = Unconverted(pr.Instance);
+                }
+                else if (at is IInvocationOperation named && EfProperty(named) is string column)
+                {
+                    names.Insert(0, column);
+                    at = Unconverted(named.Arguments.OrderBy(a => a.Parameter.Ordinal).First().Value);
+                }
+                else
+                {
+                    break;
+                }
             }
             if (at is not IParameterReferenceOperation pp || !SymbolEqualityComparer.Default.Equals(pp.Parameter, p))
             {
@@ -367,8 +438,8 @@ namespace CsVerify.Verifier.Boogie
             return string.Join(".", new[] { root }.Concat(names).Where(x => x.Length > 0));
         }
 
-        /// <summary>The column a path names: its entity (the table's, or one its navigations lead to) and its property; else null.</summary>
-        private static (EfModel.Entity owner, IPropertySymbol column)? ColumnAt(EfModel.Entity table, string path)
+        /// <summary>The column a path names, of the table's entity or one its navigations lead to; else null.</summary>
+        private static RelColumn ColumnAt(EfModel.Entity table, string path)
         {
             var owner = table;
             var names = path.Split('.');
@@ -381,26 +452,22 @@ namespace CsVerify.Verifier.Boogie
                     return null;
                 }
             }
-            return EfModel.PropertiesOf(owner.Type).FirstOrDefault(x => x.Name == names[^1]) is IPropertySymbol col && IsField(col) ? (owner, col) : null;
+            return ColumnNamed(owner, names[^1]);
         }
 
         /// <summary>A column a key lambda orders by: one of the row, a scalar, a string or a converted one.</summary>
         private static string ColumnOf(IOperation body, IParameterSymbol p, Rel r) =>
-            PathOf(body, p, r) is string path && path.Length > 0 && ColumnAt(r.Table, path) is var (owner, col) && ScalarColumn(owner, col) ? path : null;
-
-        /// <summary>A column compared alike in the database and here: of a value type, a string, or stored by a converter.</summary>
-        private static bool ScalarColumn(EfModel.Entity owner, IPropertySymbol col) =>
-            col.Type.IsValueType || col.Type.SpecialType == SpecialType.System_String || owner.Converted.Contains(col.OriginalDefinition);
+            PathOf(body, p, r) is string path && path.Length > 0 && ColumnAt(r.Table, path) is { Scalar: true } ? path : null;
 
         /// <summary>
-        /// The column a value not of the row is compared to, where that fixes it: a scalar column (ScalarColumn), NOT NULL or
+        /// The column a value not of the row is compared to, where that fixes it: a scalar column (RelColumn.Scalar), NOT NULL or
         /// compared to a value not null (a null matches each row whose column is null). How .NET compares them doesn't
         /// matter: the database finds the row as it keeps the index unique, by the column's collation or its stored value.
         /// </summary>
         private string FixedColumn(IOperation column, IOperation value, IParameterSymbol p, Rel r)
         {
             if (value.DescendantsAndSelf().OfType<IParameterReferenceOperation>().Any(x => SymbolEqualityComparer.Default.Equals(x.Parameter, p)) ||
-                PathOf(column, p, r) is not string path || path.Length == 0 || ColumnAt(r.Table, path) is not var (owner, col) || !ScalarColumn(owner, col))
+                PathOf(column, p, r) is not string path || path.Length == 0 || ColumnAt(r.Table, path) is not { Scalar: true } col)
             {
                 return null;
             }
@@ -409,7 +476,7 @@ namespace CsVerify.Verifier.Boogie
                            v.Type is { IsReferenceType: true } && v.Syntax != null && v.Syntax.SyntaxTree == _model.SyntaxTree &&
                            _model.GetTypeInfo(v.Syntax).Nullability.FlowState == NullableFlowState.NotNull;
             // (through a navigation, a column is null where the navigation is: only a value not null fixes it there)
-            return !path.Contains('.') && owner.NotNullColumn(col) || notNull ? path : null;
+            return !path.Contains('.') && col.NotNull || notNull ? path : null;
         }
     }
 }

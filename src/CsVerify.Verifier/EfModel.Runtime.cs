@@ -43,6 +43,7 @@ namespace CsVerify.Verifier
                     Console.Error.WriteLine($"[ef-model] fk {fk.Dependent}({string.Join(",", fk.Properties)}) -> {fk.Principal}; unique {fk.Unique}; navs {fk.ToPrincipal ?? "-"}/{fk.ToDependent ?? "-"}");
                 }
             }
+            var known = new HashSet<Entity>(_entities.Values);
             var read = new Dictionary<Entity, EfRuntimeModel.Entity>();
             foreach (var r in runtime.Entities.Values)
             {
@@ -54,6 +55,24 @@ namespace CsVerify.Verifier
                 if (EntityOf(type) is Entity e)
                 {
                     read[e] = r;
+                }
+            }
+            // (an entity only EF's model has, the other side of a HasOne<T>() say: its attributes, and every entity's
+            // navigations again, those to it among them)
+            foreach (var e in read.Keys.Where(e => !known.Contains(e)))
+            {
+                ReadAttributes(e);
+            }
+            foreach (var e in _entities.Values)
+            {
+                e.References.Clear();
+                e.Collections.Clear();
+                foreach (var p in PropertiesOf(e.Type))
+                {
+                    if (NavigationTarget(p.Type, out bool many) is INamedTypeSymbol target && _entities.ContainsKey(target))
+                    {
+                        (many ? e.Collections : e.References).Add(p);
+                    }
                 }
             }
             foreach (var (e, r) in read)
@@ -74,6 +93,22 @@ namespace CsVerify.Verifier
                 e.ModelNullable.Clear();
                 e.ForeignKeys.Clear();
                 e.CollectionKeys.Clear();
+                e.ShadowNotNull.Clear();
+                e.ReferenceColumns.Clear();
+                e.KeyColumns = new List<(List<string>, bool)>();
+                if (r.Key is { Count: > 0 })
+                {
+                    e.KeyColumns.Add((r.Key, false));
+                }
+                e.KeyColumns.AddRange(r.AlternateKeys.Select(k => (k, false)));
+                foreach (var ix in r.UniqueIndexes)
+                {
+                    var kind = FilterKind(ix, r);
+                    if (kind != IndexFilter.Other)
+                    {
+                        e.KeyColumns.Add((ix.Properties, kind == IndexFilter.QueryFilter));
+                    }
+                }
                 foreach (var k in r.AlternateKeys)
                 {
                     if (Mapped(k) is List<IPropertySymbol> alt)
@@ -100,6 +135,10 @@ namespace CsVerify.Verifier
                         if (p.Shadow && TypeOf(compilation, p.ClrType) is ITypeSymbol shadow)
                         {
                             e.Shadow[p.Name] = shadow;
+                            if (!p.Nullable)
+                            {
+                                e.ShadowNotNull.Add(p.Name);
+                            }
                         }
                         continue;
                     }
@@ -137,6 +176,10 @@ namespace CsVerify.Verifier
                 var toPrincipal = fk.ToPrincipal == null ? null : PropertiesOf(d.Type).FirstOrDefault(x => x.Name == fk.ToPrincipal);
                 var toDependent = fk.ToDependent == null ? null : PropertiesOf(p.Type).FirstOrDefault(x => x.Name == fk.ToDependent);
                 Pair(toPrincipal, toDependent);
+                if (toPrincipal != null)
+                {
+                    d.ReferenceColumns[toPrincipal] = fk.Properties;
+                }
                 if (fk.Unique)
                 {
                     // (its unique index: of all rows, or of those the dependent's query filter keeps)

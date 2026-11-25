@@ -39,6 +39,10 @@ options:
                       text (repeatable); the others are called by their contracts, not verified
   -v                  list every method with its proved obligations, and the library contracts
                       ([ContractsFor] stubs, trusted) the proofs assumed
+  --ef-static-model   read an EF Core model from the sources only, without loading the program to ask
+                      EF for its own (which runs the contexts' constructors and model configuration)
+  --native <file>     a native library the program's packages bring (repeatable; the MSBuild targets
+                      pass them): what a database provider loads where EF's model is built
   --checks <kinds>    prove only these kinds of obligation, a comma-separated list of null, linear,
                       bounds, overflow, contracts (or all); the others are assumed, and counted.
                       Within a profile an unsupported construct is a warning, its value unknown, and
@@ -107,6 +111,9 @@ options:
                             break;
                         case "-r":
                             options.AddReference(args[++i]);
+                            break;
+                        case "--native":
+                            options.NativeLibraries.Add(args[++i]);
                             break;
                         case "-a":
                             options.Analyzers.Add(args[++i]);
@@ -248,6 +255,10 @@ run on the program and on the erased one (what they generate is not written: the
                             break;
                         case "-r":
                             references.Add(args[++i]);
+                            break;
+                        // (the verifier's, for EF's model: nothing of the sources)
+                        case "--native":
+                            i++;
                             break;
                         case "-a":
                             analyzers.Add(args[++i]);

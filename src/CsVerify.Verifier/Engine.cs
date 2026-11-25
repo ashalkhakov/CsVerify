@@ -82,6 +82,11 @@ namespace CsVerify.Verifier
         /// project of its own, which the program's compilation references in place of its assembly.
         /// </summary>
         public List<ProjectReference> ProjectReferences = new List<ProjectReference>();
+        /// <summary>
+        /// The native libraries the program's packages bring (--native, the MSBuild target's): what a database provider
+        /// loads where EF's model is built (SQLite's e_sqlite3).
+        /// </summary>
+        public List<string> NativeLibraries = new List<string>();
 
         /// <summary>Is an obligation (or a diagnostic) with this id checked in the profile?</summary>
         internal bool Checked(string id) => CheckKinds == null || !(Verifier.Checks.KindOf(id) is string kind) || CheckKinds.Contains(kind);
@@ -317,7 +322,8 @@ namespace CsVerify.Verifier
                 .Select(d => compilation.ModelOf(t).GetDeclaredSymbol(d)).OfType<INamedTypeSymbol>()).ToList();
             Levels = new LockLevels(compilation, Locks, SourceTypes);
             Atomics = new Atomics(SourceTypes);
-            Ef = EfModel.For(compilation, UserTrees, SourceTypes, !options.EfStaticModel);
+            Ef = EfModel.For(compilation, UserTrees, SourceTypes, !options.EfStaticModel,
+                options.NativeLibraries.Concat(options.ProjectReferences.SelectMany(p => p.NativeLibraries)).ToList());
             MetadataEntities.Current = Ef == null ? null : MetadataEntities.For(compilation, Ef.Entities.Select(e => e.Type));
             Predicates = SourceTypes.SelectMany(t => t.GetMembers().OfType<IMethodSymbol>()).Where(SpecSymbols.IsPredicate).ToList();
             // (a predicate needs the permission state even with no [Owned] class: over arrays alone, say)

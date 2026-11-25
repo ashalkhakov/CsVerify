@@ -27,7 +27,7 @@
     being built (dotnet build with no-dependencies) has them too, its InternalsVisibleTo among them.
   -->
   <PropertyGroup>
-    <_CsVerifyProjectDependsOn Condition="'$(UsingMicrosoftNETSdk)' == 'true'">GenerateGlobalUsings;GenerateAssemblyInfo</_CsVerifyProjectDependsOn>
+    <_CsVerifyProjectDependsOn Condition="'$(UsingMicrosoftNETSdk)' == 'true'">GenerateGlobalUsings;GenerateAssemblyInfo;ResolvePackageAssets</_CsVerifyProjectDependsOn>
   </PropertyGroup>
   <Target Name="_CsVerifyProjectArgs" DependsOnTargets="ResolveReferences;GenerateTargetFrameworkMonikerAttribute;$(_CsVerifyProjectDependsOn)">
     <ItemGroup>
@@ -43,6 +43,11 @@
       <_CsVerifyProjectArg Include="@(Compile->'%(FullPath)')" />
       <_CsVerifyProjectArg Include="@(_CsVerifyReference->'-r %(FullPath)')" />
       <_CsVerifyProjectArg Include="@(_CsVerifyGenerator->'-a %(FullPath)')" />
+      <!-- the native libraries the packages bring, each runtime's (SQLite's e_sqlite3): what a database provider loads
+           where the verifier asks EF for its model of the program's contexts -->
+      <_CsVerifyNative Include="@(RuntimeTargetsCopyLocalItems)" Condition="'%(RuntimeTargetsCopyLocalItems.AssetType)' == 'native'" />
+      <_CsVerifyNative Include="@(NativeCopyLocalItems)" />
+      <_CsVerifyProjectArg Include="@(_CsVerifyNative->'--native %(FullPath)')" />
       <_CsVerifyProjectArg Include="@(EditorConfigFiles->'--analyzer-config %(FullPath)')" Condition="Exists('%(FullPath)')" />
     </ItemGroup>
     <PropertyGroup>

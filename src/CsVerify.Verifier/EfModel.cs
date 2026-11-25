@@ -37,6 +37,16 @@ namespace CsVerify.Verifier
             public HashSet<IPropertySymbol> Converted = new HashSet<IPropertySymbol>(SymbolEqualityComparer.Default);
             /// <summary>Shadow columns (Property&lt;T&gt;("Name") of no property of the class): their names and types.</summary>
             public Dictionary<string, ITypeSymbol> Shadow = new Dictionary<string, ITypeSymbol>();
+            /// <summary>
+            /// The keys by their columns' names, shadow columns too, as EF's own model has them (null where it wasn't read):
+            /// the key, alternate keys and unique indexes, each with whether it is one only among the rows the entity's
+            /// query filter keeps.
+            /// </summary>
+            public List<(List<string> columns, bool whereFiltered)> KeyColumns;
+            /// <summary>The shadow columns that are NOT NULL, as EF's model has them.</summary>
+            public HashSet<string> ShadowNotNull = new HashSet<string>();
+            /// <summary>A reference navigation's foreign key, its columns' names (shadow ones too), as EF's model has it.</summary>
+            public Dictionary<IPropertySymbol, List<string>> ReferenceColumns = new Dictionary<IPropertySymbol, List<string>>(SymbolEqualityComparer.Default);
             /// <summary>Whether each column is nullable, as EF's own model has it (EfRuntimeModel), where that was read.</summary>
             public Dictionary<IPropertySymbol, bool> ModelNullable = new Dictionary<IPropertySymbol, bool>(SymbolEqualityComparer.Default);
             /// <summary>
@@ -120,7 +130,8 @@ namespace CsVerify.Verifier
         };
 
         /// <summary>The model, or null for a program that does not reference EF Core.</summary>
-        public static EfModel For(Compilation compilation, IReadOnlyList<SyntaxTree> userTrees, IReadOnlyList<INamedTypeSymbol> sourceTypes, bool runtime = true)
+        public static EfModel For(Compilation compilation, IReadOnlyList<SyntaxTree> userTrees, IReadOnlyList<INamedTypeSymbol> sourceTypes, bool runtime = true,
+            IReadOnlyList<string> nativeLibraries = null)
         {
             var dbContext = compilation.GetTypeByMetadataName("Microsoft.EntityFrameworkCore.DbContext");
             if (dbContext == null)
@@ -130,7 +141,7 @@ namespace CsVerify.Verifier
             var model = new EfModel(compilation, userTrees, sourceTypes, dbContext);
             if (runtime)
             {
-                model.ApplyRuntime(compilation, EfRuntimeModel.Read(compilation, model.Contexts.Where(c => !c.IsAbstract && !c.IsGenericType), model._providers));
+                model.ApplyRuntime(compilation, EfRuntimeModel.Read(compilation, model.Contexts.Where(c => !c.IsAbstract && !c.IsGenericType), model._providers, nativeLibraries ?? new List<string>()));
             }
             return model;
         }

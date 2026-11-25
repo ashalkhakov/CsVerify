@@ -16,7 +16,10 @@ tokens, relationships and which are one-to-one, query filters' soft-delete flags
 with, however it configures it: conventions, attributes, configuration classes and their bases, constants, loops over
 the entity types, a provider's conventions. The configuration's own code is verified like any other; `typeof(T)` and a
 lambda quoted as an expression tree are objects of the library's there, never null. This runs the program's contexts' constructors and model configuration,
-never a query; the provider is never connected to. `CSVERIFY_EF_MODEL_TRACE=1` prints what was read.
+never a query; the provider is never connected to. A provider's native library (SQLite's `e_sqlite3`) is loaded from
+the program's packages: the MSBuild targets name them (`--native`), and without those the packages beside the
+references' are searched. `CSVERIFY_EF_MODEL_TRACE=1` prints what was read. An entity type only EF's model has (the
+other side of a `HasOne<T>()` that nothing else declares) is one here too.
 
 Where a context can't be made (no provider among the references, a constructor that needs what the verifier can't
 give), a warning says why, and the configuration is read from the sources instead, as below; `--ef-static-model`
@@ -160,9 +163,14 @@ type, from its operators down to the table (filters, orders, projections, pages,
 columns that identify a row (its keys), the columns a filter fixes, and the order its rows are in. Keys follow the
 standard derivation of unique keys:
 
-- a table's are its key and unique indexes, named by their properties or their names (`HasAlternateKey("ExternalId")`),
-  and the keys of what a one-to-one navigation leads to (`HasOne(...).WithOne(...)`, or two reference navigations to
-  each other): a row of either end has one row of the other at most, as its foreign key is unique;
+- a table's are its key, alternate keys and unique indexes, by their columns, shadow columns too (a filter may fix
+  one with `EF.Property<T>(row, "Name")`), and the keys of what a one-to-one navigation leads to
+  (`HasOne(...).WithOne(...)`, or two reference navigations to each other): a row of either end has one row of the
+  other at most, as its foreign key is unique;
+- a key that holds a reference navigation's foreign key is also a key with the foreign key replaced by any key of the
+  row it names: `HasIndex("OwnerId", "IdempotencyKey").IsUnique()` with `OwnerId` the foreign key of `Holder` makes
+  `p.Holder!.Id == owner && p.IdempotencyKey == key` one row at most, where `Id` is a key of the owner; and a unique
+  index on the foreign key of a `WithMany()` navigation makes it one-to-one;
 - a filter that compares a column to a value not of the row (`t.ExternalId == id`, in a conjunct of `&&`) fixes it; a
   query that fixes every column of a key keeps one row at most;
 - a projection (`Select`) keeps the rows, one to one, in their order; a filter or an order on its members is read as

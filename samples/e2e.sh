@@ -137,4 +137,17 @@ grep -E -- "--project-reference .*Layered\.Model/obj/Debug/net10\.0/csverify\.pr
 grep -E -- "--project-reference .*Layered\.Data/obj/Debug/net10\.0/csverify\.project\.rsp" layered-rsp.txt
 grep -F -- "--nullable enable" Layered/Layered.Model/obj/Debug/net10.0/csverify.project.rsp
 
+# an EF Core project with the SQLite provider from its package (samples/EfSqlite): the verifier builds EF's own model
+# of it, which loads the provider's native library from the packages, on this system. Its lookups verify only by that
+# model (a renamed column in an index's filter, a composite index with a shadow foreign key, keys named by constants):
+# read from the sources instead, they fail
+cp -R "$repo/samples/EfSqlite" EfSqlite
+dotnet build EfSqlite -p:CsVerifyEnabled=true 2>&1 | tee efsqlite.txt
+grep -F "csverify: 21 of 21 methods verified" efsqlite.txt
+if grep -F "couldn't be built" efsqlite.txt; then
+    echo "error: EF's model of the SQLite sample wasn't built" >&2
+    exit 1
+fi
+grep -F -- "--native" EfSqlite/obj/Debug/net10.0/csverify.rsp > /dev/null
+
 echo "e2e: OK"

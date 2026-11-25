@@ -59,7 +59,8 @@ namespace CsVerify.Tests
                 options.References.Add(path);
                 var result = Engine.VerifySources(new[] { ("Test.cs", Usings + source) }, options);
                 Xunit.Assert.True(result.CompilationErrors.Count == 0, string.Join("\n", result.CompilationErrors));
-                return result;
+                // (a reference assembly has no code to load: EF's model can't be built of it, and the test says so)
+                return referenceAssembly ? result : ModelBuilt(result);
             }
             finally { try { File.Delete(path); } catch (IOException) { } }
         }
@@ -97,7 +98,7 @@ namespace CsVerify.Tests
                 }
                 var result = Engine.VerifySources(new[] { ("Test.cs", Usings + source) }, options);
                 Xunit.Assert.True(result.CompilationErrors.Count == 0, string.Join("\n", result.CompilationErrors));
-                return result;
+                return ModelBuilt(result);
             }
             finally { try { Directory.Delete(dir, true); } catch (IOException) { } }
         }
@@ -146,20 +147,26 @@ namespace CsVerify.Tests
                 set(options);
                 var result = Engine.VerifySources(new[] { ("Test.cs", Usings + source) }, options);
                 Xunit.Assert.True(result.CompilationErrors.Count == 0, string.Join("\n", result.CompilationErrors));
-                return result;
+                return ModelBuilt(result);
             }
             finally { try { Directory.Delete(dir, true); } catch (IOException) { } }
+        }
+
+        /// <summary>
+        /// EF's own model was read of every context: a test never passes by the sources' reading where the model couldn't
+        /// be built (a provider or its native library not found), unseen.
+        /// </summary>
+        public static VerificationResult ModelBuilt(VerificationResult result)
+        {
+            Xunit.Assert.True(!result.Warnings.Any(w => w.Contains("couldn't be built")), string.Join("\n", result.Warnings));
+            return result;
         }
 
         public static VerificationResult VerifyEf(string source, bool overflow = true, bool sqlite = false)
         {
             var result = Engine.VerifySources(new[] { ("Test.cs", Usings + source) }, Options(overflow, sqlite));
             Xunit.Assert.True(result.CompilationErrors.Count == 0, string.Join("\n", result.CompilationErrors));
-            if (System.Environment.GetEnvironmentVariable("CSVERIFY_EF_MODEL_STRICT") != null)
-            {
-                Xunit.Assert.True(!result.Warnings.Any(w => w.Contains("couldn't be built")), string.Join("\n", result.Warnings));
-            }
-            return result;
+            return ModelBuilt(result);
         }
     }
 }

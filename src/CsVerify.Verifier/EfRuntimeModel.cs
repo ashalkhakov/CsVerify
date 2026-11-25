@@ -61,7 +61,7 @@ namespace CsVerify.Verifier
         public readonly List<(string context, string why)> Failures = new List<(string, string)>();
 
         /// <summary>The models of the contexts given, of the compilation as emitted.</summary>
-        public static EfRuntimeModel Read(Compilation compilation, IEnumerable<INamedTypeSymbol> contexts, IEnumerable<string> providersNamed)
+        public static EfRuntimeModel Read(Compilation compilation, IEnumerable<INamedTypeSymbol> contexts, IEnumerable<string> providersNamed, IReadOnlyList<string> nativeLibraries)
         {
             var model = new EfRuntimeModel();
             var wanted = contexts.ToList();
@@ -94,7 +94,7 @@ namespace CsVerify.Verifier
                 }
             }
             var providers = providersNamed.ToList();
-            var load = new Loader(compilation);
+            var load = new Loader(compilation, nativeLibraries);
             try
             {
                 Assembly program;
@@ -165,18 +165,90 @@ namespace CsVerify.Verifier
             private readonly Dictionary<string, string> _paths = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
             private List<MethodInfo> _providers;
 
-            public static References For(IEnumerable<string> paths)
+            public static References For(IEnumerable<string> paths, IReadOnlyList<string> nativeLibraries)
             {
                 var all = paths.Select(Path.GetFullPath).Distinct().OrderBy(p => p, StringComparer.Ordinal).ToList();
-                var key = string.Join("|", all.Select(p => p + "@" + File.GetLastWriteTimeUtc(p).Ticks));
+                var natives = nativeLibraries.Where(File.Exists).Select(Path.GetFullPath).Distinct().OrderBy(p => p, StringComparer.Ordinal).ToList();
+                var key = string.Join("|", all.Select(p => p + "@" + File.GetLastWriteTimeUtc(p).Ticks).Concat(natives));
                 lock (Cache)
                 {
-                    return Cache.TryGetValue(key, out var found) ? found : Cache[key] = new References(all);
+                    return Cache.TryGetValue(key, out var found) ? found : Cache[key] = new References(all, natives);
                 }
             }
 
-            private References(List<string> paths) : base("csverify-ef-references")
+            private readonly List<string> _natives;
+
+            /// <summary>
+            /// A native library a reference loads (a provider's, SQLite's e_sqlite3): the one the program's packages
+            /// bring for this machine, among those the build names (--native) or, without them, in the packages beside
+            /// the references' (a package's runtimes/RID/native folder).
+            /// </summary>
+            protected override IntPtr LoadUnmanagedDll(string name)
             {
+                var files = new[] { name, name + ".dll", "lib" + name + ".dylib", name + ".dylib", "lib" + name + ".so", name + ".so" };
+                var rid = System.Runtime.InteropServices.RuntimeInformation.RuntimeIdentifier;
+                // (this machine's, then its system's whatever the processor, then any of its kind)
+                var rids = new List<string> { rid };
+                if (rid.LastIndexOf('-') is int dash && dash > 0)
+                {
+                    rids.Add(rid.Substring(0, dash));
+                }
+                rids.Add(OperatingSystem.IsWindows() ? "win" : "unix");
+                var candidates = _natives.ToList();
+                if (candidates.Count == 0)
+                {
+                    // (an application's output folder: runtimes/RID/native beside the references)
+                    foreach (var dir in _paths.Values.Select(Path.GetDirectoryName).Where(d => d != null).Distinct().ToList())
+                    {
+                        var runtimes = Path.Combine(dir, "runtimes");
+                        if (Directory.Exists(runtimes))
+                        {
+                            candidates.AddRange(Directory.EnumerateFiles(runtimes, "*", SearchOption.AllDirectories).Where(f => files.Contains(Path.GetFileName(f), StringComparer.OrdinalIgnoreCase)));
+                        }
+                    }
+                    // (a package folder is root/id/version: the others of the same root)
+                    foreach (var root in _paths.Values.Select(PackagesRoot).Where(r => r != null).Distinct().ToList())
+                    {
+                        foreach (var package in Directory.EnumerateDirectories(root))
+                        {
+                            foreach (var version in Directory.EnumerateDirectories(package))
+                            {
+                                var runtimes = Path.Combine(version, "runtimes");
+                                if (Directory.Exists(runtimes))
+                                {
+                                    candidates.AddRange(Directory.EnumerateFiles(runtimes, "*", SearchOption.AllDirectories).Where(f => files.Contains(Path.GetFileName(f), StringComparer.OrdinalIgnoreCase)));
+                                }
+                            }
+                        }
+                    }
+                }
+                foreach (var r in rids)
+                {
+                    var sep = Path.DirectorySeparatorChar;
+                    var found = candidates.FirstOrDefault(f => files.Contains(Path.GetFileName(f), StringComparer.OrdinalIgnoreCase) &&
+                                                               f.Contains(sep + "runtimes" + sep + r + sep + "native" + sep, StringComparison.OrdinalIgnoreCase));
+                    if (found != null && System.Runtime.InteropServices.NativeLibrary.TryLoad(found, out var handle))
+                    {
+                        return handle;
+                    }
+                }
+                return IntPtr.Zero;
+            }
+
+            private static string PackagesRoot(string reference)
+            {
+                // (root/id/version/lib/tfm/x.dll)
+                var tfm = Path.GetDirectoryName(reference);
+                var lib = Path.GetDirectoryName(tfm);
+                var version = Path.GetDirectoryName(lib);
+                var id = Path.GetDirectoryName(version);
+                var root = Path.GetDirectoryName(id);
+                return root != null && Path.GetFileName(lib) is "lib" or "ref" && Directory.Exists(root) ? root : null;
+            }
+
+            private References(List<string> paths, List<string> natives) : base("csverify-ef-references")
+            {
+                _natives = natives;
                 // (the runtime's own assemblies are the verifier's: one loaded again here would be other types, a second
                 // System.Linq.Expressions say, which EF's model then couldn't be read through)
                 var runtime = Path.GetDirectoryName(typeof(object).Assembly.Location) ?? "";
@@ -333,12 +405,12 @@ namespace CsVerify.Verifier
             private readonly Dictionary<string, Assembly> _emitted = new Dictionary<string, Assembly>(StringComparer.OrdinalIgnoreCase);
             public readonly References Shared;
 
-            public Loader(Compilation compilation) : base("csverify-ef-model", isCollectible: true)
+            public Loader(Compilation compilation, IReadOnlyList<string> nativeLibraries) : base("csverify-ef-model", isCollectible: true)
             {
                 _compilation = compilation;
                 var paths = new List<string>();
                 Collect(compilation, paths);
-                Shared = References.For(paths);
+                Shared = References.For(paths, nativeLibraries);
             }
 
             private void Collect(Compilation c, List<string> paths)
