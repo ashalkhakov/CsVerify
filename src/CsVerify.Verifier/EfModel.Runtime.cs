@@ -30,6 +30,19 @@ namespace CsVerify.Verifier
             {
                 return;
             }
+            if (Environment.GetEnvironmentVariable("CSVERIFY_EF_MODEL_TRACE") != null)
+            {
+                foreach (var r in runtime.Entities.Values)
+                {
+                    Console.Error.WriteLine($"[ef-model] {r.Type}: key {string.Join(",", r.Key ?? new List<string>())}; filtered-false {string.Join(",", r.FilteredFalse)}; " +
+                        $"unique {string.Join(" | ", r.UniqueIndexes.Select(ix => string.Join(",", ix.Properties) + (ix.Filter == null ? "" : " where " + ix.Filter) + " => " + FilterKind(ix, r)))}; " +
+                        $"columns {string.Join(",", r.Properties.Select(p => p.Name + (p.Column != p.Name ? "=" + p.Column : "") + (p.Shadow ? "(shadow)" : "")))}");
+                }
+                foreach (var fk in runtime.ForeignKeys)
+                {
+                    Console.Error.WriteLine($"[ef-model] fk {fk.Dependent}({string.Join(",", fk.Properties)}) -> {fk.Principal}; unique {fk.Unique}; navs {fk.ToPrincipal ?? "-"}/{fk.ToDependent ?? "-"}");
+                }
+            }
             var read = new Dictionary<Entity, EfRuntimeModel.Entity>();
             foreach (var r in runtime.Entities.Values)
             {

@@ -177,9 +177,15 @@ namespace CsVerify.Verifier
 
             private References(List<string> paths) : base("csverify-ef-references")
             {
+                // (the runtime's own assemblies are the verifier's: one loaded again here would be other types, a second
+                // System.Linq.Expressions say, which EF's model then couldn't be read through)
+                var runtime = Path.GetDirectoryName(typeof(object).Assembly.Location) ?? "";
                 foreach (var path in paths)
                 {
-                    _paths.TryAdd(Path.GetFileNameWithoutExtension(path), path);
+                    if (!File.Exists(Path.Combine(runtime, Path.GetFileName(path))))
+                    {
+                        _paths.TryAdd(Path.GetFileNameWithoutExtension(path), path);
+                    }
                 }
                 // (a provider beside EF Core that the program doesn't reference itself, as an application's output folder has it)
                 if (_paths.TryGetValue("Microsoft.EntityFrameworkCore", out var ef) && Path.GetDirectoryName(ef) is string dir)
@@ -518,7 +524,7 @@ namespace CsVerify.Verifier
                 }
                 for (var filtered = et; filtered != null; filtered = Get(filtered, "BaseType"))
                 {
-                    if (QueryFilter(filtered) is System.Linq.Expressions.LambdaExpression filter)
+                    foreach (var filter in QueryFilters(filtered))
                     {
                         e.FilteredFalse.AddRange(False(filter.Body));
                     }
@@ -541,16 +547,39 @@ namespace CsVerify.Verifier
             }
         }
 
-        private static object QueryFilter(object entityType)
+        /// <summary>An entity type's query filters: EF Core 10's declared ones (named or not), or the one filter before it.</summary>
+        private static List<System.Linq.Expressions.LambdaExpression> QueryFilters(object entityType)
         {
+            var filters = new List<System.Linq.Expressions.LambdaExpression>();
             try
             {
-                return Call(entityType, "GetQueryFilter");
+                foreach (var f in Many(Call(entityType, "GetDeclaredQueryFilters")))
+                {
+                    var expression = Get(f, "Expression");
+                    if (expression is System.Linq.Expressions.LambdaExpression e)
+                    {
+                        filters.Add(e);
+                    }
+                }
+                if (filters.Count > 0)
+                {
+                    return filters;
+                }
             }
             catch (Exception)
             {
-                return null;
             }
+            try
+            {
+                if (Call(entityType, "GetQueryFilter") is System.Linq.Expressions.LambdaExpression one)
+                {
+                    filters.Add(one);
+                }
+            }
+            catch (Exception)
+            {
+            }
+            return filters;
         }
 
         /// <summary>The columns a filter's conjuncts say are false: !x.P, x.P == false, of a property or EF.Property(x, "P").</summary>
@@ -569,10 +598,15 @@ namespace CsVerify.Verifier
                     return Array.Empty<string>();
             }
 
+            // (the row, as it is or converted: EF.Property takes an object)
+            static bool Row(System.Linq.Expressions.Expression x) =>
+                x is System.Linq.Expressions.ParameterExpression ||
+                x is System.Linq.Expressions.UnaryExpression { NodeType: System.Linq.Expressions.ExpressionType.Convert or System.Linq.Expressions.ExpressionType.TypeAs, Operand: System.Linq.Expressions.ParameterExpression };
+
             static string Column(System.Linq.Expressions.Expression x) => x switch
             {
-                System.Linq.Expressions.MemberExpression { Expression: System.Linq.Expressions.ParameterExpression } m => m.Member.Name,
-                System.Linq.Expressions.MethodCallExpression { Method.Name: "Property", Arguments: [System.Linq.Expressions.ParameterExpression, System.Linq.Expressions.ConstantExpression { Value: string name }] } => name,
+                System.Linq.Expressions.MemberExpression { Expression: { } of } m when Row(of) => m.Member.Name,
+                System.Linq.Expressions.MethodCallExpression { Method.Name: "Property", Arguments: [var of, System.Linq.Expressions.ConstantExpression { Value: string name }] } when Row(of) => name,
                 _ => null,
             };
         }

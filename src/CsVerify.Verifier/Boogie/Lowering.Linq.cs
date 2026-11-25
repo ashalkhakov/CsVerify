@@ -2135,6 +2135,7 @@ namespace CsVerify.Verifier.Boogie
                 {
                     var s = Sequence(args[0].Value);
                     DistinctRows(args[0].Value, s, at);
+                    DistinctKeys(args[0].Value, s, at);
                     var t = Declare("t$" + _temps++, callType);
                     Emit(KNew.Of(t, callType, s.Length));
                     Emit(KRow.Of(
@@ -2147,6 +2148,7 @@ namespace CsVerify.Verifier.Boogie
                 {
                     var s = Sequence(args[0].Value);
                     DistinctRows(args[0].Value, s, at);
+                    DistinctKeys(args[0].Value, s, at);
                     var ctor = ((INamedTypeSymbol)callType).Constructors.FirstOrDefault(c => c.Parameters.Length == 0) ?? throw new NotTranslated("a List without its constructor");
                     var list = Invoke(ctor, null, new IArgumentOperation[0], at, null);
                     var t = Declare("t$" + _temps++, callType);

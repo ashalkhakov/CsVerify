@@ -173,16 +173,30 @@ namespace CsVerify.Verifier.Boogie
             // (its members' columns, of the rows it maps)
             var projection = new Dictionary<string, string>();
             string value = null;
-            if (PureLambda(selector) is var (body, p, _) && p != null)
+            // (which columns its members are doesn't depend on what else it does: a selector that makes an object too)
+            if (LambdaBody(selector) is var (body, p) && p != null)
             {
                 var b = Unconverted(body);
-                if (b is IAnonymousObjectCreationOperation anon)
+                // (an anonymous type's members, an object's set in its initializer, a positional record's by its parameters)
+                var inits = b is IAnonymousObjectCreationOperation anon ? anon.Initializers
+                          : b is IObjectCreationOperation { Initializer: { } oi } ? oi.Initializers : System.Collections.Immutable.ImmutableArray<IOperation>.Empty;
+                if (b is IAnonymousObjectCreationOperation or IObjectCreationOperation)
                 {
-                    foreach (var init in anon.Initializers.OfType<ISimpleAssignmentOperation>())
+                    foreach (var init in inits.OfType<ISimpleAssignmentOperation>())
                     {
                         if (init.Target is IPropertyReferenceOperation member && PathOf(init.Value, p, r) is string path)
                         {
                             projection[member.Property.Name] = path;
+                        }
+                    }
+                    if (b is IObjectCreationOperation { Constructor: { } ctor } made && PositionalRecord(ctor))
+                    {
+                        foreach (var a in made.Arguments)
+                        {
+                            if (PathOf(a.Value, p, r) is string path)
+                            {
+                                projection[a.Parameter.Name] = path;
+                            }
                         }
                     }
                 }
@@ -195,6 +209,119 @@ namespace CsVerify.Verifier.Boogie
             r.Projection = projection;
             r.ProjectedValue = value;
             return r;
+        }
+
+        /// <summary>A lambda's one expression and its first parameter, whatever the expression does; else null.</summary>
+        private (IOperation body, IParameterSymbol p)? LambdaBody(IOperation arg)
+        {
+            var fn = Unconverted(arg) is IDelegateCreationOperation dc ? dc.Target as IAnonymousFunctionOperation ?? LambdaOf(dc.Target) ?? LambdaBySymbol(dc.Target)
+                   : Unconverted(arg) is IAnonymousFunctionOperation quoted ? quoted
+                   : Unconverted(arg) is IFlowAnonymousFunctionOperation fq ? LambdaBySymbol(fq) : null;
+            return fn != null && fn.Body.Operations.Length == 1 && fn.Body.Operations[0] is IReturnOperation { ReturnedValue: { } body }
+                ? (body, fn.Symbol.Parameters.ElementAtOrDefault(0)) : null;
+        }
+
+        /// <summary>
+        /// A column's value of a query's element, where the element has it: the row's, or a projection's member that is
+        /// the column or a navigation on the way to it. With what must not be null on the way (guards). Else null.
+        /// </summary>
+        private KExpr ColumnOfElement(Rel r, string path, KExpr elem, ITypeSymbol elemType, List<KExpr> guards, out int navigations)
+        {
+            // (navigations: how many of an entity's the value is read through, which a context that tracks it may hold otherwise)
+            navigations = 0;
+            var cur = elem;
+            var type = elemType;
+            var rest = path;
+            if (r.Projected)
+            {
+                if (r.Projection.Count == 0 && r.ProjectedValue is string whole && (path == whole || whole.Length == 0 || path.StartsWith(whole + ".")))
+                {
+                    rest = path == whole ? "" : whole.Length == 0 ? path : path.Substring(whole.Length + 1);
+                }
+                else if (r.Projection.FirstOrDefault(m => path == m.Value || m.Value.Length == 0 || path.StartsWith(m.Value + ".")) is { Key: { } member } via &&
+                         elemType.GetMembers(member).OfType<IPropertySymbol>().FirstOrDefault() is IPropertySymbol mp && IsField(mp))
+                {
+                    _p.AddField(mp.OriginalDefinition);
+                    cur = Column(mp, cur);
+                    type = mp.Type;
+                    rest = path == via.Value ? "" : via.Value.Length == 0 ? path : path.Substring(via.Value.Length + 1);
+                    if (rest.Length > 0)
+                    {
+                        guards.Add(NotNull(cur));
+                    }
+                }
+                else
+                {
+                    return null;
+                }
+            }
+            if (rest.Length == 0)
+            {
+                return cur;
+            }
+            var names = rest.Split('.');
+            for (int k = 0; k < names.Length; k++)
+            {
+                if (type is not INamedTypeSymbol named || EfModel.PropertiesOf(named).FirstOrDefault(x => x.Name == names[k]) is not IPropertySymbol step || !IsField(step))
+                {
+                    return null;
+                }
+                _p.AddField(step.OriginalDefinition);
+                cur = Column(step, cur);
+                type = step.Type;
+                if (k < names.Length - 1)
+                {
+                    guards.Add(NotNull(cur));
+                    navigations++;
+                }
+            }
+            return cur;
+        }
+
+        /// <summary>
+        /// The rows a database query gives differ in each key of one column NOT NULL that its elements have: the table's
+        /// rows are distinct by each key, and a key through one-to-one navigations is one of the rows it leads to,
+        /// where they aren't null. As the database has them: of a tracked query, where the context tracked none before.
+        /// </summary>
+        private void DistinctKeys(IOperation source, LSeq s, SyntaxNode at)
+        {
+            if (KernelTypes.Ef == null || s.Type == null || RelOf(source) is not Rel r)
+            {
+                return;
+            }
+            foreach (var key in r.Keys.Where(k => k.Columns.Count == 1))
+            {
+                var path = key.Columns.First();
+                if (ColumnAt(r.Table, path) is not var (owner, col) || !owner.NotNullColumn(col) || !(col.Type.IsValueType || IsString(col.Type)))
+                {
+                    continue;
+                }
+                var i = Atom();
+                var j = Atom();
+                var gi = new List<KExpr>();
+                var gj = new List<KExpr>();
+                if (ColumnOfElement(r, path, s.Elem.At(i), s.Type, gi, out int navigations) is not KExpr vi || ColumnOfElement(r, path, s.Elem.At(j), s.Type, gj, out _) is not KExpr vj)
+                {
+                    continue;
+                }
+                KExpr differ = Ne(vi, vj);
+                foreach (var g in gi.Concat(gj).Reverse())
+                {
+                    differ = Implies(g, differ);
+                }
+                // (of each two elements the solver has: by the elements, not by the columns' reads, which it may not have yet)
+                var fact = Over(KLit.Zero, s.Length, i, Over(KLit.Zero, s.Length, j, OrElse(Eq(i, j), differ), trigger: new[] { s.Elem.At(j) }), trigger: new[] { s.Elem.At(i) });
+                // (a key column of an entity the element holds is its row's, tracked or not: EF throws where one changes;
+                // read through an entity's navigations, as the database has them)
+                if (navigations == 0 && owner.IsKeyProperty(col))
+                {
+                    ShapeFact(fact, at);
+                }
+                else
+                {
+                    LinqFact(fact, at);
+                }
+            }
         }
 
         private static IEnumerable<IOperation> Conjuncts(IOperation op) =>
