@@ -151,15 +151,9 @@ namespace CsVerify.Tests
             finally { try { Directory.Delete(dir, true); } catch (IOException) { } }
         }
 
-        /// <param name="checks">The checks to run, as the option --checks names them (all, if null).</param>
-        public static VerificationResult VerifyEf(string source, bool overflow = true, bool sqlite = false, string checks = null)
+        public static VerificationResult VerifyEf(string source, bool overflow = true, bool sqlite = false)
         {
-            var options = Options(overflow, sqlite);
-            if (checks != null)
-            {
-                options.CheckKinds = Checks.Parse(checks);
-            }
-            var result = Engine.VerifySources(new[] { ("Test.cs", Usings + source) }, options);
+            var result = Engine.VerifySources(new[] { ("Test.cs", Usings + source) }, Options(overflow, sqlite));
             Xunit.Assert.True(result.CompilationErrors.Count == 0, string.Join("\n", result.CompilationErrors));
             if (System.Environment.GetEnvironmentVariable("CSVERIFY_EF_MODEL_STRICT") != null)
             {

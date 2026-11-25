@@ -2914,13 +2914,23 @@ public sealed class Store(Db db)
             entry.Created().CurrentValue,
             profile);
     }
-}", checks: "contracts");
+}");
             Assert.DoesNotContain(r.Warnings, w => w.Contains("couldn't be built"));
-            // (the contracts, as the issue ran it: the dictionary's distinct keys among them)
-            foreach (var ok in new[] { "Store.LoginOfTag", "Store.AccountOf", "Store.HeldAsync", "Store.Held", "Columns.Created", "Store.HolderOfProfile", "Store.Kept", "Store.Twice" })
+            // (every check, not only the contracts the issue ran: the dictionary's distinct keys, what TryGetValue gives)
+            foreach (var ok in new[] { "Store.LoginOfTag", "Store.AccountOf", "Store.HeldAsync", "Columns.Created", "Store.HolderOfProfile", "Store.Kept", "Store.Twice",
+                                       "Db.OnModelCreating", "HolderConfiguration.get_Key", "RowConfiguration.Configure" })
             {
                 Assert.True(r.Errors(ok).Length == 0, ok + ": " + r.Explain(ok));
             }
+            // (every method is verified: the configuration's typeof and quoted lambdas, the loop over a list by its enumerator)
+            Assert.DoesNotContain(r.Diagnostics, d => d.Id is "CSV1902" or "CSV1901");
+            Assert.DoesNotContain(r.Diagnostics, d => d.Message.Contains("'Current'"));
+            // (what the file does leave to chance, by a null-forgiving operator the verifier doesn't take on trust: a
+            // nullable column dereferenced, reported as that and not as the argument it is part of; a navigation left null)
+            Assert.True(r.Errors("Store.Held").SequenceEqual(new[] { "CSV1013" }), r.Explain("Store.Held"));
+            Assert.Contains(r.Diagnostics, d => d.Id == "CSV1013" && d.Message.Contains("'profile.Client' might be null"));
+            Assert.Contains(r.Diagnostics, d => d.Id == "CSV1014" && d.Message.Contains("'Holder' is not nullable"));
+            Assert.Equal(6, r.Diagnostics.Count(d => d.IsError));
             // (a soft-deleted profile's holder; a list other code reaches; two a row; an index filtered by another flag)
             foreach (var bad in new[] { "Store.HolderOfProfileIgnoring", "Store.KeptOf", "Store.TwiceOf", "Store.SlotOf" })
             {

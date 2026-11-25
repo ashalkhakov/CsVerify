@@ -14,7 +14,8 @@ no `OnConfiguring` is given the provider in the copy loaded), and reads the mode
 unique indexes with their filters, columns' names and nullability, value conversions, shadow columns, concurrency
 tokens, relationships and which are one-to-one, query filters' soft-delete flags. So it is the model the program runs
 with, however it configures it: conventions, attributes, configuration classes and their bases, constants, loops over
-the entity types, a provider's conventions. This runs the program's contexts' constructors and model configuration,
+the entity types, a provider's conventions. The configuration's own code is verified like any other; `typeof(T)` and a
+lambda quoted as an expression tree are objects of the library's there, never null. This runs the program's contexts' constructors and model configuration,
 never a query; the provider is never connected to. `CSVERIFY_EF_MODEL_TRACE=1` prints what was read.
 
 Where a context can't be made (no provider among the references, a constructor that needs what the verifier can't

@@ -414,6 +414,12 @@ namespace CsVerify.Verifier.Boogie
                 case IFieldReferenceOperation: return ExprOfFieldReference(e);
                 case IDefaultValueOperation: return ExprOfDefaultValue(e);
                 case IInvocationOperation: return ExprOfInvocation(e);
+                // (a lambda quoted as an expression tree, and typeof(T): objects of the library's, never null, that the
+                // program only hands on; the lambda isn't run where it's quoted)
+                case IConversionOperation { Operand: IAnonymousFunctionOperation or IFlowAnonymousFunctionOperation, Type: INamedTypeSymbol { Name: "Expression", Arity: 1 } quoted }
+                    when quoted.ContainingNamespace?.ToDisplayString() == "System.Linq.Expressions":
+                case ITypeOfOperation:
+                    return LibraryObject();
                 case IConversionOperation: return ExprOfConversion(e);
                 case ILocalReferenceOperation: return ExprOfLocalReference(e);
                 case IParameterReferenceOperation: return ExprOfParameterReference(e);
@@ -1400,6 +1406,16 @@ AndAlso(Eq(Sel(r, new KVar(t)), Sel(r, instance)), Ne(Sel(r, new KVar(t)), new K
                 Emit(KCheck.Of(Ge(vs[1], KLit.Zero), "CSV1001", ns.Syntax, $"'{ns.Syntax}' might throw: its count might be negative"));
                 Emit(KAssume.Of(Eq(new KOp("slen", new KVar(t)), vs[1])));
             }
+            return new KVar(t);
+        }
+
+        /// <summary>An object of the library's the program makes and only hands on: some reference, not null.</summary>
+        private KExpr LibraryObject()
+        {
+            var t = "t$" + _temps++;
+            _p.AddLocal(KLocal.Of(t, "Ref"));
+            Emit(KHavoc.Of(t));
+            Emit(KAssume.Of(NotNull(new KVar(t))));
             return new KVar(t);
         }
 

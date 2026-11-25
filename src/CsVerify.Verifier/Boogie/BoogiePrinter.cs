@@ -1535,7 +1535,8 @@ namespace CsVerify.Verifier.Boogie
                 {
                     Line($"  free ensures {Local(x)} == null || $arr({Local(x)});");
                 }
-                if (IsData(x.Type) && x.Type.IsValueType)
+                // (a data value given back: one of its type's cases, a record's too, or null)
+                if (IsData(x.Type))
                 {
                     Line($"  free ensures {DataFacts(Local(x), x.Type, cx)};");
                 }

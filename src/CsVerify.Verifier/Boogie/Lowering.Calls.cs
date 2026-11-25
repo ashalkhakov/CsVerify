@@ -638,6 +638,9 @@ namespace CsVerify.Verifier.Boogie
                 // (a parameter not nullable: the caller proves its argument isn't null, CSV1014)
                 if (a.Parameter.RefKind == RefKind.None && IsNullable(a.Value.Type) && StaticChecks.IsNonNullable(a.Parameter))
                 {
+                    // (read once, as code reads it: what the argument itself dereferences is checked there, CSV1013,
+                    // not lost in this check's condition)
+                    av = RefOnce(av);
                     Emit(KCheck.Of(
                         NotNull(av),
                         "CSV1014",

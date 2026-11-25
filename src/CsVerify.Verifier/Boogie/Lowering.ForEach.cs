@@ -351,6 +351,12 @@ namespace CsVerify.Verifier.Boogie
             {
                 return CurrentOf(fe);
             }
+            // (a list's, through its enumerator: MoveNext, which has just returned true, took the element at its index
+            // from the list as it is now)
+            if (fe.View == null && IsList(fe.Collection))
+            {
+                return CurrentOf(fe);
+            }
             // (through the enumerator: what it gives isn't known; a dictionary's, a pair it has)
             if (!_p.Warnings.Any(w => w.Message.Contains("'Current'") && w.Span.Equals(fe.At.GetLocation().GetLineSpan())))
             {
