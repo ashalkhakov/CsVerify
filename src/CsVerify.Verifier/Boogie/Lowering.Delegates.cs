@@ -131,6 +131,11 @@ namespace CsVerify.Verifier.Boogie
                 At = call.Syntax,
                 DelegateAt = call.Instance.Syntax,
             });
+            // (what it gives isn't null where its type says so: each lambda and method made one is checked to, CSV1014)
+            if (result != null && NotNullable(call.TargetMethod.ReturnType))
+            {
+                Emit(KAssume.Of(NotNull(new KVar(result))));
+            }
             // (where exceptions are seen: it may throw, anything)
             if (throwsTo != null)
             {

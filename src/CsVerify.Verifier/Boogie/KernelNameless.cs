@@ -107,7 +107,7 @@ namespace CsVerify.Verifier.Boogie
 
         protected KExpr[] All(KExpr[] es) => es?.Select(Visit).ToArray();
 
-        private KExpr Rebuild(KExpr e) => e switch
+        protected virtual KExpr Rebuild(KExpr e) => e switch
         {
             KOp op => new KOp(op.Op, All(op.Args)),
             KFnApp f => f.WithArgs(All(f.Args), Visit(f.Snap)),

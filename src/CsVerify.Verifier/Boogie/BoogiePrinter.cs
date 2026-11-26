@@ -1224,6 +1224,7 @@ namespace CsVerify.Verifier.Boogie
                 }
                 Line($"var {m.Name}: {m.Type}{where};");
                 _stateMaps.Add((m.Name, m.Type));
+                _modelTypes[m.Name] = m.Type;
             }
             foreach (var k in pairs.Select(p => p.key).Distinct().OrderBy(x => x, System.StringComparer.Ordinal))
             {
@@ -1299,8 +1300,14 @@ namespace CsVerify.Verifier.Boogie
             }
         }
 
-        private static string FieldParams(IEnumerable<string> fields, IEnumerable<ISymbol> symbols) =>
-            string.Join("", fields.Select(x => $", h{x}: [Ref]{TypeOf(FieldType(symbols.First(s => FieldMap(s) == x)))}"));
+        private string FieldParams(IEnumerable<string> fields, IEnumerable<ISymbol> symbols) =>
+            string.Join("", fields.Select(x => $", h{x}: {MapType(x, symbols)}"));
+
+        /// <summary>A field's map's type, or a collection model's.</summary>
+        private string MapType(string map, IEnumerable<ISymbol> symbols) =>
+            _modelTypes.TryGetValue(map, out var model) ? model : "[Ref]" + TypeOf(FieldType(symbols.First(s => FieldMap(s) == map)));
+
+        private readonly Dictionary<string, string> _modelTypes = new Dictionary<string, string>();
 
         /// <summary>An array's elements, as an argument: a parameter's own, or read from the map.</summary>
         private string Elements(string map, MExpr array, Context cx) =>
@@ -1479,7 +1486,7 @@ namespace CsVerify.Verifier.Boogie
         private string FunctionApp(string pre, string name, List<string> fields, IMethodSymbol m) => $"{name}(ly, {string.Join(", ", ElementTypes.Select(t => pre + ElementMap(t)))}{string.Join("", fields.Select(x => ", " + pre + x))}{(m.IsStatic ? "" : ", this")}{string.Join("", m.Parameters.Select(x => ", " + Local(x)))})";
 
         private string MemoryParams(string pre, List<string> fields, IEnumerable<ISymbol> symbols) => string.Join(", ", ElementTypes.Select(t => $"{pre}{ElementMap(t)}: [Ref][int]{ElementValue(t)}"))
-                                + string.Join("", fields.Select(x => $", {pre}{x}: [Ref]{TypeOf(FieldType(symbols.First(f => FieldMap(f) == x)))}"));
+                                + string.Join("", fields.Select(x => $", {pre}{x}: {MapType(x, symbols)}"));
 
         private string FunctionAt(string layer, string name, string memoryArgs, string args) => $"{name}({layer}{Sep(memoryArgs)}{args})";
 

@@ -597,7 +597,9 @@ namespace CsVerify.Verifier.Boogie
         /// <summary>A Func or an Action of the subset's values: a reference, which Spec.Pre and Spec.Post speak of.</summary>
         public static bool IsFunc(ITypeSymbol t) =>
             t is INamedTypeSymbol { TypeKind: TypeKind.Delegate } d && d.ContainingNamespace?.ToDisplayString() == "System" && d.Name is "Func" or "Action" or "Predicate" or "Comparison" or "Converter" &&
-            d.DelegateInvokeMethod is IMethodSymbol inv && inv.Parameters.All(p => p.RefKind == RefKind.None && FuncValue(p.Type)) && (inv.ReturnsVoid || FuncValue(inv.ReturnType));
+            // (a data value of a generic record too: a reference, whatever its type arguments)
+            d.DelegateInvokeMethod is IMethodSymbol inv && inv.Parameters.All(p => p.RefKind == RefKind.None && (FuncValue(p.Type) || IsData(p.Type))) &&
+            (inv.ReturnsVoid || FuncValue(inv.ReturnType) || IsData(inv.ReturnType));
 
         // (a data value, a record's, is a reference as an object is)
         private static bool FuncValue(ITypeSymbol t) =>
@@ -726,7 +728,8 @@ namespace CsVerify.Verifier.Boogie
         /// bits' stand-in, which a field holds, a parameter takes, a call gives, and an EF concurrency token is compared by;
         /// its operators and members are the library's (not translated yet, but what calls give it, and a Guid's ==).
         /// </summary>
-        public static bool IsOpaqueValue(ITypeSymbol t) => t?.ToDisplayString() is "System.DateTime" or "System.TimeSpan" or "System.Threading.Tasks.ValueTask" or "System.Guid";
+        public static bool IsOpaqueValue(ITypeSymbol t) =>
+            t?.ToDisplayString() is "System.DateTime" or "System.TimeSpan" or "System.DateOnly" or "System.TimeOnly" or "System.Threading.Tasks.ValueTask" or "System.Guid";
 
         /// <summary>A Guid: an id, of which == is all there is (an int each, one per value).</summary>
         public static bool IsOpaqueId(ITypeSymbol t) => t?.ToDisplayString() == "System.Guid";
@@ -741,7 +744,7 @@ namespace CsVerify.Verifier.Boogie
             StructFields(n).All(f => Scalar(f.Type) || IsOpaqueTicks(f.Type) || IsOpaqueId(f.Type) || IsData(f.Type) && Data.HasValueEquality((INamedTypeSymbol)f.Type));
 
         /// <summary>A DateTime or a TimeSpan: the int the kernel keeps is its Ticks, which its ==, &lt; and the rest compare.</summary>
-        public static bool IsOpaqueTicks(ITypeSymbol t) => t?.ToDisplayString() is "System.DateTime" or "System.TimeSpan";
+        public static bool IsOpaqueTicks(ITypeSymbol t) => t?.ToDisplayString() is "System.DateTime" or "System.TimeSpan" or "System.DateOnly" or "System.TimeOnly";
 
         /// <summary>An EF context factory (IDbContextFactory&lt;C&gt;, of a context of the program's): a reference, whose CreateDbContext Lowering.EfTracker reads.</summary>
         public static bool IsEfFactory(ITypeSymbol t) =>
@@ -811,13 +814,20 @@ namespace CsVerify.Verifier.Boogie
         /// </summary>
         public static bool IsCollectionInterface(ITypeSymbol t) =>
             t is INamedTypeSymbol { TypeKind: TypeKind.Interface, Arity: 1 } n && n.ContainingNamespace?.ToDisplayString() == "System.Collections.Generic" &&
-            n.Name is "IList" or "IReadOnlyList" or "ICollection" or "IReadOnlyCollection" && (FuncValue(n.TypeArguments[0]) || IsData(n.TypeArguments[0]) || IsOpaqueElement(n.TypeArguments[0]));
+            n.Name is "IList" or "IReadOnlyList" or "ICollection" or "IReadOnlyCollection" &&
+            (FuncValue(n.TypeArguments[0]) || IsData(n.TypeArguments[0]) || IsOpaqueElement(n.TypeArguments[0]) || IsStruct(n.TypeArguments[0]));
 
         /// <summary>
         /// A Guid, a DateTime or a TimeSpan in a collection: the integer the kernel keeps for it (an id, its ticks), which
         /// the collection compares as it is. Its kind is Value: an integer of no C# integer type's range.
         /// </summary>
         public static bool IsOpaqueElement(ITypeSymbol t) => IsOpaqueId(t) || IsOpaqueTicks(t);
+
+        /// <summary>
+        /// A record struct a collection may compare (a dictionary's key, a set's member, a typed id): its synthesized
+        /// equality is its value's, and a struct's value is one reference, so the collection compares it as it is.
+        /// </summary>
+        public static bool IsComparedStruct(ITypeSymbol t) => IsStruct(t) && HasStructEquality(t);
 
         /// <summary>The program's own classes or structs that implement a collection interface: then a read through it is unknown at each read.</summary>
         public static bool ImplementedHere(INamedTypeSymbol ifc)
@@ -887,10 +897,10 @@ namespace CsVerify.Verifier.Boogie
         /// members of a set are compared as the verifier compares them: as values, by reference, strings by content.
         /// </summary>
         public static bool IsCollection(ITypeSymbol t) =>
-            CollectionKind(t) is string kind && ((INamedTypeSymbol)t).TypeArguments.Select((a, i) => FuncValue(a) || IsOpaqueElement(a) ||
+            CollectionKind(t) is string kind && ((INamedTypeSymbol)t).TypeArguments.Select((a, i) => FuncValue(a) || IsOpaqueElement(a) || IsComparedStruct(a) ||
                 // (a dictionary's values may be data, which it never compares; a list's elements too, where it doesn't
                 // compare them: Lowering refuses Contains, IndexOf and Remove of them)
-                kind == "Dictionary" && i == 1 && IsData(a) || kind == "List" && (IsData(a) || IsTuple(a))).All(x => x);
+                kind == "Dictionary" && i == 1 && (IsData(a) || IsStruct(a)) || kind == "List" && (IsData(a) || IsTuple(a) || IsStruct(a))).All(x => x);
 
         /// <summary>A collection's key (a dictionary's key, a set's member) as its models index it: a string marked as a key ($keyed), so that two of one content are one.</summary>
         public static KExpr Keyed(KExpr k, ITypeSymbol t) => IsString(t) ? new KOp("$keyed", k) : CustomEquality(t) ? new KOp("$eqc", k) : k;

@@ -17,8 +17,8 @@ public static class P
         return a[i];
     }
 
-    // a method of the program without postconditions: callers know only its type
-    private static int Next(int i) => i / 2;
+    // a method of the program without postconditions (a body of statements): callers know only its type
+    private static int Next(int i) { int half = i / 2; return half; }
     public static int Source(int[] a)
     {
         Spec.Requires(a.Length > 1);

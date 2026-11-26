@@ -592,7 +592,8 @@ EF concurrency token is compared by it. That int is its `Ticks` (0 to `DateTime.
 and `.Ticks` is it. `DateTime ± TimeSpan`, `DateTime - DateTime` and `TimeSpan ± TimeSpan` are the ticks' sum or
 difference: past `DateTime`'s range they throw an `ArgumentOutOfRangeException`, past `TimeSpan`'s an
 `OverflowException`. `MinValue`, `MaxValue` and `TimeSpan.Zero` are their ticks; their other operators and members are
-not translated (CSV1902). A `Guid` is an `int` too, of which `==` and `!=` are
+not translated (CSV1902). A `DateOnly` and a `TimeOnly` are kept so too (a day's number, a time's ticks, within
+`DateTime`'s range): held, handed on and compared, nothing more. A `Guid` is an `int` too, of which `==` and `!=` are
 all there is: `Guid.Empty` is 0, and `Guid.NewGuid()` gives one nothing is known of (0 too, maybe). `x.CompareTo(y)`
 of integers, decimals, `DateTime`s and `TimeSpan`s is the sign of `x - y`, and `char`'s ASCII tests
 (`char.IsAsciiDigit`, `IsAsciiLetter`, `IsAsciiLetterUpper`, ...) are ranges of the code.
@@ -715,13 +716,20 @@ override only of the program's members, an abstract member's contract from its c
   method of the program is: a call of it, its contract of the task's result, other code running meanwhile (what the
   method doesn't hold is forgotten, its confined objects kept);
 - a property with code (or an abstract or an interface one) is its accessors: a read calls its getter, a write its
-  setter; a `[Pure]` one is a function, and so is one whose getter is one expression with no effects (not virtual,
-  nor an override): fields and such properties read, operators, conditionals, patterns, `[Pure]` calls, throw
-  expressions (`PureGetters`). Such a getter can state no contract (a contract is a statement, and a struct's lambda
-  can't read `this`), so its expression is what is known of it, as of SPARK's expression functions: code that reads
-  `fee.IsZero` knows `fee.Amount == 0m`, and a specification may read it. What a throw is handed isn't its value: it
+  setter; a `[Pure]` one is a function;
+- **expression functions** (SPARK's): a getter, a method or an operator whose body is one expression with no effects
+  (not virtual, nor an override) is a function without saying so, `[Pure]` by its body (`ExpressionFunctions`). The
+  expression: fields and such members read, operators, conditionals, patterns, `[Pure]` calls, throw expressions.
+  Such a member can state no contract (a contract is a statement, and a struct's lambda can't read `this`), so its
+  expression is what is known of it: code that reads `fee.IsZero` knows `fee.Amount == 0m`, `a <= b` of
+  `operator <=(Weight l, Weight r) => l.CompareTo(r) <= 0` is what `CompareTo` says, and a specification may read
+  one or call it (CSV0013 doesn't ask it to say `[Pure]`). What a throw is handed isn't its value: it
   must write nothing, and may call a helper of the program that builds the exception and writes nothing either
-  (`Stored ?? throw Missing("phase")`). Any other computed property in a contract is CSV1902, saying so; an abstract or virtual `[Pure]` member is a function of its contract alone (an
+  (`Stored ?? throw Missing("phase")`). Left as code, known by its contract (none): one that reads itself; one whose
+  arithmetic throws where it overflows (a `checked` operation, an integer's `/` or `%` by what may be zero or -1,
+  `Math.Abs`), which in code ends the path; one that reads a collection through an interface (a value of the whole
+  state); one whose expression isn't a specification's. A computed property that is none of these, in a contract,
+  is CSV1902, saying so; an abstract or virtual `[Pure]` member is a function of its contract alone (an
   override may answer the call), of every field the program names, with no definition;
 - on `this`, a member whose override in this class (or a base) is sealed, or whose class is, is that override;
   a contract class's member is the member it specifies;
@@ -917,9 +925,14 @@ is an enumerator whose elements aren't known (see Iterators).
 are CsVerify.Bcl's models: maps as fields are, `$F.$M.Size: [Ref]int` (never negative), `$F.$M.Version: [Ref]int`, and
 per kind of value `$F.$M.Items.`*T*`: [Ref][int]`*T* (a list's, stack's or queue's), `$F.$M.Members.`*T*`: [Ref][T]bool`
 (a set's), `$F.$M.Domain.`*K*`: [Ref][K]bool` and `$F.$M.Entries.`*K*`.`*V*`: [Ref][K]V` (a dictionary's), an integer
-type's values in its range, so frames, modifies clauses and delegates' states take them in as they do fields. A
-`Guid`, a `DateTime` or a `TimeSpan` in a collection is the integer the kernel keeps for it (an id, its ticks), of
-kind `Value`, an `int` of no range: `$F.$M.Items.Value`, a dictionary's keys compared as the integers are. In
+type's values in its range, so frames, modifies clauses and delegates' states take them in as they do fields, and a
+function that may read a collection takes its models as it takes the fields it reads (`public int Count =>
+items.Count` is a function of `items` and of `$F.$M.Size`). A
+`Guid`, a `DateTime`, a `TimeSpan`, a `DateOnly` or a `TimeOnly` in a collection is the integer the kernel keeps for
+it (an id, its ticks, its day's number), of kind `Value`, an `int` of no range: `$F.$M.Items.Value`, a dictionary's
+keys compared as the integers are. A struct is an element as a data value is (a list's, a dictionary's value), and a
+record struct whose equality is its value's (a typed id, `ItemId(Guid Value)`) is a key or a set's member too: a
+struct's value is one reference, which the collection compares. In
 specifications the models read them, `Count` is `Size`, `l[i]` is `Items[l][i]` (well-defined where `0 <= i < Size`,
 CSV1012), `d[k]` is `Entries[d][k]` (where `Domain[d][k]`), `d.ContainsKey(k)` is `Domain[d][k]`, and `s.Contains(x)`
 is `Members[s][x]`. A `StringBuilder` is a collection of one model, its length (`Size`), and a `TextWriter` one of

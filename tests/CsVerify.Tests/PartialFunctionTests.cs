@@ -137,6 +137,65 @@ public static class Fees
         }
 
         [Fact]
+        public void AMethodOrOperatorOfOneExpression_IsKnown_WhereCodeCallsIt()
+        {
+            // (expression functions: such a member can state no contract, so its expression is what it is)
+            var r = Harness.Verify(@"public readonly record struct Weight(decimal Grams, string Unit) : IComparable<Weight>
+{
+    private static int _calls;
+    public static bool operator <(Weight left, Weight right) => left.CompareTo(right) < 0;
+    public static bool operator >(Weight left, Weight right) => left.CompareTo(right) > 0;
+    public static bool operator <=(Weight left, Weight right) => left.CompareTo(right) <= 0;
+    public static bool operator >=(Weight left, Weight right) => left.CompareTo(right) >= 0;
+    public int CompareTo(Weight other) => Grams.CompareTo(other.SameUnitAs(this).Grams);
+    private Weight SameUnitAs(Weight other) => Unit == other.Unit ? this : throw new InvalidOperationException($""Cannot combine {Unit} with {other.Unit}."");
+    public static bool Counted(Weight w) => _calls++ > 0;
+}
+public static class Scale
+{
+    public static int Clamp(int x) => x < 0 ? 0 : x;
+    public static int Clamped(int x) { Spec.Ensures<int>(r => r >= 0 && (x < 0 || r == x) && r == Clamp(x)); return Clamp(x); }
+    public static bool Lighter(Weight a, Weight b) { Spec.Ensures<bool>(r => r == (a.Grams <= b.Grams)); return a <= b; }
+    public static Weight Heavier(Weight a, Weight b) { Spec.Ensures<Weight>(r => r.Grams >= a.Grams && r.Grams >= b.Grams); return a >= b ? a : b; }
+    public static bool Wrong(Weight a, Weight b) { Spec.Ensures<bool>(r => r == (a.Grams < b.Grams)); return a <= b; }
+    public static bool Twice(Weight w) { Spec.Ensures<bool>(r => r); return Weight.Counted(w) == Weight.Counted(w); }
+}");
+            foreach (var ok in new[] { "Clamped", "Lighter", "Heavier", "CompareTo", "SameUnitAs" })
+            {
+                Assert.True(r.Errors(ok).Length == 0, r.Explain(ok));
+            }
+            Assert.Equal(new[] { "CSV1002" }, r.Errors("Wrong"));
+            // (one that writes a field is code: two calls of it are two results)
+            Assert.Equal(new[] { "CSV1002" }, r.Errors("Twice"));
+        }
+
+        [Fact]
+        public void AFunctionThatReadsACollection_TakesItsModel()
+        {
+            // (a list's Count is memory the function reads, as a field is; a [Pure] such member made the program ill-typed)
+            var r = Harness.Verify(@"using System.Collections.Generic;
+public sealed class Shelf
+{
+    private readonly List<int> items = new();
+    private static readonly List<string> names = new();
+    public int Count => items.Count;
+    public bool IsEmpty => Count == 0;
+    [Pure] public int Size() { return items.Count; }
+    public static int Names() => names.Count;
+    public void Add(int x) { Spec.Requires(items.Count < 100); Spec.Ensures(Count == Spec.Old(Count) + 1 && !IsEmpty && Size() == Count); items.Add(x); }
+    public bool Same() { Spec.Ensures<bool>(r => r); int a = Count; int b = Count; return a == b; }
+    public bool Wrong() { Spec.Ensures<bool>(r => r); int a = Count; items.Add(1); return a == Count; }
+    public static bool WrongNames() { Spec.Ensures<bool>(r => r); int a = Names(); names.Add(""x""); return a == Names(); }
+}");
+            foreach (var ok in new[] { "Add", "Same", "get_Count", "get_IsEmpty", "Size", "Names" })
+            {
+                Assert.True(r.Errors(ok).Length == 0, r.Explain(ok));
+            }
+            Assert.Equal(new[] { "CSV1002" }, r.Errors("Wrong"));
+            Assert.Equal(new[] { "CSV1002" }, r.Errors("WrongNames"));
+        }
+
+        [Fact]
         public void AThrowOfAHelpersException_IsAThrow()
         {
             // (#136, N: what a throw is handed isn't the function's value; a helper that builds it writes nothing)
@@ -235,6 +294,9 @@ public static class Sorting
         {
             Assert.Empty(Harness.Analyze("static class C { [Pure] static int M(int x) { if (x < 0) { throw new ArgumentException($\"negative: {x}\"); } return x; } }"));
             Assert.Equal(new[] { "CSV0013" }, Harness.Analyze("static class C { [Pure] static int[] M(int x) { return new int[1]; } }"));
+            // (a specification may call a method of one expression with no effects; not one that writes)
+            Assert.Empty(Harness.Analyze("static class C { static int F(int x) => x < 0 ? 0 : x; static int G(int x) { Spec.Ensures<int>(r => r == F(x)); return F(x); } }"));
+            Assert.Equal(new[] { "CSV0013" }, Harness.Analyze("static class C { static int n; static int F(int x) => n++; static int G(int x) { Spec.Ensures<int>(r => r == F(x)); return 0; } }"));
         }
     }
 }

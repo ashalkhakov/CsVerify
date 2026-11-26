@@ -1210,7 +1210,7 @@ namespace CsVerify.Verifier.Boogie
                 // (the throw the compiler adds to a switch expression, for a value no arm matches: the switch must cover
                 // every value it gets, a failure the program didn't write)
                 if (fall.Semantics == ControlFlowBranchSemantics.Throw && b.BranchValue?.Syntax is Microsoft.CodeAnalysis.CSharp.Syntax.SwitchExpressionSyntax missed &&
-                    !InSpec(missed) && !(_p.Ghost || _contract.IsPure || _contract.IsLemma))
+                    !InSpec(missed) && !(_p.Ghost || _contract.IsPure && !_contract.InferredPure || _contract.IsLemma))
                 {
                     Emit(KCheck.Of(
                         KLit.False,

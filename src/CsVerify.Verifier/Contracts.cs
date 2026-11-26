@@ -73,7 +73,7 @@ namespace CsVerify.Verifier
         /// </summary>
         public bool OfDelegate;
         public bool IsTrusted, IsLemma, IsPure;
-        /// <summary>IsPure, of a getter nothing says is [Pure]: a specification reads it, and its body is an expression with no effects (PureGetters).</summary>
+        /// <summary>IsPure, of a member nothing says is [Pure]: its body is an expression with no effects (ExpressionFunctions).</summary>
         public bool InferredPure;
         /// <summary>
         /// For an external member with a [ContractsFor] stub: the stub method, whose contract this is (trusted: assumed
@@ -182,8 +182,8 @@ namespace CsVerify.Verifier
                 IsLemma = SpecSymbols.IsLemma(method),
                 IsPure = SpecSymbols.IsPure(method),
             };
-            // (or a getter a specification reads, an expression with no effects: PureGetters)
-            if (!c.IsPure && !isStub && PureGetters.Inferred(method, compilation))
+            // (or a member whose body is an expression with no effects: ExpressionFunctions)
+            if (!c.IsPure && !isStub && ExpressionFunctions.Inferred(method, compilation))
             {
                 c.IsPure = c.InferredPure = true;
             }

@@ -145,7 +145,7 @@ public static class Dispatch
         [Fact]
         public void ADecisionsPureCases_AreSeenByItsCallers()
         {
-            // (a call knows a [Pure] member's body, and only the postconditions of any other)
+            // (a call knows a member's body where it is one expression with no effects, [Pure] or not)
             const string Source = @"using System.Collections.Generic;
 public sealed record Shipped(int Qty);
 public enum Why { NoStock }
@@ -165,12 +165,17 @@ public static class Dispatch
         return qty > 0 ? Verdict<Shipped, Why>.Grant(new Shipped(qty)) : Verdict<Shipped, Why>.Refuse(Why.NoStock);
     }
 }";
-            var pure = Harness.Verify(Source.Replace("PURE", "[Pure]"));
-            foreach (var ok in new[] { "Grant", "Refuse", "Ship" })
+            foreach (var pure in new[] { Harness.Verify(Source.Replace("PURE", "[Pure]")), Harness.Verify(Source.Replace("PURE", "")) })
             {
-                Assert.True(pure.Errors(ok).Length == 0, pure.Explain(ok));
+                foreach (var ok in new[] { "Grant", "Refuse", "Ship" })
+                {
+                    Assert.True(pure.Errors(ok).Length == 0, pure.Explain(ok));
+                }
             }
-            Assert.Equal(new[] { "CSV1002" }, Harness.Verify(Source.Replace("PURE", "")).Errors("Ship"));
+            // (a body of statements, with no contract: only its type)
+            var opaque = Source.Replace("PURE public static Verdict<TChange, TWhy> Refuse(TWhy why) => new Refused(why);",
+                "public static Verdict<TChange, TWhy> Refuse(TWhy why) { var refused = new Refused(why); return refused; }").Replace("PURE", "");
+            Assert.Equal(new[] { "CSV1002" }, Harness.Verify(opaque).Errors("Ship"));
         }
 
         [Fact]
@@ -308,6 +313,69 @@ public static class Ids
             }
             Assert.Equal(new[] { "CSV1002" }, r.Errors("Wrong"));
             Assert.Equal(new[] { "CSV1002" }, r.Errors("WrongStock"));
+        }
+
+        [Fact]
+        public void ACollectionOfRecordStructs_AndADateOnly()
+        {
+            // (#136, P' and S: a typed id is a value a collection may hold and compare; a DateOnly is its day's number)
+            var r = Harness.Verify(@"using System.Collections.Generic; using System.Linq;
+public readonly record struct ItemId(Guid Value);
+public readonly record struct Named(string Name, int No);
+public sealed record Part(ItemId Item, decimal Amount);
+public sealed record Slot(Guid Id, DateOnly Day);
+public sealed class Order
+{
+    private readonly List<Part> parts = new();
+    public Guid Id { get; private set; }
+    internal DateOnly Day { get; private set; }
+    public IReadOnlyList<ItemId> Items => parts.Select(p => p.Item).ToList();
+    public Slot Current => new(Id, Day);
+    public int Size() { Spec.Ensures<int>(r => r >= 0); return Items.Count; }
+    public bool Later(Order other) { Spec.Ensures<bool>(r => r == (Day > other.Day)); return Day > other.Day; }
+}
+public static class Keys
+{
+    public static int Stock(Dictionary<ItemId, int> stock, ItemId item) { Spec.Requires(stock.ContainsKey(item) && stock[item] == 3); Spec.Ensures<int>(r => r == 3); return stock[item]; }
+    public static bool Seen(HashSet<ItemId> seen, ItemId id) { Spec.Ensures<bool>(r => !r && seen.Contains(id)); return seen.Add(id) && !seen.Contains(id); }
+    public static bool Has(List<ItemId> ids, ItemId id) { Spec.Ensures<bool>(r => r == ids.Contains(id)); return ids.Contains(id); }
+    public static ItemId First(IReadOnlyList<ItemId> ids) { Spec.Requires(ids.Count > 0); Spec.Ensures<ItemId>(r => r == ids[0]); return ids[0]; }
+    public static IReadOnlyList<ItemId> Of(List<Part> parts) { Spec.Ensures<IReadOnlyList<ItemId>>(r => r.Count == parts.Count); return parts.Select(p => p.Item).ToList(); }
+    public static int Names(List<Named> names) { Spec.Ensures<int>(r => r == names.Count); return names.Count; }
+    public static bool HasName(List<Named> names, Named n) { return names.Contains(n); }
+    public static int ByName(Dictionary<Named, int> d) { return d.Count; }
+    public static bool WrongStock(Dictionary<ItemId, int> stock, ItemId a, ItemId b) { Spec.Requires(stock.ContainsKey(a)); Spec.Ensures<bool>(r => r); return stock.ContainsKey(b); }
+}");
+            foreach (var ok in new[] { "get_Items", "get_Current", "Size", "Later", "Stock", "Seen", "Has", "First", "Of", "Names" })
+            {
+                Assert.True(r.Errors(ok).Length == 0, r.Explain(ok));
+            }
+            Assert.Equal(new[] { "CSV1002" }, r.Errors("WrongStock"));
+            // (a struct with a string compares it by its characters, which a collection's model doesn't: no key, and no Contains)
+            Assert.Equal(new[] { "CSV1902" }, r.Errors("HasName"));
+            Assert.Equal(new[] { "CSV1902" }, r.Errors("ByName"));
+        }
+
+        [Fact]
+        public void AFuncsResult_IsNotNull_WhereItsTypeSaysSo()
+        {
+            // (#136, Q: each lambda made one is checked to return what its type says; and a Func may give a generic record)
+            var r = Harness.Verify(@"public sealed record Outcome(int Code);
+public abstract record Verdict<T> { private Verdict() { } public sealed record Yes(T Value) : Verdict<T>; public sealed record No : Verdict<T>; }
+public static class Runs
+{
+    public static Outcome When(bool open, Func<Outcome> then) { Spec.Requires(Spec.Pre(then)); Spec.Ensures<Outcome>(r => open || r.Code == 0); return open ? then() : new Outcome(0); }
+    public static Outcome Maybe(Func<Outcome?> then) { Spec.Requires(Spec.Pre(then)); return then(); }
+    public static Outcome Use() { return When(true, () => new Outcome(1)); }
+    public static Outcome Bad() { return When(true, () => null!); }
+    public static int Code(Func<Verdict<int>> then) { Spec.Requires(Spec.Pre(then)); Spec.Ensures<int>(r => r >= 0); return then() is Verdict<int>.Yes y && y.Value > 0 ? y.Value : 0; }
+}");
+            foreach (var ok in new[] { "Runs.When", "Runs.Use", "Runs.Bad", "Runs.Code" })
+            {
+                Assert.True(r.Errors(ok).Length == 0, r.Explain(ok));
+            }
+            Assert.Equal(new[] { "CSV1014" }, r.Errors("Maybe"));
+            Assert.Contains(r.Methods, m => m.Name.Contains("Bad.<lambda") && m.Diagnostics.Any(d => d.Id == "CSV1014"));
         }
 
         [Fact]

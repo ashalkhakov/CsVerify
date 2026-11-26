@@ -1371,8 +1371,10 @@ namespace CsVerify.Verifier.Boogie
                     }
                     throw new NotTranslated("a call of List's " + callee.Name + ", which has no stub contract");
                 }
-                // (a list of data values: its stubs compare elements as references, which data values aren't)
-                if (((INamedTypeSymbol)callee.ContainingType).TypeArguments.Any(IsData) && callee.Name is "Contains" or "IndexOf" or "LastIndexOf" or "Remove" or "BinarySearch")
+                // (a list of data values: its stubs compare elements as references, which data values aren't; nor are
+                // structs, but those whose equality is their value's, a typed id)
+                if (((INamedTypeSymbol)callee.ContainingType).TypeArguments.Any(a => IsData(a) || IsStruct(a) && !IsComparedStruct(a)) &&
+                    callee.Name is "Contains" or "IndexOf" or "LastIndexOf" or "Remove" or "BinarySearch")
                 {
                     throw new NotTranslated("a list of data values' " + callee.Name);
                 }

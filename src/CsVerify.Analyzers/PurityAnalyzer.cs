@@ -116,8 +116,9 @@ namespace CsVerify.Analyzers
             {
                 return;
             }
+            // (or a method of one expression with no effects: a function without saying so)
             if (!SpecSymbols.IsPureCallee(op.TargetMethod) && SpecSymbols.GenericLaw(op, out _) == null && !ContractStubs.For(op.SemanticModel.Compilation).IsPureMember(op.TargetMethod) &&
-                !EntryRead(op.TargetMethod))
+                !EntryRead(op.TargetMethod) && !ExpressionFunctions.Inferred(op.TargetMethod, op.SemanticModel.Compilation))
             {
                 Report(context, op, $"call to '{op.TargetMethod.Name}', which is not a lemma or [Pure]");
             }

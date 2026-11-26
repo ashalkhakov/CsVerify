@@ -128,9 +128,19 @@ namespace CsVerify.Verifier.Boogie
                 return false;
             }
             return body.SelectMany(b => b.DescendantsAndSelf()).Any(o => o is IThrowOperation ||
-                o is IInvocationOperation i && i.TargetMethod.DeclaringSyntaxReferences.Length > 0 && Partial(i.TargetMethod, seen) ||
-                o is IPropertyReferenceOperation { Property.GetMethod: IMethodSymbol g } && g.DeclaringSyntaxReferences.Length > 0 && Partial(g, seen));
+                Called(o) is IMethodSymbol read && read.DeclaringSyntaxReferences.Length > 0 && Partial(read, seen));
         }
+
+        /// <summary>The member an operation reads: a method called, a property's getter, a user-defined operator.</summary>
+        private static IMethodSymbol Called(IOperation o) => o switch
+        {
+            IInvocationOperation i => i.TargetMethod,
+            IPropertyReferenceOperation p => p.Property.GetMethod,
+            IBinaryOperation b => b.OperatorMethod,
+            IUnaryOperation u => u.OperatorMethod,
+            IConversionOperation c => c.OperatorMethod,
+            _ => null,
+        };
 
         /// <summary>A throw where a value is expected: a value defined nowhere, so that what guards it bounds where a specification, or the function it is the body of, is defined.</summary>
         private static KExpr Thrown(ITypeSymbol type, SyntaxNode at) => new KCast

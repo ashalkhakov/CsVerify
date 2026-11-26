@@ -313,8 +313,11 @@ namespace CsVerify.Verifier.Boogie
                     // (and the getters of the properties it reads)
                     .Concat(decl.DescendantNodes().OfType<SimpleNameSyntax>().Select(n => (model.GetSymbolInfo(n).Symbol as IPropertySymbol)?.GetMethod?.OriginalDefinition))
                     .Where(x => x != null && _procedures.Contains(x)), SymbolEqualityComparer.Default);
-                _fieldsRead[m.OriginalDefinition] = new HashSet<ISymbol>(decl.DescendantNodes().OfType<SimpleNameSyntax>()
-                    .Select(n => model.GetSymbolInfo(n).Symbol).Where(IsField).Select(x => x.OriginalDefinition), SymbolEqualityComparer.Default);
+                var named = decl.DescendantNodes().OfType<SimpleNameSyntax>().Select(n => model.GetSymbolInfo(n).Symbol).Where(x => x != null).ToList();
+                _fieldsRead[m.OriginalDefinition] = new HashSet<ISymbol>(named.Where(IsField).Select(x => x.OriginalDefinition), SymbolEqualityComparer.Default);
+                // (the collections it names, by their types: their models are memory a function of it reads, as fields are)
+                _modelsRead[m.OriginalDefinition] = named.Select(TypeNamed).Concat(m.Parameters.Select(x => x.Type)).Append(m.ContainingType)
+                    .SelectMany(ModelsNamed).GroupBy(x => x.Name).Select(g => g.First()).ToList();
             }
             foreach (var m in calls.Keys)
             {
@@ -337,8 +340,8 @@ namespace CsVerify.Verifier.Boogie
                 }
                 _reaches[m] = seen;
             }
-            // (a getter taken as [Pure] because a specification reads it (PureGetters) is a function only where its
-            // expression is a specification's; one that isn't stays code, as it was. Until none changes: one may read another)
+            // (a member taken as [Pure] for its body (ExpressionFunctions) is a function only where its expression is a
+            // specification's; one that isn't stays code, as it was. Until none changes: one may read another)
             for (bool changed = true; changed;)
             {
                 changed = false;
@@ -349,7 +352,11 @@ namespace CsVerify.Verifier.Boogie
                         bool defined;
                         try
                         {
-                            defined = Lowering.Signature(m, c, IsFunction, Literal, ContractOf).FunctionBody != null;
+                            var body = Lowering.Signature(m, c, IsFunction, Literal, ContractOf).FunctionBody;
+                            var reads = new FunctionsCalled();
+                            reads.Visit(body);
+                            // (nor one that reads a collection through an interface: a value of the whole state)
+                            defined = body != null && !reads.WholeState;
                         }
                         catch (NotTranslated)
                         {
@@ -386,6 +393,41 @@ namespace CsVerify.Verifier.Boogie
         /// <summary>The fields each procedure's declaration names.</summary>
         private readonly Dictionary<IMethodSymbol, HashSet<ISymbol>> _fieldsRead = new Dictionary<IMethodSymbol, HashSet<ISymbol>>(SymbolEqualityComparer.Default);
 
+        /// <summary>The collection models each procedure's declaration may read: those of the collection types it names.</summary>
+        private readonly Dictionary<IMethodSymbol, List<ModelMap>> _modelsRead = new Dictionary<IMethodSymbol, List<ModelMap>>(SymbolEqualityComparer.Default);
+
+        /// <summary>The models some function takes: declared, though no code may read them.</summary>
+        private readonly Dictionary<string, ModelMap> _functionModels = new Dictionary<string, ModelMap>();
+
+        private static ITypeSymbol TypeNamed(ISymbol s) => s switch
+        {
+            ILocalSymbol l => l.Type,
+            IParameterSymbol p => p.Type,
+            IFieldSymbol f => f.Type,
+            IPropertySymbol p => p.Type,
+            IMethodSymbol m => m.MethodKind == MethodKind.Constructor ? m.ContainingType : m.ReturnType,
+            _ => null,
+        };
+
+        /// <summary>A collection's models, or (a list interface's) those of the list it may be.</summary>
+        private static IEnumerable<ModelMap> ModelsNamed(ITypeSymbol t) =>
+            t is INamedTypeSymbol c && IsCollection(c) ? KernelTypes.ModelsOf(c)
+            : t is INamedTypeSymbol i && IsCollectionInterface(i) ? KernelTypes.ModelsOf(KernelTypes.Compilation.GetTypeByMetadataName("System.Collections.Generic.List`1").Construct(i.TypeArguments[0]))
+            : Enumerable.Empty<ModelMap>();
+
+        /// <summary>The models a function may read: those it, or what it calls, may (every one, of one an override may answer).</summary>
+        private IEnumerable<string> ModelsRead(IMethodSymbol m)
+        {
+            m = m.OriginalDefinition;
+            var of = Engine.IsOverridable(m) ? _modelsRead.Values.SelectMany(x => x)
+                : new[] { m }.Concat(_reaches.TryGetValue(m, out var r) ? r : Enumerable.Empty<IMethodSymbol>()).SelectMany(x => _modelsRead.TryGetValue(x, out var ms) ? ms : Enumerable.Empty<ModelMap>());
+            foreach (var model in of.Where(x => x != null))
+            {
+                _functionModels[model.Name] = model;
+                yield return model.Name;
+            }
+        }
+
         /// <summary>The fields a function may read: those it, or what it calls, names.</summary>
         private HashSet<ISymbol> FieldsOf(IMethodSymbol m)
         {
@@ -410,7 +452,90 @@ namespace CsVerify.Verifier.Boogie
             return all;
         }
 
-        public List<string> FunctionFields(IMethodSymbol m) => FieldsOf(m).Select(FieldMap).Distinct().OrderBy(x => x, StringComparer.Ordinal).ToList();
+        public List<string> FunctionFields(IMethodSymbol m)
+        {
+            if (_memory == null)
+            {
+                Memory();
+            }
+            return (_memory.TryGetValue(m.OriginalDefinition, out var all) ? all : FieldsOf(m).Select(FieldMap).Concat(ModelsRead(m)).Distinct())
+                .OrderBy(x => x, StringComparer.Ordinal).ToList();
+        }
+
+        /// <summary>The functions an expression calls.</summary>
+        private sealed class FunctionsCalled : KRewriter
+        {
+            public readonly List<IMethodSymbol> Found = new List<IMethodSymbol>();
+            /// <summary>It reads a collection through an interface: a value of the whole state, which no function takes.</summary>
+            public bool WholeState;
+
+            protected override KExpr Rebuild(KExpr e)
+            {
+                if (e is KFnCall { Callee: { } callee })
+                {
+                    Found.Add(callee.OriginalDefinition);
+                }
+                WholeState |= e is KIfc || e is KOp { Op: "$state" };
+                return base.Rebuild(e);
+            }
+        }
+
+        /// <summary>Each function's memory: the maps of the fields and collection models it may read.</summary>
+        private Dictionary<IMethodSymbol, HashSet<string>> _memory;
+
+        /// <summary>
+        /// The functions' memory. What a function's declaration names, and what its contract and its definition read as
+        /// lowered (a record's == reads its fields, a list's Count its model, naming neither), and what the functions
+        /// they read take, in turn.
+        /// </summary>
+        private void Memory()
+        {
+            _memory = new Dictionary<IMethodSymbol, HashSet<string>>(SymbolEqualityComparer.Default);
+            var reads = new Dictionary<IMethodSymbol, List<IMethodSymbol>>(SymbolEqualityComparer.Default);
+            foreach (var m in _procedures.Where(IsFunction).ToList())
+            {
+                var all = new HashSet<string>(FieldsOf(m).Select(FieldMap).Concat(ModelsRead(m)));
+                var callees = new List<IMethodSymbol>();
+                KProcedure sig = null;
+                try
+                {
+                    sig = ((IProgramFacts)this).Signature(m);
+                }
+                catch (NotTranslated)
+                {
+                }
+                if (sig != null)
+                {
+                    all.UnionWith(sig.Fields.Where(IsField).Select(FieldMap));
+                    foreach (var model in sig.Models.Values)
+                    {
+                        _functionModels[model.Name] = model;
+                        all.Add(model.Name);
+                    }
+                    var called = new FunctionsCalled();
+                    foreach (var e in new[] { sig.FunctionBody, sig.ReadsFrame }.Concat(sig.Requires.Select(r => r.Expr)).Concat(sig.Ensures.Select(x => x.Expr)).Where(e => e != null))
+                    {
+                        called.Visit(e);
+                    }
+                    callees.AddRange(called.Found);
+                }
+                _memory[m] = all;
+                reads[m] = callees.Distinct<IMethodSymbol>(SymbolEqualityComparer.Default).ToList();
+            }
+            for (bool grew = true; grew;)
+            {
+                grew = false;
+                foreach (var (m, callees) in reads)
+                {
+                    int before = _memory[m].Count;
+                    foreach (var c in callees.Where(_memory.ContainsKey))
+                    {
+                        _memory[m].UnionWith(_memory[c]);
+                    }
+                    grew |= _memory[m].Count != before;
+                }
+            }
+        }
 
         public IEnumerable<ISymbol> FunctionFieldSymbols(IMethodSymbol m) => FieldsOf(m);
 
@@ -586,7 +711,7 @@ namespace CsVerify.Verifier.Boogie
         /// <summary>Writes the functions and the procedures: each modifies what it writes, and what what it calls does.</summary>
         public void Finish()
         {
-            var fields = new HashSet<ISymbol>(_pending.SelectMany(p => p.Source.Fields), SymbolEqualityComparer.Default);
+            var fields = new HashSet<ISymbol>(_pending.SelectMany(p => p.Source.Fields).Concat(_signatures.Values.SelectMany(g => g.Fields.Where(IsField))), SymbolEqualityComparer.Default);
             foreach (var p in _pending.Where(p => IsFunction(p.Source.Method)))
             {
                 fields.UnionWith(FieldsOf(p.Source.Method));
@@ -646,7 +771,11 @@ namespace CsVerify.Verifier.Boogie
             OwnArrays();
             DataTypes();
             // (the lists' models: maps as fields are)
-            var models = _pending.SelectMany(p => p.Source.Models.Values).Concat(_signatures.Values.SelectMany(s => s.Models.Values))
+            foreach (var p in _pending.Where(p => IsFunction(p.Source.Method)))
+            {
+                FunctionFields(p.Source.Method);
+            }
+            var models = _pending.SelectMany(p => p.Source.Models.Values).Concat(_signatures.Values.SelectMany(s => s.Models.Values)).Concat(_functionModels.Values)
                 .GroupBy(m => m.Name).Select(g => g.First()).OrderBy(m => m.Name, StringComparer.Ordinal).ToList();
             _printer.Models(models, _pending.SelectMany(p => p.Source.Pairs).Concat(_signatures.Values.SelectMany(s => s.Pairs)).Distinct().ToList());
             _printer.Declarations(_pending.SelectMany(p => p.Source.Functions).Concat(_signatures.Values.SelectMany(s => s.Functions)).Distinct().OrderBy(x => x, StringComparer.Ordinal));
