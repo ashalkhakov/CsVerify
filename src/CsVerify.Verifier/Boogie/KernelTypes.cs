@@ -814,7 +814,7 @@ namespace CsVerify.Verifier.Boogie
         /// </summary>
         public static bool IsCollectionInterface(ITypeSymbol t) =>
             t is INamedTypeSymbol { TypeKind: TypeKind.Interface, Arity: 1 } n && n.ContainingNamespace?.ToDisplayString() == "System.Collections.Generic" &&
-            n.Name is "IList" or "IReadOnlyList" or "ICollection" or "IReadOnlyCollection" &&
+            n.Name is "IList" or "IReadOnlyList" or "ICollection" or "IReadOnlyCollection" or "IReadOnlySet" or "ISet" &&
             (FuncValue(n.TypeArguments[0]) || IsData(n.TypeArguments[0]) || IsOpaqueElement(n.TypeArguments[0]) || IsStruct(n.TypeArguments[0]));
 
         /// <summary>
@@ -828,6 +828,10 @@ namespace CsVerify.Verifier.Boogie
         /// equality is its value's, and a struct's value is one reference, so the collection compares it as it is.
         /// </summary>
         public static bool IsComparedStruct(ITypeSymbol t) => IsStruct(t) && HasStructEquality(t);
+
+        /// <summary>A set through its interface (IReadOnlySet&lt;T&gt;, ISet&lt;T&gt;): a HashSet's model where it is one, else the state's.</summary>
+        public static bool IsSetInterface(ITypeSymbol t) =>
+            t is INamedTypeSymbol { TypeKind: TypeKind.Interface, Arity: 1, Name: "IReadOnlySet" or "ISet" } n && n.ContainingNamespace?.ToDisplayString() == "System.Collections.Generic";
 
         /// <summary>The program's own classes or structs that implement a collection interface: then a read through it is unknown at each read.</summary>
         public static bool ImplementedHere(INamedTypeSymbol ifc)
@@ -1171,7 +1175,7 @@ namespace CsVerify.Verifier.Boogie
 
         /// <summary>One of CsVerify's attributes on the class but [Owned], [RunsConcurrently] and the lock order's.</summary>
         private static bool HasSpecAttributes(INamedTypeSymbol n) =>
-            n.GetAttributes().Any(a => a.AttributeClass?.ContainingNamespace?.ToDisplayString() == SpecSymbols.Namespace && a.AttributeClass.Name is not ("OwnedAttribute" or "RunsConcurrentlyAttribute" or "LockLevelAttribute" or "TakesNoLocksAttribute"));
+            n.GetAttributes().Any(a => a.AttributeClass?.ContainingNamespace?.ToDisplayString() == SpecSymbols.Namespace && a.AttributeClass.Name is not ("OwnedAttribute" or "RunsConcurrentlyAttribute" or "LockLevelAttribute" or "TakesNoLocksAttribute" or "SensitiveAttribute"));
 
         /// <summary>
         /// A member a class of the subset may have: no virtual one but overrides a call can see; a field with none of
@@ -1179,8 +1183,12 @@ namespace CsVerify.Verifier.Boogie
         /// </summary>
         private static bool MemberOfTheSubset(INamedTypeSymbol n, ISymbol m) =>
             (m is IMethodSymbol mm ? MethodOfTheSubset(n, mm) : m is IPropertySymbol pp ? !pp.IsOverride || pp.OverriddenProperty?.DeclaringSyntaxReferences.Length > 0 : !m.IsVirtual && !m.IsAbstract && !m.IsOverride) &&
-            !(m is IFieldSymbol && CsVerifyAttributes(m) && !OnlyGuardedBy(m)) &&
-            !(m is IPropertySymbol && m.GetAttributes().Any(a => a.AttributeClass?.ContainingNamespace?.ToDisplayString() == SpecSymbols.Namespace && a.AttributeClass.Name is not ("PureAttribute" or "GuardedByAttribute" or "RunsConcurrentlyAttribute")));
+            // ([Sensitive] is the taint analysis's to follow: no state of the kernel's)
+            !(m is IFieldSymbol && CsVerifyAttributes(m) && !OnlyGuardedBy(m) && !OnlySensitive(m)) &&
+            !(m is IPropertySymbol && m.GetAttributes().Any(a => a.AttributeClass?.ContainingNamespace?.ToDisplayString() == SpecSymbols.Namespace && a.AttributeClass.Name is not ("PureAttribute" or "GuardedByAttribute" or "RunsConcurrentlyAttribute" or "SensitiveAttribute")));
+
+        private static bool OnlySensitive(ISymbol s) =>
+            s.GetAttributes().Where(a => a.AttributeClass?.ContainingNamespace?.ToDisplayString() == SpecSymbols.Namespace).All(a => a.AttributeClass.Name == "SensitiveAttribute");
 
         /// <summary>
         /// A method of a class of the subset: not an override, or one of a member of the program's (whose contract it

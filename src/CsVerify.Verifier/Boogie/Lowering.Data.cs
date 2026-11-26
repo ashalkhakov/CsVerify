@@ -320,6 +320,9 @@ namespace CsVerify.Verifier.Boogie
                     return FloatLiteral(fcv.Value, ff.Type);
                 case IFieldReferenceOperation tc when TimeConstant(tc) is KExpr ticks:
                     return ticks;
+                // (string.Empty: the empty string)
+                case IFieldReferenceOperation { Instance: null, Field: { Name: "Empty", ContainingType.SpecialType: SpecialType.System_String } }:
+                    return new KVar(_literal?.Invoke("") ?? throw new NotTranslated("a string literal"));
                 // (Guid.Empty: the id 0; a new Guid's isn't known, so it may be it)
                 case IFieldReferenceOperation { Instance: null, Field.Name: "Empty" } ge when IsOpaqueId(ge.Field.ContainingType):
                     return KLit.Zero;
@@ -573,6 +576,27 @@ namespace CsVerify.Verifier.Boogie
                 case IBinaryOperation vo when vo.OperatorMethod != null && vo.OperatorMethod.IsImplicitlyDeclared && vo.OperatorKind is BinaryOperatorKind.Equals or BinaryOperatorKind.NotEquals &&
                                               IsValueObject(vo.OperatorMethod.ContainingType) && !OwnEquals(vo.OperatorMethod.ContainingType):
                     return ValueObjectEquality(vo, mode);
+                // (where its own Equals decides: the same object, or the left one's Equals of the right, a function)
+                case IBinaryOperation ve when ve.OperatorMethod != null && ve.OperatorMethod.IsImplicitlyDeclared && ve.OperatorKind is BinaryOperatorKind.Equals or BinaryOperatorKind.NotEquals &&
+                                              IsValueObject(ve.OperatorMethod.ContainingType) && OwnEquals(ve.OperatorMethod.ContainingType):
+                {
+                    var type = ve.OperatorMethod.ContainingType;
+                    var own = type.GetMembers("Equals").OfType<IMethodSymbol>().First(m => !m.IsImplicitlyDeclared && m.Parameters.Length == 1 &&
+                        SymbolEqualityComparer.Default.Equals(m.Parameters[0].Type.OriginalDefinition, type.OriginalDefinition)).OriginalDefinition;
+                    var (l, r) = mode.InSpec ? (Lower(ve.LeftOperand, mode), Lower(ve.RightOperand, mode)) : (Operand(ve.LeftOperand, mode), Operand(ve.RightOperand, mode));
+                    // (with null: whether it is null, as nothing equals null (Equals' law, which every implementation keeps to))
+                    if (Unconverted(ve.LeftOperand).ConstantValue is { HasValue: true, Value: null } || Unconverted(ve.RightOperand).ConstantValue is { HasValue: true, Value: null })
+                    {
+                        return ve.OperatorKind == BinaryOperatorKind.Equals ? Eq(l, r) : Not(Eq(l, r));
+                    }
+                    // (an Equals that is code: whether two objects are equal isn't known)
+                    if (!_isFunction(own))
+                    {
+                        return EqualityNotKnown(l, r, ve, mode);
+                    }
+                    var same = OrElse(Eq(l, r), AndAlso(NotNull(l), new KFnCall { Callee = own, Receiver = l, Args = new[] { r }, At = ve.Syntax }));
+                    return ve.OperatorKind == BinaryOperatorKind.Equals ? same : Not(same);
+                }
                 // (a record struct's == and !=: each field equal, as its synthesized Equals compares them)
                 case IBinaryOperation rs when rs.OperatorMethod != null && rs.OperatorMethod.IsImplicitlyDeclared && rs.OperatorKind is BinaryOperatorKind.Equals or BinaryOperatorKind.NotEquals &&
                                               IsStruct(rs.OperatorMethod.ContainingType) && !OwnEquals(rs.OperatorMethod.ContainingType):

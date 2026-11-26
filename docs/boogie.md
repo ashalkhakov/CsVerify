@@ -628,8 +628,11 @@ b.Currency)`) is checked at each `a + b` (CSV1001).
 
 **Value objects.** A sealed record class that isn't data (its state not its constructor's parameters: a private constructor that
 validates, get-only properties) is a class of the program's. Its `==` is C#'s: the same reference, or neither null
-and each field equal (integers and enums, strings by content, data, other value objects), unless the record
-declares its own `Equals`.
+and each field equal (integers and enums, strings by content, decimals, dates, record structs, data, other value
+objects). Where the record declares its own `Equals`, its `==` is the same reference or that `Equals`: its function,
+where it is one (an expression with no effects), else a value not known; with `null`, whether it is null (nothing
+equals null: `Equals`' law). `[Sensitive]` on it, or on a member, is the taint analysis's to follow, and changes nothing
+here. `string.Empty` is the empty string.
 
 **Library nullness.** A library member's non-nullable result is not null, an out
 parameter `[MaybeNullWhen(b)]` is not null where the member returns `!b` (in a collection stub's procedure too), a
@@ -963,7 +966,8 @@ A `foreach` over a dictionary's `Keys` or `Values` enumerates the dictionary (it
 CSV1001): a key is one it has, never null; a value isn't known. `Keys.Count` and
 `Values.Count` are its `Count`.
 
-Through their interfaces (`IList<T>`, `IReadOnlyList<T>`, `ICollection<T>`, `IReadOnlyCollection<T>`), a collection is
+Through their interfaces (`IList<T>`, `IReadOnlyList<T>`, `ICollection<T>`, `IReadOnlyCollection<T>`, and a set's,
+`IReadOnlySet<T>` and `ISet<T>`, whose `Contains` is the `HashSet`'s where it is one), a collection is
 a reference of one of three kinds: an array (`$arr`), a modeled collection (`$coll`: a `List`'s, or another's whose
 `Count` is `Size`), or anything else; a conversion from an array or a collection says which, and an array (one made,
 or a parameter or result of an array type) is `$arr`. `Count` is

@@ -490,6 +490,53 @@ public sealed class Flow
         }
 
         [Fact]
+        public void ASensitiveValueObject_WithItsOwnEquals_IsOfTheSubset()
+        {
+            // ([Sensitive] is the taint analysis's; a record's own Equals is its ==, a function where it is one; a set
+            // through its interface is the set; string.Empty is the empty string)
+            var r = Harness.Verify(@"using System.Collections.Generic; using System.Linq;
+public enum Step { Ask, Wait, Done }
+[Sensitive]
+public sealed record Email
+{
+    private Email(string value) => Value = value;
+    public string Value { get; }
+    public static Email Parse(string value) => value.Length > 3 ? new Email(value) : throw new FormatException(""no"");
+    public bool Equals(Email? other) => other is not null && string.Equals(Value, other.Value, StringComparison.OrdinalIgnoreCase);
+    public override int GetHashCode() => StringComparer.OrdinalIgnoreCase.GetHashCode(Value);
+    public override string ToString() => Value;
+}
+public sealed record Code
+{
+    public Code(string text) { Text = text; }
+    public string Text { get; }
+    public bool Equals(Code? other) => other is not null && Text.Length == other.Text.Length;
+    public override int GetHashCode() => Text.Length;
+}
+public static class Steps
+{
+    public static readonly IReadOnlySet<Step> Waits = new HashSet<Step> { Step.Wait };
+}
+public sealed class Flow
+{
+    public string? Digits { get; private set; }
+    public Email? Contact { get; private set; }
+    public bool Waiting(Step step) { return Steps.Waits.Contains(step) && Steps.Waits.Count > 0; }
+    public static bool In(HashSet<Step> steps, Step step) { Spec.Requires(steps.Contains(step)); Spec.Ensures<bool>(r => r); IReadOnlySet<Step> seen = steps; return seen.Contains(step); }
+    public string Shown() { Spec.Ensures<string>(r => r != null && (Digits != null || r.Length == 0)); return Digits ?? string.Empty; }
+    public bool Has(Email e) { return Contact == e; }
+    public int Len() { Spec.Ensures<int>(r => r >= 0 && (Contact != null || r == 0)); return Contact == null ? 0 : Contact.Value.Length; }
+    public static bool Same(Code a, Code b) { Spec.Ensures<bool>(r => r == (a.Text.Length == b.Text.Length)); return a == b; }
+    public static bool Wrong(Code a, Code b) { Spec.Ensures<bool>(r => r == (a.Text == b.Text)); return a == b; }
+}");
+            foreach (var ok in new[] { "Parse", "Waiting", "In", "Shown", "Has", "Len", "Same" })
+            {
+                Assert.True(r.Errors(ok).Length == 0, r.Explain(ok));
+            }
+            Assert.Equal(new[] { "CSV1002" }, r.Errors("Wrong"));
+        }
+
+        [Fact]
         public void AFuncsResult_IsNotNull_WhereItsTypeSaysSo()
         {
             // (#136, Q: each lambda made one is checked to return what its type says; and a Func may give a generic record)
