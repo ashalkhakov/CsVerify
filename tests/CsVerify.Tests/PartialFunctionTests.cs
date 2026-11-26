@@ -4,8 +4,8 @@ namespace CsVerify.Tests
 {
     /// <summary>
     /// Functions that may throw (#135): defined where they don't. Code that reads one may see the exception; a
-    /// specification may read it only where it is defined (CSV1012). And getters a specification reads, taken as
-    /// [Pure] where their body is one expression with no effects.
+    /// specification may read it only where it is defined (CSV1012). And getters taken as [Pure] where their body is
+    /// one expression with no effects.
     /// </summary>
     public class PartialFunctionTests
     {
@@ -84,7 +84,7 @@ public sealed class Account
         }
 
         [Fact]
-        public void AGetterASpecificationReads_IsAFunction_WhereItHasNoEffects()
+        public void AGetter_IsAFunction_WhereItHasNoEffects()
         {
             var r = Verify(@"
     public bool IsOpened() { Spec.Ensures<bool>(r => r == Opened); return Opened; }
@@ -96,6 +96,62 @@ public sealed class Account
             // (one that writes a field is no function, and the message says what would make it one)
             Assert.Equal(new[] { "CSV1902" }, r.Errors("Count"));
             Assert.Contains("a property whose getter is neither [Pure] nor a single expression without effects", r.Explain("Count"));
+        }
+
+        [Fact]
+        public void AGetterWithNoEffects_IsKnown_WhereCodeReadsIt()
+        {
+            // (#136, M: such a getter can state no contract, and a struct's can't read this in one: its expression is what it is)
+            var r = Harness.Verify(@"public readonly record struct Cash
+{
+    public Cash(decimal amount, string unit) { Spec.Ensures(Amount == amount && Unit == unit); Amount = amount; Unit = unit; }
+    public decimal Amount { get; }
+    public string Unit { get; }
+    public bool IsZero => Amount == 0m;
+    public bool IsNegative => Amount < 0m;
+}
+public sealed class Till
+{
+    private int _opened;
+    public int Opened => _opened;
+    public int Counted => _opened++;
+    public void Open() { Spec.Requires(_opened < 100); Spec.Ensures(Opened == Spec.Old(Opened) + 1); _opened++; }
+}
+public static class Fees
+{
+    public static bool Plain(Cash fee) { Spec.Ensures<bool>(r => r == (fee.Amount == 0m)); return fee.IsZero; }
+    public static int Sign(Cash fee) { Spec.Ensures<int>(r => (r < 0) == (fee.Amount < 0m)); if (fee.IsNegative) { return -1; } return 1; }
+    public static bool Wrong(Cash fee) { Spec.Ensures<bool>(r => r == (fee.Amount > 0m)); return fee.IsZero; }
+    public static int Read(Till t) { Spec.Ensures<int>(r => r == t.Opened); return t.Opened; }
+    public static int Twice(Till t) { Spec.Ensures<int>(r => r == 0); return t.Opened - t.Opened; }
+    public static int Count(Till t) { Spec.Ensures<int>(r => r == 0); return t.Counted - t.Counted; }
+}");
+            foreach (var ok in new[] { "Plain", "Sign", "Read", "Twice", "Open" })
+            {
+                Assert.True(r.Errors(ok).Length == 0, r.Explain(ok));
+            }
+            Assert.Equal(new[] { "CSV1002" }, r.Errors("Wrong"));
+            // (one that writes a field is code: two reads of it are two calls)
+            Assert.Contains("CSV1002", r.Errors("Count"));
+        }
+
+        [Fact]
+        public void AThrowOfAHelpersException_IsAThrow()
+        {
+            // (#136, N: what a throw is handed isn't the function's value; a helper that builds it writes nothing)
+            var r = Verify(@"
+    public State Named => Stored ?? throw Missing(""state"");
+    public State Noted => Stored ?? throw Counting(""state"");
+    private InvalidOperationException Missing(string what) => new($""No {what}: {Balance}."");
+    private InvalidOperationException Counting(string what) { _reads++; return new InvalidOperationException(what); }
+    public bool IsNamed() { Spec.Ensures<bool>(r => r == (Named == State.Open)); return Named == State.Open; }
+    public bool Unread() { Spec.Ensures<bool>(r => r == (Named == State.Open)); return Stored == State.Open; }
+    public bool IsNoted() { Spec.Ensures<bool>(r => r == (Noted == State.Open)); return Noted == State.Open; }
+");
+            Assert.True(r.Errors("IsNamed").Length == 0, r.Explain("IsNamed"));
+            Assert.Contains("CSV1012", r.Errors("Unread"));
+            // (a helper that writes a field: the getter stays code)
+            Assert.Equal(new[] { "CSV1902" }, r.Errors("IsNoted"));
         }
 
         [Fact]

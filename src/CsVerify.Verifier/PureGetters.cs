@@ -10,17 +10,19 @@ using Microsoft.CodeAnalysis.Operations;
 namespace CsVerify.Verifier
 {
     /// <summary>
-    /// Purity inferred for getters. A specification reads functions of the state: [Pure] members. A property of the
-    /// program that a specification (or another such getter) reads, whose getter is one expression with no effects, is
-    /// such a function without saying so, and is taken as [Pure] (Code Contracts takes every getter so; here its body is
-    /// looked at). The expression: fields and such properties read, operators, conditionals, patterns, [Pure] calls, and
-    /// throw expressions (what a throw is handed isn't part of the function's value).
+    /// Purity inferred for getters. A property of the program whose getter is one expression with no effects is a
+    /// function of the state without saying so, and is taken as [Pure]: its expression is its definition, known where
+    /// code reads it and where a specification does (SPARK's expression functions; Code Contracts takes every getter
+    /// so, here its body is looked at). Such a getter can state no contract (a contract is a statement), so its
+    /// expression is all there is to know of it. The expression: fields and such properties read, operators,
+    /// conditionals, patterns, [Pure] calls, and throw expressions (what a throw is handed isn't part of the function's
+    /// value).
     /// </summary>
     internal static class PureGetters
     {
         private static readonly ConditionalWeakTable<Compilation, HashSet<ISymbol>> _inferred = new ConditionalWeakTable<Compilation, HashSet<ISymbol>>();
 
-        /// <summary>A getter taken as [Pure]: its property is read where only functions may be, and its body is an expression with no effects.</summary>
+        /// <summary>A getter taken as [Pure]: its body is an expression with no effects.</summary>
         public static bool Inferred(IMethodSymbol m, Compilation compilation) =>
             m.MethodKind == MethodKind.PropertyGet && m.AssociatedSymbol is IPropertySymbol p && p.DeclaringSyntaxReferences.Length > 0 &&
             _inferred.GetValue(compilation, Read).Contains(p.OriginalDefinition);
@@ -48,39 +50,20 @@ namespace CsVerify.Verifier
 
         private static HashSet<ISymbol> Read(Compilation compilation)
         {
-            // (the names such properties have, so that only the identifiers that may be one are looked up)
-            var names = new HashSet<string>();
-            // (the program's trees: a referenced project's too, whose code is the program's)
-            var trees = compilation.ProgramTrees().Select(t => (tree: t, root: t.GetRoot())).ToList();
-            foreach (var (_, root) in trees)
-            {
-                foreach (var d in root.DescendantNodes().OfType<PropertyDeclarationSyntax>())
-                {
-                    if (d.ExpressionBody != null || d.AccessorList?.Accessors.Any(a => a.Body != null || a.ExpressionBody != null) == true)
-                    {
-                        names.Add(d.Identifier.ValueText);
-                    }
-                }
-            }
             var inferred = new HashSet<ISymbol>(SymbolEqualityComparer.Default);
-            if (names.Count == 0)
-            {
-                return inferred;
-            }
             var refused = new HashSet<ISymbol>(SymbolEqualityComparer.Default);
-            foreach (var (tree, root) in trees)
+            // (the program's trees: a referenced project's too, whose code is the program's)
+            foreach (var tree in compilation.ProgramTrees())
             {
                 SemanticModel model = null;
-                foreach (var id in root.DescendantNodes().OfType<IdentifierNameSyntax>())
+                foreach (var d in tree.GetRoot().DescendantNodes().OfType<PropertyDeclarationSyntax>())
                 {
-                    // (where only functions may be read: in a call's argument (Spec's), or a member with an attribute ([Pure], a lemma's))
-                    if (!names.Contains(id.Identifier.ValueText) || id.Parent is NameColonSyntax or NameEqualsSyntax ||
-                        !id.Ancestors().Any(a => a is InvocationExpressionSyntax || a is MemberDeclarationSyntax { AttributeLists.Count: > 0 } || a is LocalFunctionStatementSyntax { AttributeLists.Count: > 0 }))
+                    if (d.ExpressionBody == null && d.AccessorList?.Accessors.Any(a => a.Body != null || a.ExpressionBody != null) != true)
                     {
                         continue;
                     }
                     model ??= compilation.ModelOf(tree);
-                    if (model.GetSymbolInfo(id).Symbol is IPropertySymbol p && Candidate(p.OriginalDefinition) && SpecSymbols.MustBePure(id, model))
+                    if (model.GetDeclaredSymbol(d) is IPropertySymbol p && Candidate(p.OriginalDefinition))
                     {
                         Infer(p.OriginalDefinition, compilation, inferred, refused, new HashSet<ISymbol>(SymbolEqualityComparer.Default));
                     }
@@ -116,11 +99,7 @@ namespace CsVerify.Verifier
                 // (what a throw is handed is evaluated where the function has no value: an exception made, a message
                 // formatted; but it writes nothing a caller that catches it would see)
                 case IThrowOperation:
-                    return op.Descendants().All(d => !(d is IAssignmentOperation || d is IIncrementOrDecrementOperation || d is IAwaitOperation ||
-                                                       d is IAnonymousFunctionOperation || d is IDelegateCreationOperation) &&
-                                                     !(d is IInvocationOperation { TargetMethod: var called } && called.DeclaringSyntaxReferences.Length > 0 && !SpecSymbols.IsPureCallee(called)) &&
-                                                     !(d is IPropertyReferenceOperation { Property: var read } && Computed(read.OriginalDefinition) &&
-                                                       !PureOrInferred(read.OriginalDefinition, compilation, inferred, refused, visiting)));
+                    return WritesNothing(op.Descendants(), compilation, inferred, refused, visiting, new HashSet<ISymbol>(SymbolEqualityComparer.Default));
                 case ILiteralOperation: case IInstanceReferenceOperation: case IParameterReferenceOperation: case ILocalReferenceOperation:
                 case IDefaultValueOperation: case INameOfOperation: case ITypeOfOperation: case IConditionalAccessInstanceOperation:
                 case IPatternOperation: case IPropertySubpatternOperation: case IDiscardOperation: case IDeclarationExpressionOperation:
@@ -178,6 +157,32 @@ namespace CsVerify.Verifier
                     return false;
             }
             return op.ChildOperations.All(c => NoEffects(c, compilation, inferred, refused, visiting));
+        }
+
+        /// <summary>
+        /// What a throw is handed, written out: no assignment, nothing awaited or deferred, and each method of the
+        /// program it calls is a function, or a helper that builds the exception, whose own body is such in turn
+        /// (private InvalidOperationException Missing(string what) => new($"No {what}.")).
+        /// </summary>
+        private static bool WritesNothing(IEnumerable<IOperation> ops, Compilation compilation, HashSet<ISymbol> inferred, HashSet<ISymbol> refused, HashSet<ISymbol> visiting, HashSet<ISymbol> helpers) =>
+            ops.All(d => !(d is IAssignmentOperation || d is IIncrementOrDecrementOperation || d is IAwaitOperation ||
+                           d is IAnonymousFunctionOperation || d is IDelegateCreationOperation) &&
+                         !(d is IInvocationOperation { TargetMethod: var called } && called.DeclaringSyntaxReferences.Length > 0 && !SpecSymbols.IsPureCallee(called) &&
+                           !Builds(called.OriginalDefinition, compilation, inferred, refused, visiting, helpers)) &&
+                         !(d is IPropertyReferenceOperation { Property: var read } && Computed(read.OriginalDefinition) &&
+                           !PureOrInferred(read.OriginalDefinition, compilation, inferred, refused, visiting)));
+
+        /// <summary>A method of the program whose body writes nothing: not one an override may answer for, nor one that calls itself.</summary>
+        private static bool Builds(IMethodSymbol m, Compilation compilation, HashSet<ISymbol> inferred, HashSet<ISymbol> refused, HashSet<ISymbol> visiting, HashSet<ISymbol> helpers)
+        {
+            if (m.IsAbstract || m.IsVirtual || m.IsOverride || m.Parameters.Any(x => x.RefKind != RefKind.None) || m.DeclaringSyntaxReferences.Length != 1 ||
+                !(m.DeclaringSyntaxReferences[0].GetSyntax() is MethodDeclarationSyntax decl) || !helpers.Add(m))
+            {
+                return false;
+            }
+            var body = (SyntaxNode)decl.Body ?? decl.ExpressionBody?.Expression;
+            return body != null && compilation.ModelOf(body.SyntaxTree).GetOperation(body) is IOperation op &&
+                   WritesNothing(op.DescendantsAndSelf(), compilation, inferred, refused, visiting, helpers);
         }
 
         /// <summary>A property of the program's that its getter's code computes (no auto-property, no positional one).</summary>

@@ -715,10 +715,13 @@ override only of the program's members, an abstract member's contract from its c
   method of the program is: a call of it, its contract of the task's result, other code running meanwhile (what the
   method doesn't hold is forgotten, its confined objects kept);
 - a property with code (or an abstract or an interface one) is its accessors: a read calls its getter, a write its
-  setter; a `[Pure]` one is a function, and so is one a specification reads (or a `[Pure]` member, or another such
-  getter) whose getter is one expression with no effects: fields and such properties read, operators,
-  conditionals, patterns, `[Pure]` calls, throw expressions (`PureGetters`; what a throw is handed isn't looked at).
-  Any other computed property in a contract is CSV1902, saying so; an abstract or virtual `[Pure]` member is a function of its contract alone (an
+  setter; a `[Pure]` one is a function, and so is one whose getter is one expression with no effects (not virtual,
+  nor an override): fields and such properties read, operators, conditionals, patterns, `[Pure]` calls, throw
+  expressions (`PureGetters`). Such a getter can state no contract (a contract is a statement, and a struct's lambda
+  can't read `this`), so its expression is what is known of it, as of SPARK's expression functions: code that reads
+  `fee.IsZero` knows `fee.Amount == 0m`, and a specification may read it. What a throw is handed isn't its value: it
+  must write nothing, and may call a helper of the program that builds the exception and writes nothing either
+  (`Stored ?? throw Missing("phase")`). Any other computed property in a contract is CSV1902, saying so; an abstract or virtual `[Pure]` member is a function of its contract alone (an
   override may answer the call), of every field the program names, with no definition;
 - on `this`, a member whose override in this class (or a base) is sealed, or whose class is, is that override;
   a contract class's member is the member it specifies;
