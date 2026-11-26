@@ -357,6 +357,40 @@ public static class Keys
         }
 
         [Fact]
+        public void AComputedListsCount_IsItsSources_WhereItIs()
+        {
+            // (#136, P'': a member of one expression that makes a list states no contract; that its result has as many
+            // elements as a collection it names is a candidate, proved in its body and assumed by its callers while it holds)
+            var r = Harness.Verify(@"using System.Collections.Generic; using System.Linq;
+public sealed class Line
+{
+    public Line(Guid item, int count) { Item = item; Count = count; }
+    public Guid Item { get; }
+    public int Count { get; }
+}
+public sealed class Basket
+{
+    private readonly List<Line> lines = new();
+    public IReadOnlyList<Guid> Items => lines.Select(l => l.Item).ToList();
+    public IReadOnlyList<Guid> Big => lines.Where(l => l.Count > 1).Select(l => l.Item).ToList();
+    public List<int> Counts() => lines.Select(l => l.Count).ToList();
+    public static IReadOnlyList<Guid> Of(List<Line> given) => given.Select(l => l.Item).ToList();
+    public int Size() { Spec.Ensures<int>(r => r == lines.Count); return Items.Count; }
+    public int Sizes() { Spec.Ensures<int>(r => r == lines.Count); return Counts().Count; }
+    public static int OfSize(List<Line> given) { Spec.Ensures<int>(r => r == given.Count); return Of(given).Count; }
+    public int Bigs() { Spec.Ensures<int>(r => r == lines.Count); return Big.Count; }
+    public int After() { Spec.Ensures<int>(r => r == lines.Count); var items = Items; lines.Add(new Line(Guid.Empty, 1)); return items.Count; }
+}");
+            foreach (var ok in new[] { "get_Items", "get_Big", "Counts", "Of", "Size", "Sizes", "OfSize" })
+            {
+                Assert.True(r.Errors(ok).Length == 0, r.Explain(ok));
+            }
+            // (a filter keeps fewer: no such fact, and the member is none the worse; a count is of the list as it was made)
+            Assert.Equal(new[] { "CSV1002" }, r.Errors("Bigs"));
+            Assert.Equal(new[] { "CSV1002" }, r.Errors("After"));
+        }
+
+        [Fact]
         public void AFuncsResult_IsNotNull_WhereItsTypeSaysSo()
         {
             // (#136, Q: each lambda made one is checked to return what its type says; and a Func may give a generic record)

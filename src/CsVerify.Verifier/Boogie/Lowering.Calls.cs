@@ -1625,6 +1625,11 @@ namespace CsVerify.Verifier.Boogie
             {
                 ForgetCaptured();
             }
+            // (a member that computes a list: what is inferred of its result's count, Lowering.HelperFacts)
+            if (!list && _phase == 0)
+            {
+                CountFacts(callee, receiver, onThis, args, result, call.Syntax);
+            }
             foreach (var (_, rv) in refOuts)
             {
                 var ro = ordered.FirstOrDefault(a => RefVariableName(a) == rv);

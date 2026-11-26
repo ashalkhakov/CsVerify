@@ -533,6 +533,13 @@ time round. Query syntax (`from s in xs let b = ... where ... select b`) is the 
 index, both sequences read where the loop starts; `row.c` is the outer element, and a loop over `row.g` runs over the
 inner elements whose key is the row's. The members not named here are not translated (CSV1902).
 
+A member of one expression that makes a list (`public IReadOnlyList<Guid> Items => lines.Select(l => l.Item).ToList();`)
+is no function, as each call makes a new list, and can state no contract. Of each collection its expression names (a
+field of its object, a parameter), that its result has as many elements is a candidate postcondition: checked where it
+returns, as a loop's inferred fact is at its back edge (Houdini), and assumed after a call of it while it holds
+(`Items.Count == lines.Count`, at that moment); where it doesn't (a `Where` keeps fewer), nothing is said, and no one
+is the worse.
+
 **Entity Framework.** EF Core is read with a model of it (`EfModel`: entities, keys, unique indexes,
 query filters, navigations, tokens; Lowering.Ef, Lowering.EfTracker):
 - A query on a context's `DbSet` (or `Set<T>()`, through `AsNoTracking`, `IgnoreQueryFilters`, `AsTracking`, tags) is

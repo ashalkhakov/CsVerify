@@ -1202,6 +1202,7 @@ namespace CsVerify.Verifier.Boogie
             {
                 Emit(KAssign.Of("result", Expr(b.BranchValue)));
                 HelperCandidates(b.BranchValue);
+                CountCandidates(b.BranchValue);
             }
             else if (fall?.Semantics == ControlFlowBranchSemantics.Throw || fall?.Semantics == ControlFlowBranchSemantics.Rethrow)
             {
