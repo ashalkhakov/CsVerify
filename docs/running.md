@@ -225,6 +225,7 @@ The verifier runs after `Build` on the project's `Compile` items, with the proje
 | CSV1034 | verifier | a concurrency token changed between reading an entity and attaching it (or marking it modified), or a row version written by the program |
 | CSV1035 | verifier | a transaction begun where one may be open, a commit with changes not saved, or a second save on a context outside a transaction |
 | CSV1036 | verifier | two operations at once on a `DbContext`: an asynchronous one not awaited where it starts, or a context used by code that runs alongside (`Task.Run`, threads, `Parallel`) |
+| CSV1037 | verifier | a sequence that writes as it is enumerated, handed on instead of enumerated where it is made: a query of a lambda or a method that writes, an iterator that writes, an object of the program's whose enumerator writes (reported in every check profile: a method reads a sequence it is handed as a value) |
 | CSV1030 | verifier | an `[Atomic]` field's write that might not be a step from what it replaces, a step that might not be transitive, a plain use of one that isn't `volatile`, or one that can't be atomic (its type, `readonly`, `[GuardedBy]`, a struct, an `[Owned]` class, an ill-formed step, a function or invariant reading it) |
 | CSV1900 | verifier | warning: a value the verifier treats as unknown (sound), or a misplaced spec |
 | CSV1998 | verifier | Z3 stopped answering, past its own timeout, and was stopped: the rest of the method is not verified |

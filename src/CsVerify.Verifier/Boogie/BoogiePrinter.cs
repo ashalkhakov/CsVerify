@@ -939,10 +939,11 @@ namespace CsVerify.Verifier.Boogie
                 }
                 Line($"  free ensures {InRangeOfMemory};");
                 Line($"  free ensures $postS.{key}(d, old({State}){use}{(res == "void" ? "" : ", res")});");
-                // (only what's in its frame changes, of what was allocated)
+                // (only what's in its frame changes, of what was allocated: said of an object where the map is read
+                // of it after the call, not of every object known to be allocated, of every map)
                 foreach (var m in _stateMaps.Where(m => modifies.Contains(m.name)))
                 {
-                    Line($"  free ensures (forall o: Ref :: old($Alloc[o]) && !$frame.{key}(d{use})[o] ==> {m.name}[o] == old({m.name}[o]));");
+                    Line($"  free ensures (forall o: Ref :: {{ {m.name}[o] }} old($Alloc[o]) && !$frame.{key}(d{use})[o] ==> {m.name}[o] == old({m.name}[o]));");
                 }
                 if (res != "void" && res != "Ref" && res != "Boolean")
                 {

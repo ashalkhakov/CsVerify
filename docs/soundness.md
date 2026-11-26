@@ -60,6 +60,11 @@ is assumed, never in what is reported.
   assumed: a struct's field of a non-nullable reference type (not so in `default(S)`), and an element of a collection
   or sequence (a list interface, `IEnumerable<T>`, `List<T>`) of a non-nullable reference type. An array's elements
   are what the heap says, nulls included (`new string[n]` is all nulls): only a precondition says otherwise.
+- **A11. Sequences from code that isn't verified.** A method reads a sequence it is handed (an `IEnumerable<T>`, a
+  list interface) as a value: enumerating it writes nothing. For every sequence the verified program makes this is
+  checked where it is made (CSV1037: a query whose lambda writes, an iterator that writes and an object whose
+  enumerator writes are enumerated where they are made, or reported). For one handed in by code that isn't verified
+  (a caller in another assembly, a library's result) it is assumed.
 - **A11. The cache.** With `--cache` (the MSBuild target's default), a method proved before is proved while its key is
   unchanged: a hash of its procedure and of what its proof reaches in the Boogie program, the options and the builds
   ([Faster runs](running.md#faster-runs)). An axiom that names nothing the proof reaches is not in the key; it can't

@@ -527,7 +527,9 @@ index; `ToDictionary` is a dictionary of the library's (what's in it unknown), i
 new set whose members are what some element is (as many as the elements where no two are the same, else fewer, and
 some where there are any). Each is a reference not allocated before whose cells or models are assumed to be what it is
 made with (`KNew`'s cells, `KNewCollection`), as a new array's are: no map is written, so a copy changes nothing a
-list behind an interface holds. A double `Sum` adds in order from 0.0, rounding at each step; a `decimal` one from 0,
+list behind an interface holds. A sequence of unknown origin (an `IEnumerable<T>` parameter, a field's, a call's result) is read as a value of the
+state, nothing written: a static check (CSV1037, `StaticChecks.Sequences`) has every sequence that would write as it
+is enumerated enumerated where it is made. A double `Sum` adds in order from 0.0, rounding at each step; a `decimal` one from 0,
 each sum as decimal `+` gives it (`$dround`), with the fact no one step shows: a sum below zero has an element below
 it, one above zero an element above. A `foreach` over a query, or over a list interface of any
 expression (a parameter, a property, a call's result), reads it into a map where the loop starts; `GroupBy` (with a result selector of the key and the group too) gives each key's first element's index, a
@@ -1051,7 +1053,9 @@ functions of it and the arguments, per signature (`Int32.Int32` for `Func<int, i
   state it's made in, and ensures `$postS` of the state before it.
 - `Spec.ReadsOf(f, x)` is `$readsS.K(f, now, x)`; `Spec.Reads(f, x => S)` is `forall x :: $readsS.K(f, now, x) ⊆ S`,
   and `Spec.Changes(f, x => S)` is `forall x :: $frame.K(f, x) ⊆ S`: a call keeps every field and cell of an object
-  allocated before and not in `$frame.K(f, x)`, and `$nochange(f)` makes the frame empty. `ObjSet`'s `IsSubsetOf`
+  allocated before and not in `$frame.K(f, x)` (said of an object where a map is read of it after the call: each map's
+  condition has that read as its trigger, or a failed proof in a program of many fields instantiates them all without
+  end), and `$nochange(f)` makes the frame empty. `ObjSet`'s `IsSubsetOf`
   and `IsDisjointFrom` are the set relations.
 - A lambda whose precondition reads fields or cells says so with its own `Spec.Reads(R)`: its `$preS` in the state it's
   made in is its precondition, it reads within `R`, and each object its precondition reads must be in `R` (CSV1029).

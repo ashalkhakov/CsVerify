@@ -50,6 +50,7 @@ namespace CsVerify.Verifier
             ["CSV1034"] = "concurrency token",
             ["CSV1035"] = "transaction",
             ["CSV1036"] = "two operations at once on a context",
+            ["CSV1037"] = "a sequence that writes, handed on",
             ["CSV1019"] = "predicate fold",
             ["CSV1020"] = "aliased by-reference arguments",
             ["CSV1021"] = "ill-formed stub or model",

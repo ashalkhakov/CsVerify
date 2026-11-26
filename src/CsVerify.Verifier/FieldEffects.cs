@@ -486,6 +486,9 @@ namespace CsVerify.Verifier
             // (making an empty collection of records calls none of their methods; what it's given to fill it, above, may)
             (m.MethodKind != MethodKind.Constructor || m.Parameters.Length > 0 && !m.Parameters.All(p => p.Type.SpecialType != SpecialType.None)) && m.ContainingType.TypeArguments.Concat(m.TypeArguments).Any(HandsOver);
 
+        /// <summary>May a library member run code of its elements' or keys' types (their Equals, their CompareTo) that changes something?</summary>
+        public bool ElementsRun(IMethodSymbol m) => m.ContainingType.TypeArguments.Concat(m.TypeArguments).Any(HandsOver);
+
         /// <summary>
         /// At this call, may the library method change the program's fields or model state? As
         /// <see cref="WritesOf"/> says for the method, but by what is actually handed to it: an <c>object</c> parameter

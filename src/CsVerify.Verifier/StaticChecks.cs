@@ -51,6 +51,7 @@ namespace CsVerify.Verifier
         public void Run()
         {
             var body = _model.GetOperation(_contract.Declaration);
+            CheckSequences(body);
             ControlFlowGraph cfg;
             if (NestedGraph != null)
             {

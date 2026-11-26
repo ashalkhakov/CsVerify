@@ -10,6 +10,58 @@ namespace CsVerify.Tests
     public class EnumerationTests
     {
         [Fact]
+        public void ASequenceThatWrites_IsEnumeratedWhereItIsMade()
+        {
+            // (a method reads a sequence it is handed as a value: enumerating it writes nothing. So a query whose lambda
+            // writes, an iterator that writes and an object whose enumerator writes are enumerated where they are
+            // made, where the write is seen; handed on, each is CSV1037)
+            var r = Harness.Verify(@"using System.Collections; using System.Collections.Generic; using System.Linq;
+public sealed class Loud : IEnumerable<int>
+{
+    public static int Heard;
+    public IEnumerator<int> GetEnumerator() { Heard = 1; yield return 1; }
+    IEnumerator IEnumerable.GetEnumerator() => GetEnumerator();
+}
+public sealed class Tally
+{
+    public int Seen { get; private set; }
+    private readonly List<int> kept = new();
+    public int Counted(IEnumerable<int> xs) { Spec.Ensures<int>(r => Seen == Spec.Old(Seen)); return xs.Count(); }
+    public int Local() { IEnumerable<int> q = new[] { 1, 2 }.Select(x => { Seen = x; return x; }); return Counted(q); }
+    public int Argument(List<int> xs) { return Counted(xs.Where(x => { Seen = x; return true; })); }
+    public int Iterated() { var q = Walk(); return Counted(q); }
+    public IEnumerable<int> Returned(List<int> xs) { return xs.Select(x => { Seen = x; return x; }); }
+    public IEnumerable<int> Unknown(List<int> xs, Func<int, bool> keep) { return xs.Where(keep); }
+    public int Converted(Loud l) { return Counted(l); }
+    public int Captured(List<int> xs) { bool any = false; return Counted(xs.Where(x => { any = true; return any; })); }
+    public IEnumerable<int> Walk() { Seen = 1; yield return 1; Seen = 2; yield return 2; }
+    public int Read(List<int> xs) { Spec.Ensures<int>(r => Seen == Spec.Old(Seen)); return xs.Where(x => { Seen = x; return true; }).Count(); }
+    public int Viewed(List<int> xs) { Spec.Ensures<int>(r => Seen == Spec.Old(Seen)); var q = xs.Where(x => { Seen = x; return true; }); return q.Count(); }
+    public int Looped() { Spec.Ensures<int>(r => Seen == Spec.Old(Seen)); int n = 0; foreach (var x in Walk()) { if (n < 9) { n++; } } return n; }
+    public void Added(List<int> xs) { kept.AddRange(xs.Where(x => { Seen = x; return true; })); }
+    public string Joined(List<int> xs) { return string.Join("","", xs.Select(x => { Seen = x; return x; })); }
+    public int Direct() { return Walk().Count(); }
+    public IEnumerable<int> Quiet(List<int> xs) { return xs.Where(x => x > Seen).Select(x => x > 0 ? x : 0); }
+    public IEnumerable<int> Said(List<int> xs, Func<int, bool> keep) { Spec.Requires(Spec.ChangesNothing(keep)); return xs.Where(keep); }
+    public IEnumerable<int> Reading() { yield return Seen; }
+}");
+            foreach (var handedOn in new[] { "Tally.Local", "Argument", "Iterated", "Returned", "Unknown", "Converted", "Captured" })
+            {
+                Assert.Contains("CSV1037", r.Errors(handedOn));
+            }
+            // (enumerated where it is made: not reported, and the write is seen, or the method isn't verified)
+            foreach (var here in new[] { "Tally.Read", "Viewed", "Looped", "Added", "Joined", "Direct", "Quiet", "Said", "Reading" })
+            {
+                Assert.DoesNotContain("CSV1037", r.Errors(here));
+            }
+            foreach (var seen in new[] { "Tally.Read", "Viewed", "Looped" })
+            {
+                Assert.Equal(new[] { "CSV1002" }, r.Errors(seen));
+            }
+            Assert.Empty(r.Errors("Counted"));
+        }
+
+        [Fact]
         public void ChangingACollectionInItsForeach_IsReported()
         {
             var r = Harness.Verify(@"
