@@ -527,6 +527,13 @@ namespace CsVerify.Verifier.Boogie
         public ITypeSymbol ArrayType;
         public MExpr Size;
         public MExpr[] Elements;
+        public MExpr Cells;
+    }
+
+    internal sealed class MNewCollection : MStmt
+    {
+        public string Var;
+        public (string map, MExpr value)[] Rows;
     }
 
     internal sealed class MCall : MStmt, IHeapStmt

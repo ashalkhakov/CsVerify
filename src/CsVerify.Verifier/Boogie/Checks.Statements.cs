@@ -313,12 +313,20 @@ namespace CsVerify.Verifier.Boogie
                         ArrayType = n.ArrayType,
                         Size = Code(n.Size),
                         Elements = n.Elements?.Select(Code).ToArray(),
+                        Cells = n.Cells == null ? null : Spec(n.Cells, out _),
                     });
                     // (a new array's cells are all in hand)
                     if (_p.UsesCells)
                     {
                         Emit(MAssign.Of("cells", Store("cells", new MVar(n.Var), new MLit("(lambda i$: int :: 1.0)"))));
                     }
+                    return;
+                case KNewCollection n:
+                    Emit(new MNewCollection
+                    {
+                        Var = n.Var,
+                        Rows = n.Rows.Select(r => (r.map, Spec(r.value, out _))).ToArray(),
+                    });
                     return;
                 case KCall c:
                     Call(c, decreases);

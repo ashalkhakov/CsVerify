@@ -157,7 +157,7 @@ namespace CsVerify.Verifier.Boogie
         /// equal as references (the lifted ==); two of a struct as their values are (IsNullableStruct).
         /// </summary>
         public static bool IsNullableValue(ITypeSymbol t) => t is INamedTypeSymbol { OriginalDefinition.SpecialType: SpecialType.System_Nullable_T } n &&
-            (Scalar(n.TypeArguments[0]) || IsOpaqueTicks(n.TypeArguments[0]) || IsOpaqueId(n.TypeArguments[0]) || IsStruct(n.TypeArguments[0]));
+            (Scalar(n.TypeArguments[0]) || IsDecimal(n.TypeArguments[0]) || IsOpaqueTicks(n.TypeArguments[0]) || IsOpaqueId(n.TypeArguments[0]) || IsStruct(n.TypeArguments[0]));
 
         /// <summary>A nullable struct (IsNullableValue's): its value a struct's, which == compares as the struct's does.</summary>
         public static bool IsNullableStruct(ITypeSymbol t) => IsNullableValue(t) && IsStruct(Underlying(t));
@@ -806,7 +806,9 @@ namespace CsVerify.Verifier.Boogie
         /// query read where it's made (Lowering.Linq), so that what a lambda gives a SelectMany, or a group, can be one.
         /// </summary>
         public static bool IsSequence(ITypeSymbol t) =>
-            t is INamedTypeSymbol { TypeKind: TypeKind.Interface, Arity: 1, Name: "IEnumerable" } n && n.ContainingNamespace?.ToDisplayString() == "System.Collections.Generic" && (FuncValue(n.TypeArguments[0]) || IsData(n.TypeArguments[0]));
+            t is INamedTypeSymbol { TypeKind: TypeKind.Interface, Arity: 1, Name: "IEnumerable" } n && n.ContainingNamespace?.ToDisplayString() == "System.Collections.Generic" &&
+            // (a reference, of whatever values of the subset: nothing is read of them but by a query, which reads each as its type's)
+            (FuncValue(n.TypeArguments[0]) || IsData(n.TypeArguments[0]) || IsOpaqueElement(n.TypeArguments[0]) || IsDecimal(n.TypeArguments[0]) || IsStruct(n.TypeArguments[0]) || IsTuple(n.TypeArguments[0]));
 
         /// <summary>
         /// A collection's interface (IList, IReadOnlyList, ICollection, IReadOnlyCollection) of the subset's values, or of
@@ -815,7 +817,7 @@ namespace CsVerify.Verifier.Boogie
         public static bool IsCollectionInterface(ITypeSymbol t) =>
             t is INamedTypeSymbol { TypeKind: TypeKind.Interface, Arity: 1 } n && n.ContainingNamespace?.ToDisplayString() == "System.Collections.Generic" &&
             n.Name is "IList" or "IReadOnlyList" or "ICollection" or "IReadOnlyCollection" or "IReadOnlySet" or "ISet" &&
-            (FuncValue(n.TypeArguments[0]) || IsData(n.TypeArguments[0]) || IsOpaqueElement(n.TypeArguments[0]) || IsStruct(n.TypeArguments[0]));
+            (FuncValue(n.TypeArguments[0]) || IsData(n.TypeArguments[0]) || IsOpaqueElement(n.TypeArguments[0]) || IsStruct(n.TypeArguments[0]) || IsTuple(n.TypeArguments[0]));
 
         /// <summary>
         /// A Guid, a DateTime or a TimeSpan in a collection: the integer the kernel keeps for it (an id, its ticks), which

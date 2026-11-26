@@ -202,6 +202,42 @@ public static class Use
         }
 
         [Fact]
+        public void AMethodNotSelected_ThatRunsAQuery_WritesWhatItsLambdasWrite()
+        {
+            // (a library member is judged by what each call hands it: it runs the lambdas and the methods it is handed,
+            // so what they write, it writes; a query made where it is handed on, a list interface and a record that
+            // only compares its fields hand over nothing more. A sequence that came from elsewhere may run anything)
+            const string routes = @"using System.Collections.Generic; using System.Linq;
+public sealed record Tag { public Tag(string v) { Value = v; } public string Value { get; } public override string ToString() => Value; }
+public sealed record Leg(Tag Carrier, int Miles);
+public enum Mark { Late, Lost }
+public sealed class Route
+{
+    private readonly List<Leg> legs = new();
+    private string? marks;
+    public int State { get; private set; }
+    public int Seen { get; private set; }
+    public IReadOnlyCollection<Mark> Marks => (marks ?? string.Empty).Split(',').Select(Enum.Parse<Mark>).ToHashSet();
+    private int Unknown(IReadOnlyList<Leg> offered) { var known = legs.Select(l => l.Carrier).ToHashSet(); return offered.Where(l => !known.Contains(l.Carrier)).DistinctBy(l => l.Carrier).ToList().Count; }
+    private bool Marked(Mark m) { return Marks.Contains(m); }
+    private int Counting(List<int> xs) { return xs.Where(x => { Seen = x; return x > 1; }).ToList().Count; }
+    private int Lazy(IEnumerable<int> xs) { return xs.Where(x => x > 1).ToList().Count; }
+    public int Offer(IReadOnlyList<Leg> offered) { Spec.Ensures<int>(r => State == Spec.Old(State) && Seen == Spec.Old(Seen)); return Unknown(offered); }
+    public bool Check(Mark m) { Spec.Ensures<bool>(r => State == Spec.Old(State)); return Marked(m); }
+    public int Tally(List<int> xs) { Spec.Ensures<int>(r => State == Spec.Old(State)); return Counting(xs); }
+    public int Overlooked(List<int> xs) { Spec.Ensures<int>(r => Seen == Spec.Old(Seen)); return Counting(xs); }
+    public int Trusted(IEnumerable<int> xs) { Spec.Ensures<int>(r => Seen == Spec.Old(Seen)); return Lazy(xs); }
+}";
+            var r = Run(routes, only: new[] { "Route.Offer", "Route.Check", "Route.Tally", "Route.Overlooked", "Route.Trusted" });
+            foreach (var ok in new[] { "Offer", "Check", "Tally" })
+            {
+                Assert.True(r.Errors(ok).Length == 0, r.Explain(ok));
+            }
+            Assert.Equal(new[] { "CSV1002" }, r.Errors("Overlooked"));
+            Assert.Equal(new[] { "CSV1002" }, r.Errors("Trusted"));
+        }
+
+        [Fact]
         public void Cache_ProvesAgainOnlyWhatChanged()
         {
             var cache = Path.GetTempFileName();

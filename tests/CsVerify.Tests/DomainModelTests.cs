@@ -610,6 +610,136 @@ public static class Arrays
         }
 
         [Fact]
+        public void ALambdaInARecordsMember_ANullableDecimal_ASequenceOfDates()
+        {
+            // (a data type's member may hold a lambda; a decimal? is a nullable value; an IEnumerable of dates, structs
+            // or tuples is a reference as any other's)
+            var r = Harness.Verify(@"using System.Collections.Generic; using System.Linq;
+public readonly record struct Fee(decimal Amount);
+public sealed record Prize(int Level, DateTime? PaidAt, DateTime? SeenAt);
+public sealed record Stage(int Id, int Level);
+public sealed record Standing(int? Enrolment, IReadOnlyList<Prize> Prizes, Fee Saved, decimal? Bonus)
+{
+    public bool Has(Stage s) => Prizes.Any(p => p.Level == s.Level);
+    public Prize? PrizeFor(Stage s) => Prizes.FirstOrDefault(p => p.Level == s.Level);
+    public decimal BonusOr(decimal none) { Spec.Ensures<decimal>(r => Bonus != null || r == none); return Bonus ?? none; }
+}
+public enum Step { One, Two }
+public sealed record Progress(Step? Done, Step? Failed, string? Reason);
+public sealed class Flow
+{
+    public Progress SetUp { get; private set; } = new Progress(null, null, null);
+    public int Count { get; private set; }
+    public void Done(Step step) => SetUp = SetUp.Failed == step ? SetUp with { Done = step, Failed = null, Reason = null } : SetUp with { Done = step };
+    public void Bump(bool twice) { Spec.Requires(Count < 100); Spec.Ensures(Count == Spec.Old(Count) + (twice ? 2 : 1)); Count = twice ? Count + 2 : Count + 1; }
+}
+public static class Uses
+{
+    public static decimal Half(decimal? x) { Spec.Ensures<decimal>(r => x != null || r == 0m); return x is { } v ? v : 0m; }
+    public static bool Wrong(decimal? x) { Spec.Ensures<bool>(r => r); return x is { } v && v > 0m; }
+    public static int Days(IEnumerable<DateOnly> days) { Spec.Ensures<int>(r => r >= 0); return days.Count(); }
+    public static int Fees(IEnumerable<Fee> fees) { Spec.Ensures<int>(r => r >= 0); return fees.Count(); }
+    public static int Pairs(IEnumerable<(DateTime At, decimal Amount)> xs) { Spec.Ensures<int>(r => r >= 0); return xs.Count(); }
+    public static int Listed(IReadOnlyList<(int No, string Name)> xs) { Spec.Ensures<int>(r => r == xs.Count); return xs.Count; }
+}");
+            // (and an auto-property assigned a value that branches, P = c ? a : b: its field)
+            foreach (var ok in new[] { "Has", "PrizeFor", "BonusOr", "Half", "Days", "Fees", "Pairs", "Listed", "Flow.Done", "Bump" })
+            {
+                Assert.True(r.Errors(ok).Length == 0, r.Explain(ok));
+            }
+            Assert.Equal(new[] { "CSV1002" }, r.Errors("Wrong"));
+        }
+
+        [Fact]
+        public void ASetMadeOfASequence_HoldsItsElements()
+        {
+            // (ToHashSet: a new set whose members are what some element is; as many as the elements where no two are
+            // the same, fewer otherwise)
+            var r = Harness.Verify(@"using System.Collections.Generic; using System.Linq;
+public static class Sets
+{
+    public static bool Has(int[] xs) { Spec.Requires(xs.Length > 2); Spec.Ensures<bool>(r => r); var s = xs.ToHashSet(); return s.Contains(xs[1]) && s.Count > 0 && s.Count <= xs.Length; }
+    public static bool Lacks(List<int> xs, int y) { Spec.Requires(Spec.Forall(0, xs.Count, i => xs[i] != y)); Spec.Ensures<bool>(r => !r); return xs.ToHashSet().Contains(y); }
+    public static int Three() { Spec.Ensures<int>(r => r == 3); return new[] { 1, 2, 3 }.ToHashSet().Count; }
+    public static bool Names(List<string> xs) { Spec.Requires(xs.Count > 0); Spec.Ensures<bool>(r => r); return xs.ToHashSet().Contains(xs[0]); }
+    public static int Miscounted(int[] xs) { Spec.Ensures<int>(r => r == xs.Length); return xs.ToHashSet().Count; }
+    public static bool Guessed(int[] xs, int y) { Spec.Ensures<bool>(r => r); return xs.ToHashSet().Contains(y); }
+}");
+            foreach (var ok in new[] { "Has", "Lacks", "Three", "Names" })
+            {
+                Assert.True(r.Errors(ok).Length == 0, r.Explain(ok));
+            }
+            Assert.Equal(new[] { "CSV1002" }, r.Errors("Miscounted"));
+            Assert.Equal(new[] { "CSV1002" }, r.Errors("Guessed"));
+        }
+
+        [Fact]
+        public void AQuerysCopy_ChangesNoCollection_AndAHelperThatRunsAQuery_NoField()
+        {
+            // (a list, an array or a set a query is copied to is a new object that holds what it is made with: nothing
+            // is written, so a list read through an interface holds what it held. A library member handed a lambda
+            // that writes nothing changes nothing; nor does a set that compares records whose equality is their
+            // fields'. One whose Equals writes, does)
+            var r = Harness.Verify(@"using System.Collections.Generic; using System.Linq;
+public sealed record Tag { public Tag(string v) { Value = v; } public string Value { get; } public override string ToString() => Value; }
+public sealed record Leg(Tag Carrier, int Miles);
+public sealed record Loud { public static int Seen; public Loud(string v) { Value = v; } public string Value { get; } public bool Equals(Loud? other) { Seen = 1; return other is not null && other.Value == Value; } public override int GetHashCode() => 0; }
+public sealed class Route
+{
+    private readonly List<Leg> legs = new();
+    public int State { get; private set; }
+    public Tag? Via { get; private set; }
+    public int Listed(IReadOnlyList<Leg> offered) { Spec.Ensures<int>(r => r <= offered.Count); var added = offered.Where(l => l.Miles > 0).ToList(); return added.Count; }
+    public int Arrayed(IReadOnlyList<Leg> offered) { Spec.Ensures<int>(r => r <= offered.Count); var added = offered.Where(l => l.Miles > 0).ToArray(); return added.Length; }
+    public int Fresh(IReadOnlyList<Leg> offered) { Spec.Ensures<int>(r => 0 <= r && r <= offered.Count && State == Spec.Old(State)); var known = legs.Select(l => l.Carrier).ToHashSet(); return offered.Where(l => !known.Contains(l.Carrier)).ToList().Count; }
+    private int Unknown(IReadOnlyList<Leg> offered) { var known = legs.Select(l => l.Carrier).ToHashSet(); return offered.Where(l => !known.Contains(l.Carrier)).DistinctBy(l => l.Carrier).ToList().Count; }
+    public bool Steady(IReadOnlyList<Leg> offered, Tag via) { Spec.Requires(Via == via); Spec.Ensures<bool>(r => r && State == Spec.Old(State)); Unknown(offered); return Via == via; }
+    public bool Quiet(Tag t) { Spec.Ensures<bool>(r => State == Spec.Old(State)); var known = new HashSet<Tag>(); return known.Contains(t); }
+    public bool Heard(Loud t) { Spec.Requires(Loud.Seen == 0); Spec.Ensures<bool>(r => Loud.Seen == 0); var known = new HashSet<Loud>(); return known.Contains(t); }
+}
+public sealed class Person { public string Name = """"; public string Email = """"; }
+public static class Pairs
+{
+    public static void Joined(List<Person> xs, List<Person> ys) { var r = xs.Join(ys, a => a.Name, b => b.Email, (a, b) => new { a.Name, b.Email }).ToList(); Spec.Assert(Spec.Forall(0, r.Count, i => r[i].Name == r[i].Email)); }
+}");
+            foreach (var ok in new[] { "Listed", "Arrayed", "Fresh", "Route.Unknown", "Steady", "Quiet", "Joined" })
+            {
+                Assert.True(r.Errors(ok).Length == 0, r.Explain(ok));
+            }
+            Assert.Equal(new[] { "CSV1002" }, r.Errors("Heard"));
+        }
+
+        [Fact]
+        public void ASumOfDecimals_IsAddedInOrder_AndHasItsElementsSign()
+        {
+            // (Sum of decimals: from 0, each sum as decimal + gives it; one below zero has an element below it, one
+            // above zero an element above)
+            var r = Harness.Verify(@"using System.Collections.Generic; using System.Linq;
+public readonly record struct Fee(decimal Amount);
+public sealed record Line(int Kind, Fee Fee);
+public sealed class Bill
+{
+    private readonly List<Line> lines = new();
+    public decimal Total() { return lines.Sum(x => x.Fee.Amount); }
+    public decimal Due(Func<Line, bool> include) { Spec.Requires(Spec.Total(include)); return lines.Where(x => x.Kind == 1 && include(x)).Sum(x => x.Fee.Amount); }
+    public static decimal None(List<Line> ls) { Spec.Requires(ls.Count == 0); Spec.Ensures<decimal>(r => r == 0m); return ls.Sum(x => x.Fee.Amount); }
+    public static decimal Owed(List<Line> ls) { Spec.Requires(Spec.Forall(0, ls.Count, i => ls[i] != null && ls[i].Fee.Amount >= 0m)); Spec.Ensures<decimal>(r => r >= 0m); return ls.Sum(x => x.Fee.Amount); }
+    public static decimal Refunded(List<Line> ls) { Spec.Requires(Spec.Forall(0, ls.Count, i => ls[i] != null && ls[i].Fee.Amount <= 0m)); Spec.Ensures<decimal>(r => r <= 0m); return ls.Sum(x => x.Fee.Amount); }
+    public static decimal Hoped(List<Line> ls) { Spec.Ensures<decimal>(r => r >= 0m); return ls.Sum(x => x.Fee.Amount); }
+    public static decimal Feared(List<Line> ls) { Spec.Ensures<decimal>(r => r <= 0m); return ls.Sum(x => x.Fee.Amount); }
+    public static decimal Strict(List<Line> ls) { Spec.Requires(Spec.Forall(0, ls.Count, i => ls[i] != null && ls[i].Fee.Amount >= 0m)); Spec.Ensures<decimal>(r => r > 0m); return ls.Sum(x => x.Fee.Amount); }
+}");
+            foreach (var ok in new[] { "Bill.Total", "Due", "None", "Owed", "Refunded" })
+            {
+                Assert.True(r.Errors(ok).Length == 0, r.Explain(ok));
+            }
+            foreach (var wrong in new[] { "Hoped", "Feared", "Strict" })
+            {
+                Assert.Equal(new[] { "CSV1002" }, r.Errors(wrong));
+            }
+        }
+
+        [Fact]
         public void AFuncsResult_IsNotNull_WhereItsTypeSaysSo()
         {
             // (#136, Q: each lambda made one is checked to return what its type says; and a Func may give a generic record)

@@ -180,8 +180,18 @@ namespace CsVerify.Verifier.Boogie
                 case KLit _: case KVar _: case KFnApp _: return MathTerms.Math(e);
                 case KMapLambda lam:
                 {
+                    // (its variable is bound, as a quantifier's: no fact of it outlives the lambda)
                     var name = Opened();
-                    return MMapLambda.Of(name, lam.Type, Spec(lam.BodyAt(name), wf, guard));
+                    _bound.Add(name);
+                    try
+                    {
+                        return MMapLambda.Of(name, lam.Type, Spec(lam.BodyAt(name), wf, guard));
+                    }
+                    finally
+                    {
+                        _bound.Remove(name);
+                        _boundFacts.RemoveAll(f => f.Mentions(new HashSet<string> { name }));
+                    }
                 }
                 case KOp { Op: "ite" } ite:
                 {

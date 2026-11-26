@@ -95,6 +95,8 @@ namespace CsVerify.Verifier.Boogie
             IDiscardOperation or ILocalReferenceOperation or IParameterReferenceOperation => true,
             IArrayElementReferenceOperation ae => ae.Indices.Length == 1 && Plain(ae.ArrayReference) && Plain(ae.Indices[0]),
             IFieldReferenceOperation fr => fr.Instance == null || Plain(fr.Instance),
+            // (an auto-property's: its field)
+            IPropertyReferenceOperation pr => (pr.Instance == null || Plain(pr.Instance)) && IsField(pr.Property.OriginalDefinition),
             _ => false,
         };
 

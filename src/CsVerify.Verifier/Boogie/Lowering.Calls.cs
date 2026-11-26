@@ -180,7 +180,6 @@ namespace CsVerify.Verifier.Boogie
             var type = (INamedTypeSymbol)da.Parameter.Type;
             var key = FuncKey(type);
             _p.AddDelegateKey(key);
-            _p.CallsDelegates = true;
             Assumed(m);
             var srcArg = kind == "index" || call.Instance != null ? null : call.Arguments.First(a => a.Parameter.Ordinal == 0);
             var srcOp = kind == "index" ? null : call.Instance ?? Unconverted(srcArg.Value);
@@ -259,11 +258,13 @@ namespace CsVerify.Verifier.Boogie
             else if (kind == "write")
             {
                 _p.HavocsAll = true;
+                _p.CallsDelegates = true;
                 Emit(new KHavocAll());
             }
             else if (!quiet)
             {
                 _p.HavocsAll = true;
+                _p.CallsDelegates = true;
                 Emit(new KHavocAll { Unless = new KOp("$nochange", d) });
             }
             ForgetCaptured();
@@ -657,7 +658,6 @@ namespace CsVerify.Verifier.Boogie
             {
                 var key = FuncKey(da.Parameter.Type);
                 _p.AddDelegateKey(key);
-                _p.CallsDelegates = true;
                 var (lambda, quiet, free) = Handed(da);
                 if (!free)
                 {
@@ -680,6 +680,7 @@ namespace CsVerify.Verifier.Boogie
                 {
                     delegatesQuiet = false;
                     _p.HavocsAll = true;
+                    _p.CallsDelegates = true;
                     Emit(new KHavocAll { Unless = new KOp("$nochange", dv) });
                 }
             }
@@ -1598,8 +1599,8 @@ namespace CsVerify.Verifier.Boogie
                 RefOuts = refOuts,
             });
             // (a collection that compares its elements with an Equals of the program's, or hashes them: that code runs, and
-            // may change anything)
-            if (list && RunsEquals(callee))
+            // may change anything, unless the effects analysis finds it changes nothing)
+            if (list && RunsEquals(callee) && KernelTypes.RunsUserCode?.Invoke(callee) != false)
             {
                 _p.HavocsAll = true;
                 _p.CallsDelegates = true;

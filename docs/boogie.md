@@ -488,7 +488,7 @@ class of equals is an integer's or a bool's box is that box (`$eqk`), so a value
 and from integers are the integers'. A switch expression no arm of which matches throws
 `SwitchExpressionException`: CSV1022.
 
-**Nullable values.** An `int?` (a `Nullable<T>` of an integer type, `bool`, `DateTime`, `TimeSpan` or `Guid`) is a reference: `null` where it has no
+**Nullable values.** An `int?` (a `Nullable<T>` of an integer type, `bool`, `decimal`, `DateTime`, `TimeSpan`, `DateOnly` or `Guid`) is a reference: `null` where it has no
 value, `$nmk.Int32(v)` where it has `v`, one reference per value (`$nmk` and `$nv`, its value, are each other's
 inverse, `$nv` in the type's range), so the lifted `==` is the references' (a `DateTime?`'s too, which C# lifts
 from `DateTime`'s own operator). A nullable struct of the subset (`AccountKey?` of a `readonly record struct
@@ -523,8 +523,13 @@ element whose integer key is least, or greatest) and `SequenceEqual` read it, th
 CSV1001 (an empty sequence has no `First`); a List's `Find`, `FindIndex`, `Exists` and `TrueForAll` of a pure lambda
 are its first match (or the default), the first match's index (or -1), `Any` and `All`; `Index` pairs each element with its
 index; `ToDictionary` is a dictionary of the library's (what's in it unknown), its definition's precondition checked
-(no key null or an earlier one's, CSV1001); `ToArray` and `ToList` copy it into a new object. A double
-`Sum` adds in order from 0.0, rounding at each step. A `foreach` over a query, or over a list interface of any
+(no key null or an earlier one's, CSV1001); `ToArray` and `ToList` copy it into a new object, and `ToHashSet` makes a
+new set whose members are what some element is (as many as the elements where no two are the same, else fewer, and
+some where there are any). Each is a reference not allocated before whose cells or models are assumed to be what it is
+made with (`KNew`'s cells, `KNewCollection`), as a new array's are: no map is written, so a copy changes nothing a
+list behind an interface holds. A double `Sum` adds in order from 0.0, rounding at each step; a `decimal` one from 0,
+each sum as decimal `+` gives it (`$dround`), with the fact no one step shows: a sum below zero has an element below
+it, one above zero an element above. A `foreach` over a query, or over a list interface of any
 expression (a parameter, a property, a call's result), reads it into a map where the loop starts; `GroupBy` (with a result selector of the key and the group too) gives each key's first element's index, a
 selector reading its `Key` and `Count()` (exact: a running count of the source's elements of that key; a database's
 are bounds); over a `GroupBy`, each group is its key's first element's index, its `Key` that element's key, and a `foreach`
@@ -849,7 +854,15 @@ a new object is none of them.
 its contract alone for its callers (as an abstract member is), so they are Boogie's still; it may write what the
 effects analysis (`FieldEffects`) says it and its callees write (any field, where that says so), and every array
 unless it writes none (`MayWriteHeap`); a constructor, the fields of the new object it sets too, at that object only.
-Its own body is not verified (CSV1902, saying why). So is a method `--only` leaves out, for its callers.
+Its own body is not verified (CSV1902, saying why). So is a method `--only` leaves out, for its callers. The
+analysis judges a library member no class overrides by what each call hands it: the lambdas and the methods it is
+handed it runs, so what they write, it writes; a LINQ query made where it is handed on (`xs.Where(f)` in
+`xs.Where(f).ToList()`) runs what its own call was handed; an object runs its class's overrides and interface
+implementations, which hand nothing over where they write no field, model or array cell and read no cell (a record's
+own compare, hash and print its fields, so those must hand nothing over either); a list interface is a library
+collection, or an object of a class of the program's that implements it. Anything else of an interface type, an
+`object` or a delegate may run anything. A translated body's frame is what it writes: a library call handed a lambda
+that writes nothing, and a collection comparing elements whose `Equals` changes nothing, write nothing.
 
 **Loops and arrays.** Boogie forgets at a loop head every map the loop modifies. A loop frame keeps the rest: only the
 arrays the loop writes through a variable it doesn't change are forgotten (and all of them where it writes through

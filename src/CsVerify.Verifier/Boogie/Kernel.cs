@@ -631,13 +631,32 @@ namespace CsVerify.Verifier.Boogie
         public ITypeSymbol ArrayType;
         public KExpr Size;
         public KExpr[] Elements;
+        /// <summary>Every cell, as a map from its index (a query's copy, ToArray's); null: the initializer's, the rest the default.</summary>
+        public KExpr Cells;
 
-        public static KNew Of(string var, ITypeSymbol arrayType, KExpr size, KExpr[] elements = null) => new KNew
+        public static KNew Of(string var, ITypeSymbol arrayType, KExpr size, KExpr[] elements = null, KExpr cells = null) => new KNew
         {
             Var = var,
             ArrayType = arrayType,
             Size = size,
             Elements = elements,
+            Cells = cells,
+        };
+    }
+
+    /// <summary>
+    /// A new collection made with what it holds (a query's copy, ToList's or ToHashSet's): an object not allocated
+    /// before, each of its models' rows a specification.
+    /// </summary>
+    internal sealed class KNewCollection : KStmt
+    {
+        public string Var;
+        public (string map, KExpr value)[] Rows;
+
+        public static KNewCollection Of(string var, params (string map, KExpr value)[] rows) => new KNewCollection
+        {
+            Var = var,
+            Rows = rows,
         };
     }
 

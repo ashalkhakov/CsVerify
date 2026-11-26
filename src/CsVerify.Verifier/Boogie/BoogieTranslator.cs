@@ -113,10 +113,10 @@ namespace CsVerify.Verifier.Boogie
             {
                 return c.OfDelegate && IsDelegate(m.ContainingType);
             }
-            // (a lambda or a local function: a unit of its own, in a class's member or a static one)
+            // (a lambda or a local function: a unit of its own, in a class's member, a data type's, or a static one)
             if (IsNested(m))
             {
-                return StaticContext(m) || IsClass(m.ContainingType);
+                return StaticContext(m) || IsClass(m.ContainingType) || IsData(m.ContainingType);
             }
             if (m.IsStatic)
             {

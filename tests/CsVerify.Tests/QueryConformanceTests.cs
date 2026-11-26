@@ -187,6 +187,7 @@ namespace Wrong
                     "System.Collections.Generic.IEnumerable<int>" => "In.Ints(r)",
                     "System.Collections.Generic.IEnumerable<long>" => "In.Longs(r)",
                     "System.Collections.Generic.IEnumerable<double>" => "In.Doubles(r)",
+                    "System.Collections.Generic.IEnumerable<decimal>" => "In.Decimals(r)",
                     "System.Collections.Generic.List<int>" => "In.Ints(r).ToList()",
                     "int[]" => "In.Ints(r).ToArray()",
                     "int" => "In.Int(r)",
@@ -198,6 +199,7 @@ namespace Wrong
                     "System.Func<int, System.Collections.Generic.IEnumerable<int>, int>" => "In.OfGroup(r, __shown)",
                     "System.Func<int, long>" => "In.ToLong(r, __shown)",
                     "System.Func<int, double>" => "In.ToDouble(r, __shown)",
+                    "System.Func<int, decimal>" => "In.ToDecimal(r, __shown)",
                     "System.Func<int, int, bool>" => "In.Test2(r, __shown)",
                     "System.Func<int, int, System.Collections.Generic.IEnumerable<int>>" => "In.Many2(r, __shown)",
                     "System.Linq.IOrderedEnumerable<int>" => null,
@@ -357,6 +359,14 @@ namespace CsVerify.Conformance
             return r.Next(2) == 0 ? (IEnumerable<double>)a : a.ToArray();
         }
 
+        // with fractions, the smallest one, and one so large that adding a fraction rounds (six of them don't overflow)
+        private static readonly decimal[] OddDecimals = { 0.1m, -0.3m, 0.0000000000000000000000000001m, 7922816251426433759354395033.5m, -7922816251426433759354395033.5m };
+        public static IEnumerable<decimal> Decimals(Random r)
+        {
+            var a = Ints(r).Select(x => r.Next(4) == 0 ? OddDecimals[r.Next(OddDecimals.Length)] : x / 4m).ToList();
+            return r.Next(2) == 0 ? (IEnumerable<decimal>)a : a.ToArray();
+        }
+
         private static readonly (string, Func<int, bool>)[] Tests =
             { (""x > 0"", x => x > 0), (""x % 2 == 0"", x => x % 2 == 0), (""true"", x => true), (""false"", x => false), (""x < 3"", x => x < 3) };
         private static readonly (string, Func<int, int>)[] Maps =
@@ -370,6 +380,8 @@ namespace CsVerify.Conformance
             { (""x"", x => x), (""x * 2^40"", x => (long)x << 40), (""long.MaxValue"", x => long.MaxValue) };
         private static readonly (string, Func<int, double>)[] ToDoubles =
             { (""x"", x => x), (""x / 10.0"", x => x / 10.0), (""1.0 / x"", x => 1.0 / x), (""x == 0 ? NaN : x"", x => x == 0 ? double.NaN : x), (""-0.0"", x => -0.0) };
+        private static readonly (string, Func<int, decimal>)[] ToDecimals =
+            { (""x"", x => x), (""x / 3m"", x => x / 3m), (""x * 1e27"", x => x % 7 * 1000000000000000000000000000m), (""1e-28"", x => 0.0000000000000000000000000001m) };
         private static readonly (string, Func<int, IEnumerable<int>, int>)[] OfGroups =
             { (""(k, g) => g.Count()"", (k, g) => g.Count()), (""(k, g) => k"", (k, g) => k), (""(k, g) => g.Any() ? g.First() : -1"", (k, g) => g.Any() ? g.First() : -1),
               (""(k, g) => k * 100 + g.Count(x => x > 0)"", (k, g) => unchecked(k * 100 + g.Count(x => x > 0))) };
@@ -392,6 +404,7 @@ namespace CsVerify.Conformance
         public static Func<int, IEnumerable<int>> Many(Random r, List<string> shown) => Pick(r, Manys, shown);
         public static Func<int, long> ToLong(Random r, List<string> shown) => Pick(r, ToLongs, shown);
         public static Func<int, double> ToDouble(Random r, List<string> shown) => Pick(r, ToDoubles, shown);
+        public static Func<int, decimal> ToDecimal(Random r, List<string> shown) => Pick(r, ToDecimals, shown);
         public static Func<int, int, bool> Test2(Random r, List<string> shown) => Pick(r, Tests2, shown);
         public static Func<int, int, IEnumerable<int>> Many2(Random r, List<string> shown) => Pick(r, Manys2, shown);
         public static Func<int, IEnumerable<int>, int> OfGroup(Random r, List<string> shown) => Pick(r, OfGroups, shown);
