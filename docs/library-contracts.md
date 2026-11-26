@@ -251,8 +251,7 @@ Over `double` the arithmetic is IEEE's ([Floating point](semantics.md#floating-p
 rounding each step, so `{ 0.1, 0.2 }.Sum()` is not 0.3; `Min` is NaN if any element is, and `Max` skips NaN unless all
 are; `Average` is the sum over the count, but for the sign of a zero (.NET adds from 0.0 or from the first element
 by the source's kind, so an average of `-0.0`s is either zero). Over `decimal`, `Sum` adds in order from 0, each sum
-as decimal `+` gives it (rounded to what a decimal holds), and its sign is its elements': a sum below zero has an
-element below it, one above zero an element above. Sums and bounds that need induction over an unknown
+as decimal `+` gives it (rounded to what a decimal holds). Sums and bounds that need induction over an unknown
 length (a `double[]` of 2.0s averages to 2.0) are not proved. `float`, `decimal`, nullable sums and comparers are
 library calls.
 

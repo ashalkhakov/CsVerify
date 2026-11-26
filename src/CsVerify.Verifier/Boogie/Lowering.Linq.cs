@@ -2363,8 +2363,7 @@ namespace CsVerify.Verifier.Boogie
                     return LinqValue(Sel(acc, s.Length), callType, at);
                 }
                 // (decimals: added in order from 0, each sum rounded where it isn't representable, as decimal + is;
-                // what it gives is a decimal, so one past MaxValue, which throws, isn't given. And what no one step
-                // shows: a sum below zero has an element below it, one above zero an element above)
+                // what it gives is a decimal, so one past MaxValue, which throws, isn't given)
                 case "Sum" when args.Count <= 2 && IsDecimal(callType):
                 {
                     var s = MappedSequence(args, call, callType);
@@ -2376,9 +2375,6 @@ namespace CsVerify.Verifier.Boogie
                     LinqFact(Eq(Sel(acc, KLit.Zero), KLit.Zero), at);
                     var j = Atom();
                     LinqFact(Over(KLit.Zero, s.Length, j, Eq(Sel(acc, Plus(j, KLit.One)), new KOp("$dround", Plus(Sel(acc, j), s.Elem.At(j))))), at);
-                    var some = new KVar(LinqMap("int"));
-                    var sum = Sel(acc, s.Length);
-                    LinqFact(Implies(Ne(sum, KLit.Zero), AndAlso(Between(KLit.Zero, some, s.Length), Ite(Lt(sum, KLit.Zero), Lt(s.Elem.At(some), KLit.Zero), Gt(s.Elem.At(some), KLit.Zero)))), at);
                     return LinqValue(Sel(acc, s.Length), callType, at);
                 }
                 // (floating point: IEEE, added in order from 0.0, rounded at each step, as .NET adds them)

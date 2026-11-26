@@ -530,8 +530,7 @@ made with (`KNew`'s cells, `KNewCollection`), as a new array's are: no map is wr
 list behind an interface holds. A sequence of unknown origin (an `IEnumerable<T>` parameter, a field's, a call's result) is read as a value of the
 state, nothing written: a static check (CSV1037, `StaticChecks.Sequences`) has every sequence that would write as it
 is enumerated enumerated where it is made. A double `Sum` adds in order from 0.0, rounding at each step; a `decimal` one from 0,
-each sum as decimal `+` gives it (`$dround`), with the fact no one step shows: a sum below zero has an element below
-it, one above zero an element above. A `foreach` over a query, or over a list interface of any
+each sum as decimal `+` gives it (`$dround`). A `foreach` over a query, or over a list interface of any
 expression (a parameter, a property, a call's result), reads it into a map where the loop starts; `GroupBy` (with a result selector of the key and the group too) gives each key's first element's index, a
 selector reading its `Key` and `Count()` (exact: a running count of the source's elements of that key; a database's
 are bounds); over a `GroupBy`, each group is its key's first element's index, its `Key` that element's key, and a `foreach`

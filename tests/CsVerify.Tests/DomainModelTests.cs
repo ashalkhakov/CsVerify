@@ -710,10 +710,10 @@ public static class Pairs
         }
 
         [Fact]
-        public void ASumOfDecimals_IsAddedInOrder_AndHasItsElementsSign()
+        public void ASumOfDecimals_IsAddedInOrder()
         {
-            // (Sum of decimals: from 0, each sum as decimal + gives it; one below zero has an element below it, one
-            // above zero an element above)
+            // (Sum of decimals: from 0, each sum as decimal + gives it; what needs induction over its elements, their
+            // sign say, isn't known of it)
             var r = Harness.Verify(@"using System.Collections.Generic; using System.Linq;
 public readonly record struct Fee(decimal Amount);
 public sealed record Line(int Kind, Fee Fee);
@@ -723,17 +723,15 @@ public sealed class Bill
     public decimal Total() { return lines.Sum(x => x.Fee.Amount); }
     public decimal Due(Func<Line, bool> include) { Spec.Requires(Spec.Total(include)); return lines.Where(x => x.Kind == 1 && include(x)).Sum(x => x.Fee.Amount); }
     public static decimal None(List<Line> ls) { Spec.Requires(ls.Count == 0); Spec.Ensures<decimal>(r => r == 0m); return ls.Sum(x => x.Fee.Amount); }
-    public static decimal Owed(List<Line> ls) { Spec.Requires(Spec.Forall(0, ls.Count, i => ls[i] != null && ls[i].Fee.Amount >= 0m)); Spec.Ensures<decimal>(r => r >= 0m); return ls.Sum(x => x.Fee.Amount); }
-    public static decimal Refunded(List<Line> ls) { Spec.Requires(Spec.Forall(0, ls.Count, i => ls[i] != null && ls[i].Fee.Amount <= 0m)); Spec.Ensures<decimal>(r => r <= 0m); return ls.Sum(x => x.Fee.Amount); }
+    public static decimal Half(List<Line> ls) { Spec.Requires(ls.Count == 1 && ls[0] != null && ls[0].Fee.Amount == 0.5m); Spec.Ensures<decimal>(r => r == 0.5m); return ls.Sum(x => x.Fee.Amount); }
     public static decimal Hoped(List<Line> ls) { Spec.Ensures<decimal>(r => r >= 0m); return ls.Sum(x => x.Fee.Amount); }
-    public static decimal Feared(List<Line> ls) { Spec.Ensures<decimal>(r => r <= 0m); return ls.Sum(x => x.Fee.Amount); }
-    public static decimal Strict(List<Line> ls) { Spec.Requires(Spec.Forall(0, ls.Count, i => ls[i] != null && ls[i].Fee.Amount >= 0m)); Spec.Ensures<decimal>(r => r > 0m); return ls.Sum(x => x.Fee.Amount); }
+    public static decimal Feared(List<Line> ls) { Spec.Requires(ls.Count == 1 && ls[0] != null && ls[0].Fee.Amount == 0.5m); Spec.Ensures<decimal>(r => r == 1m); return ls.Sum(x => x.Fee.Amount); }
 }");
-            foreach (var ok in new[] { "Bill.Total", "Due", "None", "Owed", "Refunded" })
+            foreach (var ok in new[] { "Bill.Total", "Due", "None", "Half" })
             {
                 Assert.True(r.Errors(ok).Length == 0, r.Explain(ok));
             }
-            foreach (var wrong in new[] { "Hoped", "Feared", "Strict" })
+            foreach (var wrong in new[] { "Hoped", "Feared" })
             {
                 Assert.Equal(new[] { "CSV1002" }, r.Errors(wrong));
             }
