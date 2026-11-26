@@ -169,19 +169,22 @@ namespace CsVerify.Verifier.Boogie
             var v = Declare("t$" + _temps++, element);
             Emit(KAssign.Of(v, value));
             Emit(KCheck.Of(NotNull(receiver), "CSV1013", pr.Instance.Syntax, $"'{pr.Instance.Syntax}' might be null in '{pr.Syntax}'"));
-            var array = KernelTypes.Compilation.CreateArrayTypeSymbol(element);
-            // (an array: its element)
-            var isArray = If(new KOp("$arr", receiver));
-            HeldCell(receiver, pr.Syntax, write: true);
-            Emit(new KStore
+            // (an array: its element; one of Guids has no element map, and is as any other collection)
+            bool cells = Kind(element) != OpaqueKind;
+            var isArray = If(cells ? new KOp("$arr", receiver) : KLit.False);
+            if (cells)
             {
-                Array = receiver,
-                Index = index,
-                Value = new KVar(v),
-                ArrayType = array,
-                At = pr.Syntax,
-                ArrayAt = pr.Instance.Syntax,
-            });
+                HeldCell(receiver, pr.Syntax, write: true);
+                Emit(new KStore
+                {
+                    Array = receiver,
+                    Index = index,
+                    Value = new KVar(v),
+                    ArrayType = KernelTypes.Compilation.CreateArrayTypeSymbol(element),
+                    At = pr.Syntax,
+                    ArrayAt = pr.Instance.Syntax,
+                });
+            }
             Else(isArray);
             // (a List: its setter)
             var isList = If(new KOp("$coll", receiver));

@@ -880,10 +880,10 @@ namespace CsVerify.Verifier.Boogie
                 // (a collection through its interface, neither an array nor a modeled collection: values of the state)
                 Line("function $ocount(r: Ref, s: St): int;");
                 Line("axiom (forall r: Ref, s: St :: { $ocount(r, s) } 0 <= $ocount(r, s) && $ocount(r, s) <= 2147483647);");
-                foreach (var k in ElementTypes.Where(t => !(t is SpecialType.System_Single or SpecialType.System_Double)).Select(t => t == SpecialType.System_Object ? "Ref" : t.ToString().Substring("System_".Length)))
+                foreach (var k in ElementTypes.Where(t => !(t is SpecialType.System_Single or SpecialType.System_Double)).Select(t => t == SpecialType.System_Object ? "Ref" : t.ToString().Substring("System_".Length)).Append(OpaqueKind))
                 {
                     Line($"function $oitem.{k}(r: Ref, i: int, s: St): {BoogieOf(k)};");
-                    if (k is not ("Ref" or "Boolean"))
+                    if (k is not ("Ref" or "Boolean" or OpaqueKind))
                     {
                         var (lo, hi) = Range((SpecialType)System.Enum.Parse(typeof(SpecialType), "System_" + k));
                         Line($"axiom (forall r: Ref, i: int, s: St :: {{ $oitem.{k}(r, i, s) }} {(lo < 0 ? $"({lo})" : lo.ToString())} <= $oitem.{k}(r, i, s) && $oitem.{k}(r, i, s) <= {hi});");
@@ -1245,7 +1245,7 @@ namespace CsVerify.Verifier.Boogie
 
         private string RangeOfKind(string kind, string at)
         {
-            if (kind == null || kind is "Ref" or "Boolean")
+            if (kind == null || kind is "Ref" or "Boolean" or OpaqueKind)
             {
                 return null;
             }

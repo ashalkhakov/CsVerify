@@ -454,6 +454,13 @@ namespace CsVerify.Verifier.Boogie
                 // (not a string's: as an object, one isn't its value, which another equal string may be)
                 case IConversionOperation uc when !uc.IsImplicit && uc.Conversion.IsReference && uc.Conversion.IsImplicit && (IsRef(uc.Type) || IsString(uc.Type)) && IsRef(uc.Operand.Type):
                     return Lower(uc.Operand, mode);
+                // (d as C, of data: d where it's a C, else null; it never throws)
+                case IConversionOperation ta when ta.IsTryCast && ta.Conversion.IsReference && IsData(ta.Type) && IsData(ta.Operand.Type):
+                {
+                    Data(ta.Type);
+                    var v = Operand(ta.Operand, mode);
+                    return Ite(AndAlso(NotNull(v), IsCase(v, ta.Type)), v, KLit.Null);
+                }
                 case IConversionOperation down when !down.IsImplicit && down.Conversion.IsReference && IsData(down.Type) && IsData(down.Operand.Type):
                     return DataDownCast(down, mode);
                 default: return DataExprCoreOther(e, mode);

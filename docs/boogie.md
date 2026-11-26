@@ -770,7 +770,7 @@ sub(dtype(o), T#C)`; `new C(...)` is exactly a C (`dtype(o) == T#C`); in code, a
 of it where it's tested (a fact assumed there; in a specification none is needed). `sub` is C#'s derivation, base
 types and interfaces; unrelated classes have no instance in common, nor have a sealed type and one not above it, and a
 sealed type's instances are of it exactly. Type tests (`is C`, `is C x`, `is not C`, `switch` on them), `as` (`o`
-where it's an instance, else null) and casts (`(C)o`: in code it throws unless `o` is null or an instance;
+where it's an instance, else null; a data value where it's of the case, by its tag, else null) and casts (`(C)o`: in code it throws unless `o` is null or an instance;
 an upcast written as a cast, `(object)o`, is `o`). A `[Pure]` virtual or abstract member
 called on another object is its function, which each `[Pure]` override defines for objects of exactly its class
 (`dtype(this) == T#D ==> f$B(..) == f$D(..)`).
@@ -866,7 +866,9 @@ exception type, where classes have dynamic types too: see "Dynamic types").
   function's precondition is. Its other postconditions are axioms of the function within its domain, and its value
   outside it is its type's default, of which nothing is said. A postcondition that holds is well-defined (each
   return checks it, under the postconditions before it), and a procedure promises that with it: after a call whose
-  postcondition reads the function, the caller's own may read it too, with no read of its own on the way. A lemma,
+  postcondition reads the function, the caller's own may read it too, with no read of its own on the way. So with a
+  filter that code evaluated: a LINQ lambda after a `Where` has the filter as its precondition, in its domain
+  (`parcels.Where(p => p.Current == Phase.Ready).OrderBy(p => p.Weight)`: where the filter held, it returned). A lemma,
   ghost code and a `[Pure]` member whose body
   isn't its definition may not read one (CSV1902): they may not throw. A throw in a `try` of the function's own
   stays CSV1011.
@@ -915,7 +917,9 @@ is an enumerator whose elements aren't known (see Iterators).
 are CsVerify.Bcl's models: maps as fields are, `$F.$M.Size: [Ref]int` (never negative), `$F.$M.Version: [Ref]int`, and
 per kind of value `$F.$M.Items.`*T*`: [Ref][int]`*T* (a list's, stack's or queue's), `$F.$M.Members.`*T*`: [Ref][T]bool`
 (a set's), `$F.$M.Domain.`*K*`: [Ref][K]bool` and `$F.$M.Entries.`*K*`.`*V*`: [Ref][K]V` (a dictionary's), an integer
-type's values in its range, so frames, modifies clauses and delegates' states take them in as they do fields. In
+type's values in its range, so frames, modifies clauses and delegates' states take them in as they do fields. A
+`Guid`, a `DateTime` or a `TimeSpan` in a collection is the integer the kernel keeps for it (an id, its ticks), of
+kind `Value`, an `int` of no range: `$F.$M.Items.Value`, a dictionary's keys compared as the integers are. In
 specifications the models read them, `Count` is `Size`, `l[i]` is `Items[l][i]` (well-defined where `0 <= i < Size`,
 CSV1012), `d[k]` is `Entries[d][k]` (where `Domain[d][k]`), `d.ContainsKey(k)` is `Domain[d][k]`, and `s.Contains(x)`
 is `Members[s][x]`. A `StringBuilder` is a collection of one model, its length (`Size`), and a `TextWriter` one of
@@ -941,7 +945,8 @@ a reference of one of three kinds: an array (`$arr`), a modeled collection (`$co
 or a parameter or result of an array type) is `$arr`. `Count` is
 `if $arr(x) then len(x) else if $coll(x) then Size[x] else $ocount(x, $st(...))`, and `x[i]` the array's cell, the
 list's `Items`, or `$oitem(x, i, $st(...))`: a value of the whole state, so the same until something changes (an
-`l.Clear()` of a list that `x` may be changes `x.Count`). `$st` takes every map of the program, so an expression
+`l.Clear()` of a list that `x` may be changes `x.Count`). An array of `Guid`s has no element map (it is outside the
+subset), so behind an interface it is "anything else": its elements the state's, a write to one a library call. `$st` takes every map of the program, so an expression
 that reads the state more than once names it once, `(var $stNow := $st(...); ...)`: a contract's well-definedness
 repeats each read in what guards the later ones, and written out the state would be most of the program's text
 (not inside `old(...)`, whose maps are the entry's, nor in a trigger). Where the program implements one of

@@ -775,6 +775,7 @@ namespace CsVerify.Verifier
                 {
                     c.Aliases.Add(filter);
                     c.Requires.Add(body);
+                    c.Evaluated.Add(body);
                 }
             }
             return c;

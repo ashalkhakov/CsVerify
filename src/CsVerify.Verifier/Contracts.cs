@@ -51,6 +51,8 @@ namespace CsVerify.Verifier
         public readonly List<(Contract Base, IOperation Frame)> BaseModifies = new List<(Contract, IOperation)>();
         /// <summary>Methods whose parameters stand for this one's in the specifications (a contract class's method, bases).</summary>
         public readonly List<IMethodSymbol> Aliases = new List<IMethodSymbol>();
+        /// <summary>The preconditions that code evaluated before (a filter a LINQ lambda comes after): where one held, it was defined.</summary>
+        public readonly HashSet<IOperation> Evaluated = new HashSet<IOperation>();
         /// <summary>The termination measure's components, compared lexicographically; null without Spec.Decreases.</summary>
         public IReadOnlyList<IOperation> Decreases;
         /// <summary>Spec.Modifies: the objects whose fields the method may write (besides those it allocates); null if none given.</summary>

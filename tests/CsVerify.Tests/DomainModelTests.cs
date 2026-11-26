@@ -261,6 +261,56 @@ public static class Amounts
         }
 
         [Fact]
+        public void ACollectionOfGuidsOrTimes_HoldsThemAsValues()
+        {
+            // (#136, P: a Guid, a DateTime or a TimeSpan is the integer the kernel keeps for it, in a collection too)
+            var r = Harness.Verify(@"using System.Collections.Generic; using System.Linq;
+public sealed class Line
+{
+    public Line(Guid item, int count) { Item = item; Count = count; }
+    public Guid Item { get; }
+    public int Count { get; }
+}
+public sealed class Basket
+{
+    private readonly List<Line> lines = new();
+    public IReadOnlyList<Guid> Items => lines.Select(l => l.Item).ToList();
+    public int Size() { Spec.Ensures<int>(r => r >= 0); return Items.Count; }
+}
+public sealed record Named(Guid Id, string Name);
+public static class Ids
+{
+    public static bool Kept(List<Guid> ids, Guid id)
+    {
+        Spec.Requires(ids.Count < 1000);
+        Spec.Ensures<bool>(r => r && ids.Count == Spec.Old(ids.Count) + 1 && ids[ids.Count - 1] == id);
+        ids.Add(id);
+        return ids.Contains(id);
+    }
+    public static Guid First(IReadOnlyList<Guid> ids) { Spec.Requires(ids.Count > 0); Spec.Ensures<Guid>(r => r == ids[0]); return ids[0]; }
+    public static DateTime Latest(List<DateTime> at)
+    {
+        Spec.Requires(at.Count == 2);
+        Spec.Ensures<DateTime>(r => r >= at[0] && r >= at[1]);
+        return at[0] > at[1] ? at[0] : at[1];
+    }
+    public static int Stock(Dictionary<Guid, int> stock, Guid item) { Spec.Requires(stock.ContainsKey(item) && stock[item] == 3); Spec.Ensures<int>(r => r == 3); return stock[item]; }
+    public static bool Seen(HashSet<Guid> seen, Guid id) { Spec.Ensures<bool>(r => !r && seen.Contains(id)); return seen.Add(id) && !seen.Contains(id); }
+    public static IReadOnlyList<Guid> IdsOf(List<Named> named) { Spec.Ensures<IReadOnlyList<Guid>>(r => r.Count == named.Count); return named.Select(n => n.Id).ToList(); }
+    public static void Put(IList<Guid> ids, Guid id) { Spec.Requires(ids.Count > 0); ids[0] = id; }
+    public static int Waiting(Queue<TimeSpan> q) { Spec.Ensures<int>(r => r == q.Count); return q.Count; }
+    public static bool Wrong(List<Guid> ids, Guid id) { Spec.Ensures<bool>(r => r); return ids.Contains(id); }
+    public static bool WrongStock(Dictionary<Guid, int> stock, Guid a, Guid b) { Spec.Requires(stock.ContainsKey(a)); Spec.Ensures<bool>(r => r); return stock.ContainsKey(b); }
+}");
+            foreach (var ok in new[] { "get_Items", "Size", "Kept", "First", "Latest", "Stock", "Seen", "IdsOf", "Put", "Waiting" })
+            {
+                Assert.True(r.Errors(ok).Length == 0, r.Explain(ok));
+            }
+            Assert.Equal(new[] { "CSV1002" }, r.Errors("Wrong"));
+            Assert.Equal(new[] { "CSV1002" }, r.Errors("WrongStock"));
+        }
+
+        [Fact]
         public void DecimalProductsAndQuotients_AreExact_WhereTheyAreRepresentable()
         {
             var r = Harness.Verify(@"public static class Prices

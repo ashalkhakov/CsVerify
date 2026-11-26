@@ -292,6 +292,33 @@ internal static class C {
         }
 
         [Fact]
+        public void AnAsCastOfARecord_IsNull_WhereItIsntOfTheCase()
+        {
+            // (it never throws: on 0.5.28 it was assumed to succeed, and Absurd verified)
+            var r = Harness.Verify(@"public abstract record Verdict
+{
+    private Verdict() { }
+    public sealed record Yes(int Count) : Verdict;
+    public sealed record No(string Reason) : Verdict;
+}
+public sealed record Outcome(Verdict? Verdict)
+{
+    public string? Why => (Verdict as Verdict.No)?.Reason;
+}
+public static class Casts
+{
+    public static string? Reason(Verdict v) { Spec.Ensures<string?>(r => (r != null) == (v is Verdict.No)); var no = v as Verdict.No; return no?.Reason; }
+    public static bool Why(Outcome o) { Spec.Ensures<bool>(r => r == (o.Verdict is Verdict.No)); return o.Why != null; }
+    public static int Absurd(Verdict v) { Spec.Requires(v is Verdict.Yes); Spec.Ensures<int>(r => r == 1); var no = v as Verdict.No; return 0; }
+}");
+            foreach (var ok in new[] { "Reason", "Why", "get_Why" })
+            {
+                Assert.True(r.Errors(ok).Length == 0, r.Explain(ok));
+            }
+            Assert.Equal(new[] { "CSV1002" }, r.Errors("Absurd"));
+        }
+
+        [Fact]
         public void ARecord_IsEqualToItself_WhateverItsFieldsAre()
         {
             // (a field the kernel doesn't compare, a list's: two records are a relation not known, one is itself)

@@ -138,9 +138,9 @@ namespace CsVerify.Verifier.Boogie
             {
                 return Ite(new MOp("$arr", x), Length(x), Ite(new MOp("$coll", x), Sel(SizeMap, x), new MOp("$ocount", x, new MOp("$state"))));
             }
-            var array = (IArrayTypeSymbol)KernelTypes.Compilation.CreateArrayTypeSymbol(element);
-            return Ite(new MOp("$arr", x), Sel(Elements(array), x, index),
-                Ite(new MOp("$coll", x), Sel(ModelOf("Items", list).Name, x, index), new MOp("$oitem." + kind, x, index, new MOp("$state"))));
+            var other = Ite(new MOp("$coll", x), Sel(ModelOf("Items", list).Name, x, index), new MOp("$oitem." + kind, x, index, new MOp("$state")));
+            // (an array of Guids has no element map: what it holds is the state's, as any other object's)
+            return kind == OpaqueKind ? other : Ite(new MOp("$arr", x), Sel(Elements((IArrayTypeSymbol)KernelTypes.Compilation.CreateArrayTypeSymbol(element)), x, index), other);
         }
     }
 }

@@ -1,3 +1,4 @@
+using System.Linq;
 using Xunit;
 
 namespace CsVerify.Tests
@@ -192,6 +193,30 @@ public static class Fees
             }
             // (its callee's postcondition reads nothing that may throw, and says nothing of Stored)
             Assert.Contains("CSV1012", r.Errors("Unread"));
+        }
+
+        [Fact]
+        public void AFilterThatCodeEvaluated_IsDefined_WhereItHeld()
+        {
+            // (a lambda after a Where has the filter as its precondition: the filter returned, so what it reads was defined)
+            var r = Harness.Verify(@"using System.Collections.Generic; using System.Linq;
+public enum Phase { Waiting, Ready }
+public sealed class Parcel
+{
+    public Phase? Stored { get; private set; }
+    public int Weight { get; private set; }
+    public Phase Current => Stored ?? throw Unset(""phase"");
+    private InvalidOperationException Unset(string what) => new($""Parcel has no {what}."");
+}
+public static class Sorting
+{
+    public static IReadOnlyList<Parcel> Ready(IEnumerable<Parcel> parcels) => parcels.Where(p => p.Current == Phase.Ready).OrderBy(p => p.Weight).ToList();
+    public static int ReadyCount(List<Parcel> parcels) { Spec.Ensures<int>(r => r >= 0); return parcels.Count(p => p.Current == Phase.Ready); }
+    public static int Wrong(List<Parcel> parcels) { Spec.Ensures<int>(r => r > 0); return parcels.Count(p => p.Current == Phase.Ready); }
+}");
+            // (the lambdas verify too)
+            Assert.Equal(new[] { "Sorting.Wrong" }, r.Methods.Where(m => m.Diagnostics.Any(d => d.IsError)).Select(m => m.Name).ToArray());
+            Assert.Equal(new[] { "CSV1002" }, r.Errors("Wrong"));
         }
 
         [Fact]

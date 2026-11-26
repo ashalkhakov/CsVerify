@@ -811,7 +811,13 @@ namespace CsVerify.Verifier.Boogie
         /// </summary>
         public static bool IsCollectionInterface(ITypeSymbol t) =>
             t is INamedTypeSymbol { TypeKind: TypeKind.Interface, Arity: 1 } n && n.ContainingNamespace?.ToDisplayString() == "System.Collections.Generic" &&
-            n.Name is "IList" or "IReadOnlyList" or "ICollection" or "IReadOnlyCollection" && (FuncValue(n.TypeArguments[0]) || IsData(n.TypeArguments[0]));
+            n.Name is "IList" or "IReadOnlyList" or "ICollection" or "IReadOnlyCollection" && (FuncValue(n.TypeArguments[0]) || IsData(n.TypeArguments[0]) || IsOpaqueElement(n.TypeArguments[0]));
+
+        /// <summary>
+        /// A Guid, a DateTime or a TimeSpan in a collection: the integer the kernel keeps for it (an id, its ticks), which
+        /// the collection compares as it is. Its kind is Value: an integer of no C# integer type's range.
+        /// </summary>
+        public static bool IsOpaqueElement(ITypeSymbol t) => IsOpaqueId(t) || IsOpaqueTicks(t);
 
         /// <summary>The program's own classes or structs that implement a collection interface: then a read through it is unknown at each read.</summary>
         public static bool ImplementedHere(INamedTypeSymbol ifc)
@@ -858,9 +864,9 @@ namespace CsVerify.Verifier.Boogie
             {
                 return Ite(new KOp("$arr", x), Length(x), Ite(new KOp("$coll", x), Sel(SizeMap, x), new KOp("$ocount", x, new KOp("$state"))));
             }
-            var array = (IArrayTypeSymbol)Compilation.CreateArrayTypeSymbol(element);
-            return Ite(new KOp("$arr", x), Sel(Elements(array), x, index),
-                Ite(new KOp("$coll", x), Sel(ModelOf("Items", list).Name, x, index), new KOp("$oitem." + kind, x, index, new KOp("$state"))));
+            var other = Ite(new KOp("$coll", x), Sel(ModelOf("Items", list).Name, x, index), new KOp("$oitem." + kind, x, index, new KOp("$state")));
+            // (an array of Guids has no element map: what it holds is the state's, as any other object's)
+            return kind == OpaqueKind ? other : Ite(new KOp("$arr", x), Sel(Elements((IArrayTypeSymbol)Compilation.CreateArrayTypeSymbol(element)), x, index), other);
         }
 
         /// <summary>The BCL collections whose contents CsVerify.Bcl's models are (their stub contracts speak of them).</summary>
@@ -881,7 +887,7 @@ namespace CsVerify.Verifier.Boogie
         /// members of a set are compared as the verifier compares them: as values, by reference, strings by content.
         /// </summary>
         public static bool IsCollection(ITypeSymbol t) =>
-            CollectionKind(t) is string kind && ((INamedTypeSymbol)t).TypeArguments.Select((a, i) => FuncValue(a) ||
+            CollectionKind(t) is string kind && ((INamedTypeSymbol)t).TypeArguments.Select((a, i) => FuncValue(a) || IsOpaqueElement(a) ||
                 // (a dictionary's values may be data, which it never compares; a list's elements too, where it doesn't
                 // compare them: Lowering refuses Contains, IndexOf and Remove of them)
                 kind == "Dictionary" && i == 1 && IsData(a) || kind == "List" && (IsData(a) || IsTuple(a))).All(x => x);
@@ -922,8 +928,10 @@ namespace CsVerify.Verifier.Boogie
             t is INamedTypeSymbol { Arity: 2 } n && n.OriginalDefinition.ToDisplayString() == "System.Collections.Generic.KeyValuePair<TKey, TValue>" &&
             n.TypeArguments.All(FuncValue);
 
-        /// <summary>A value's kind, as Boogie keeps it: an integer type's name, Boolean, or Ref.</summary>
-        public static string Kind(ITypeSymbol t) => Scalar(t) ? Sp(t).ToString().Substring("System_".Length) : "Ref";
+        /// <summary>A value's kind, as Boogie keeps it: an integer type's name, Boolean, Value (a Guid's or a DateTime's integer), or Ref.</summary>
+        public static string Kind(ITypeSymbol t) => Scalar(t) ? Sp(t).ToString().Substring("System_".Length) : IsOpaqueElement(t) ? OpaqueKind : "Ref";
+
+        public const string OpaqueKind = "Value";
 
         /// <summary>A kind's Boogie type.</summary>
         public static string BoogieOf(string kind) => kind == "Ref" ? "Ref" : kind == "Boolean" ? "bool" : "int";

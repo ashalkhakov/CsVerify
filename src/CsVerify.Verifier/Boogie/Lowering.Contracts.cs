@@ -178,7 +178,9 @@ namespace CsVerify.Verifier.Boogie
             }
             foreach (var r in contract.Requires)
             {
-                l._p.AddRequires(KSpec.Of(l.Spec(r, null), r.Syntax));
+                var held = l.Spec(r, null);
+                // (a filter that code evaluated: it returned, so the functions it reads were in their domains)
+                l._p.AddRequires(KSpec.Of(contract.Evaluated.Contains(r) ? AndAlso(new KOp("$domain", held), held) : held, r.Syntax));
             }
             foreach (var (type, cond, at) in contract.ThrowEnsures)
             {
