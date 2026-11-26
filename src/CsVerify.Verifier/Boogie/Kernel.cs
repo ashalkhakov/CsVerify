@@ -775,6 +775,16 @@ namespace CsVerify.Verifier.Boogie
         };
     }
 
+    /// <summary>
+    /// this, handed over in its constructor (an argument, a receiver, a value stored): it must be built already, and is
+    /// an object like any other from here on (Checks.Built).
+    /// </summary>
+    internal sealed class KBuilt : KStmt
+    {
+        public ITypeSymbol Type;
+        public SyntaxNode At;
+    }
+
     /// <summary>A call of code whose contract isn't known (IDisposable.Dispose, as using calls it): it may change anything.</summary>
     internal sealed class KHavocAll : KStmt
     {
@@ -1039,6 +1049,8 @@ namespace CsVerify.Verifier.Boogie
         /// <summary>An instance method or constructor: its receiver is the parameter this.</summary>
         public bool HasThis;
         public bool IsCtor;
+        /// <summary>A constructor that hands this over (KBuilt): Checks.BuiltFlag says whether it has, at each point.</summary>
+        public bool ThisEscapes;
         /// <summary>A list's constructor, from its stub: a procedure that returns the new list.</summary>
         public bool ListCtor;
         /// <summary>A struct's constructor: it gives the value it makes (this, a value it writes, its default to begin with).</summary>

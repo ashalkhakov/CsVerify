@@ -308,6 +308,10 @@ namespace CsVerify.Verifier.Boogie
             {
                 Emit(MAssume.Of(Implies(NotNull(o), NotNull(v)), always: true));
             }
+            else if (ReadNonNull(fd.Field))
+            {
+                AssumeBuilt(fd.Field);
+            }
             // (a readonly array only its initializer sets: of the initializer's length, in a built object)
             if (InitializedLength(fd.Field) is int length && !(_p.IsCtor && fd.OnThis))
             {

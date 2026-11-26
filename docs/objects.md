@@ -29,7 +29,7 @@ An **object invariant** is a `[Pure]` parameterless `bool` method marked `[Invar
   - Verifying one: the new object's fields start at their defaults and the field initializers run.
   - At `new C(...)`: the constructor's preconditions are checked and its postconditions assumed about the new object. That object is distinct from every reference in scope, and its fields are their defaults unless the constructor or an initializer sets them.
   - A class's primary constructor (`class Store(Db db)`) is called by its contract: its parameters' types (a non-nullable one is checked not null at each call), and what it may write, the effects analysis's; its initializers aren't verified. A parameter its members read is a function of the object, what the constructor was given, as C# keeps it in a hidden field. One assigned after construction (`x = y` in a member) is not translated, which the methods that use it say (CSV1902).
-- **Nullability.** A field of non-nullable type is never null once its object is built. Every write proves it (CSV1014); a constructor must set it before returning, except a `required` one, which every object initializer sets; and `this` may not escape a constructor of such a class (CSV1015). A static field is not null when its initializer makes an object.
+- **Nullability.** A field of non-nullable type is never null once its object is built. Every write proves it (CSV1014); a constructor must set it before returning, except a `required` one, which every object initializer sets; and `this` may leave a constructor (as an argument, a call's receiver, a value stored) only once every such field is set (CSV1015), after which a call on it leaves them set. In a class others derive from, it may not where a derived class's constructor is yet to set a field of its own (one without an initializer). A static field is not null when its initializer makes an object.
 
 **Owned objects (ATS style).** A class marked `[Owned]` is written only through its object's **view**, `Own<C>`. That is a zero-size `[Linear]` token, so the linearity analyzer ensures at most one exists per object. Views erase like the other proof types.
 - **Making a view.** `Own.New(new C(...), out var view)` takes ownership of a new object, and only a new one (CSV1016).
@@ -169,7 +169,7 @@ Verification is modular, with behavioural subtyping (Liskov), as in Dafny, Spec#
 - **Properties with code** are methods. A getter or setter with a body is verified and called with its contract, and so is an abstract, virtual or interface accessor. A `[Pure]` property is a function usable in specifications.
 - **Invariants of immutable classes.** In a class whose instance fields are all `readonly`, an `[Invariant]`:
   - is proved where each constructor returns, and assumed wherever fields are read;
-  - may not be relied on early: `this` may not escape a constructor before the invariant holds (CSV1015).
+  - may not be relied on early: `this` may not escape a constructor before the invariant holds, nor may the constructor write a field after it has (CSV1015).
 
 An `[Invariant]` on a mutable class gets a warning and is not used. Use the immutable, `[Owned]` or Dafny `Valid()` style for those.
 

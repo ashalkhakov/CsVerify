@@ -456,10 +456,12 @@ namespace CsVerify.Verifier.Boogie
                 {
                     _headInto = null;
                 }
+                _inBody = true;
                 foreach (var s in b.Stmts)
                 {
                     Statement(s, contract.Decreases);
                 }
+                _inBody = false;
                 _headInto = null;
                 switch (b.Jump)
                 {
@@ -644,6 +646,12 @@ namespace CsVerify.Verifier.Boogie
             if (_p.HasThis && !_p.IsCtor && !DefinesInvariant(_p.Method))
             {
                 ObjectInvariant(new MVar("this"), _p.Method.ContainingType);
+            }
+            // (a constructor that hands this over: it hasn't yet)
+            if (_p.ThisEscapes)
+            {
+                _p.AddLocal(KLocal.Of(BuiltFlag, "bool"));
+                Emit(MAssign.Of(BuiltFlag, MLit.False));
             }
             if (_m.Frame != null)
             {

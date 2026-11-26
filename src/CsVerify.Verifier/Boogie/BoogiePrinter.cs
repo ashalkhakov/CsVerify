@@ -106,15 +106,31 @@ namespace CsVerify.Verifier.Boogie
         /// <summary>The scalars of the nullable values it names (int?: Int32).</summary>
         private readonly HashSet<string> _nullables = new HashSet<string>();
 
-        /// <summary>The static readonly fields' values never null (made by new, of a non-nullable type), once each.</summary>
+        /// <summary>
+        /// The static readonly fields' values, once each: never null (made by new, of a non-nullable type); of their
+        /// types, within the type's range, each part within its, a data value one of its type's cases.
+        /// </summary>
         public void StaticReadonlyFacts()
         {
             foreach (var k in (KernelTypes.StaticReadonlyNonNull ?? new HashSet<int>()).OrderBy(x => x).Where(_staticFacts.Add))
             {
                 Line($"axiom $sfRef({k}) != null;");
             }
+            foreach (var (k, type) in (KernelTypes.StaticReadonlyTypes ?? new Dictionary<int, ITypeSymbol>()).OrderBy(x => x.Key).Where(x => _staticTyped.Add(x.Key)).Select(x => (x.Key, x.Value)))
+            {
+                var value = new MOp("$sf" + (TypeOf(type) == "Ref" ? "Ref" : TypeOf(type) == "int" ? "Int" : "Bool"), new MLit(k.ToString()));
+                foreach (var fact in Ranges(value, type, InProcedure))
+                {
+                    Line($"axiom {fact};");
+                }
+                if (IsData(type) && !type.IsValueType && _caseTags != null && KernelTypes.Data.Cases(DataTypes.Def(type)) is { } cases && cases.All(c => _caseTags.ContainsKey("$is." + CaseName(c).Substring(3))))
+                {
+                    Line($"axiom {E(value, InProcedure)} == null || {ByTag(MathTypes.IsCase(value, type), InProcedure)};");
+                }
+            }
         }
         private readonly HashSet<int> _staticFacts = new HashSet<int>();
+        private readonly HashSet<int> _staticTyped = new HashSet<int>();
 
         public void Tuples()
         {
@@ -137,19 +153,17 @@ namespace CsVerify.Verifier.Boogie
             // (a nullable value: null, or the one reference of its value)
             foreach (var u in _nullables.OrderBy(x => x, System.StringComparer.Ordinal))
             {
-                // (an opaque value's, DateTime's or Guid's: an int of no range)
-                // (a struct's: the struct's value, a reference)
-                var scalar = System.Enum.TryParse<SpecialType>("System_" + u, out var st) && (st == SpecialType.System_Boolean || KernelTypes.Widths.ContainsKey(st));
-                var ty = u.StartsWith(KernelTypes.StructNullable) ? "Ref" : scalar && st == SpecialType.System_Boolean ? "bool" : "int";
-                var ranged = scalar && st != SpecialType.System_Boolean;
-                var range = ranged ? $"{Range(st).lo} <= v && v <= {Range(st).hi}" : "true";
+                // (its value: a struct's, a reference; any other's, of its type, and within the type's range where it has one)
+                var of = u.StartsWith(KernelTypes.StructNullable) ? null : KernelTypes.Compilation.GetTypeByMetadataName("System." + u);
+                var ty = of == null ? "Ref" : TypeOf(of);
+                string Typed(MExpr v) => of != null && MathTypes.Within(v, of) is MExpr typed ? E(typed, InProcedure) : null;
                 Line($"function $nv.{u}(x: Ref): {ty};");
                 Line($"function $nmk.{u}(v: {ty}): Ref;");
-                Line($"axiom (forall v: {ty} :: {{ $nmk.{u}(v) }} {range} ==> $nmk.{u}(v) != null && $nv.{u}($nmk.{u}(v)) == v);");
+                Line($"axiom (forall v: {ty} :: {{ $nmk.{u}(v) }} {Typed(new MVar("v")) ?? "true"} ==> $nmk.{u}(v) != null && $nv.{u}($nmk.{u}(v)) == v);");
                 Line($"axiom (forall x: Ref :: {{ $nv.{u}(x) }} x != null ==> $nmk.{u}($nv.{u}(x)) == x);");
-                if (ranged)
+                if (Typed(new MOp("$nv." + u, new MVar("x"))) is string within)
                 {
-                    Line($"axiom (forall x: Ref :: {{ $nv.{u}(x) }} {Range(st).lo} <= $nv.{u}(x) && $nv.{u}(x) <= {Range(st).hi});");
+                    Line($"axiom (forall x: Ref :: {{ $nv.{u}(x) }} {within});");
                 }
             }
             foreach (var f in _tuples.OrderBy(x => x, System.StringComparer.Ordinal))
@@ -1293,10 +1307,16 @@ namespace CsVerify.Verifier.Boogie
             {
                 var map = FieldMap(f);
                 var t = FieldType(f);
-                // (a field holds a value of its type: an integer in its range, a decimal in its, a DateTime's and a
-                // TimeSpan's ticks in theirs)
-                var of = IsGhost(t) || IsData(t) ? null : MathTypes.OfType(Sel(map, new MVar("o")), t);
-                var where = of != null ? $" where (forall o: Ref :: {E(of, InProcedure)})" : "";
+                // (a field holds a value of its type: within its range, and each of its parts within its; a data value
+                // one of its type's cases, by its tag, or null)
+                var of = IsGhost(t) ? new List<string>() : Ranges(Sel(map, new MVar("o")), t, InProcedure).ToList();
+                if (IsData(t) && !t.IsValueType && !KernelTypes.Data.IsOpen(DataTypes.Def(t)))
+                {
+                    _tags = KernelTypes.Data.Cases(DataTypes.Def(t)).ToDictionary(c => "$is." + CaseName(c).Substring(3), c => KernelTypes.Data.TagOf(c));
+                    of.Add($"({map}[o] == null || {E(MathTypes.IsCase(Sel(map, new MVar("o")), t), InProcedure)})");
+                    _tags = null;
+                }
+                var where = of.Count > 0 ? $" where (forall o: Ref :: {{ {map}[o] }} {string.Join(" && ", of)})" : "";
                 Line($"var {map}: [Ref]{TypeOf(t)}{where};");
             }
             // (each object's ownership tree's root)
@@ -1607,16 +1627,9 @@ namespace CsVerify.Verifier.Boogie
             }
             foreach (var x in m.Parameters.Where(x => x.RefKind is RefKind.Ref or RefKind.Out))
             {
-                if (IsIntegral(x.Type))
+                foreach (var fact in Ranges(new MVar(Local(x)), x.Type, cx))
                 {
-                    Line($"  free ensures {E(MathTypes.InRange(new MVar(Local(x)), x.Type), cx)};");
-                }
-                if (IsStruct(x.Type))
-                {
-                    foreach (var fact in ValueFacts(Local(x), x.Type, null, cx))
-                    {
-                        Line($"  free ensures {fact};");
-                    }
+                    Line($"  free ensures {fact};");
                 }
                 if (IsRef(x.Type))
                 {
@@ -1659,14 +1672,14 @@ namespace CsVerify.Verifier.Boogie
             {
                 Line($"  free ensures {(Snapshots(e.Expr) || MentionsAny(e.Expr, p.Source.AssignedParams.Keys) ? "true" : E(e.Expr, cx))};");
             }
-            if (Returns(m) != null && (IsIntegral(Returns(m)) || IsDecimal(Returns(m))) && !p.Source.Ghost)
+            if (Returns(m) != null && !p.Source.Ghost && MathTypes.Within(new MVar("result"), Returns(m)) is MExpr within)
             {
-                Line($"  free ensures {E(MathTypes.OfType(new MVar("result"), Returns(m)), cx)};");
+                Line($"  free ensures {E(within, cx)};");
             }
-            // (a struct's or a tuple's parts: each of its type, an integer in its range, a data value one of its cases)
+            // (a struct's or a tuple's parts: each of its type, within its range, a data value one of its cases)
             if (Returns(m) is ITypeSymbol rt && (IsStruct(rt) || IsTuple(rt) || IsNullableStruct(rt)) && !p.Source.Ghost)
             {
-                foreach (var (part, pt) in MathTypes.Parts(new MVar("result"), rt).Where(x => IsIntegral(x.type) || IsDecimal(x.type) || IsData(x.type)))
+                foreach (var (part, pt) in MathTypes.Parts(new MVar("result"), rt).Where(x => IsData(x.type) || MathTypes.Within(x.part, x.type) != null))
                 {
                     Line($"  free ensures {ByTag(MathTypes.OfType(part, pt), cx)};");
                 }
@@ -1737,13 +1750,14 @@ namespace CsVerify.Verifier.Boogie
                     Line("  var cowner: [Ref][int]Inst;");
                 }
             }
-            // (an integer variable is always in its type's range: where Boogie havocs it, at a loop head, too. A variable of
+            // (a variable of a type with a range is always within it, as a struct's parts are within theirs: where Boogie
+            // havocs it, at a loop head, too. A variable of
             // the program's of a non-nullable reference type is never null: each write to it is checked, and it's read only
             // once written; one of data type holds a value of its type)
             foreach (var l in p.Source.Locals)
             {
                 Line(l.Raw != null ? $"  var {l.Name}: {l.Raw};" :
-                     IsIntegral(l.Type) || IsDecimal(l.Type) ? $"  var {l.Name}: int where {E(MathTypes.OfType(new MVar(l.Name), l.Type), cx)};" :
+                     l.Type != null && Ranges(new MVar(l.Name), l.Type, cx).ToList() is { Count: > 0 } ranges ? $"  var {l.Name}: {TypeOf(l.Type)} where {string.Join(" && ", ranges)};" :
                      l.Name.StartsWith("l$") && (IsData(l.Type) || IsGhost(l.Type) && IsData(GhostOf(l.Type))) && _caseTags != null ? $"  var {l.Name}: Ref where {ByTag(MathTypes.OfType(new MVar(l.Name), l.Type), cx)};" :
                      l.Name.StartsWith("l$") && IsNullable(l.Type) && NotNullable(l.Type) && TypeOf(l.Type) == "Ref" ? $"  var {l.Name}: Ref where {l.Name} != null;" :
                      $"  var {l.Name}: {TypeOf(l.Type)};");
@@ -1920,26 +1934,29 @@ namespace CsVerify.Verifier.Boogie
             }
         }
 
+        /// <summary>
+        /// A value of a type is within the type's range (an integer, a decimal, a DateTime's or a TimeSpan's ticks), and
+        /// so is each of its parts (MathTypes.PartsWithin).
+        /// </summary>
+        private IEnumerable<string> Ranges(MExpr v, ITypeSymbol type, Context cx)
+        {
+            if (MathTypes.Within(v, type) is MExpr within)
+            {
+                yield return E(within, cx);
+            }
+            foreach (var part in MathTypes.PartsWithin(v, type))
+            {
+                yield return E(part, cx);
+            }
+        }
+
         /// <summary>What a value from elsewhere is, of its type: a parameter's, a variable a lambda captures.</summary>
         private IEnumerable<string> ValueFacts(string local, ITypeSymbol type, IParameterSymbol x, Context cx)
         {
             var name = E(new MVar(local), cx);
-            if (IsIntegral(type))
+            foreach (var range in Ranges(new MVar(local), type, cx))
             {
-                yield return E(MathTypes.InRange(new MVar(local), type), cx);
-            }
-            // (a DateTime's or a TimeSpan's ticks, a decimal: within its range)
-            if ((IsOpaqueTicks(type) || IsDecimal(type)) && MathTypes.OfType(new MVar(local), type) is MExpr ticks)
-            {
-                yield return E(ticks, cx);
-            }
-            // (a struct's integer and decimal fields, at any depth: each in its type's range; a nullable struct's value's)
-            if (IsStruct(type) || IsNullableStruct(type))
-            {
-                foreach (var (part, pt) in MathTypes.Parts(new MVar(local), type).Where(x => IsIntegral(x.type) || IsDecimal(x.type)))
-                {
-                    yield return E(MathTypes.OfType(part, pt), cx);
-                }
+                yield return range;
             }
             // (a span from elsewhere: its cells some array's, within its length)
             if (IsSpan(type))

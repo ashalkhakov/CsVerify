@@ -436,6 +436,11 @@ namespace CsVerify.Verifier.Boogie
                         // (of a quantifier's variable: a fact of each value of it, stated where its quantifier closes)
                         (o.Mentions(_bound) ? _boundFacts : _facts).Add(Implies(NotNull(o), NotNull(v)));
                     }
+                    // (this constructor's object, where it is built already: in the body, whose state the flag is of)
+                    else if (ReadNonNull(fd.Field) && _p.ThisEscapes && _inBody)
+                    {
+                        _facts.Add(Implies(new MVar(BuiltFlag), NotNull(v)));
+                    }
                     if (IsRef(FieldType(fd.Field)) && !o.Mentions(_bound))
                     {
                         _facts.Add(Allocated(o, v));

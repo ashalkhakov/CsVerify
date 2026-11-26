@@ -769,7 +769,7 @@ namespace CsVerify.Verifier.Boogie
             _printer.Fields(fields);
             // (before the data types: their invariants may call functions, which read no arrays)
             OwnArrays();
-            DataTypes();
+            DataTypes(fields);
             // (the lists' models: maps as fields are)
             foreach (var p in _pending.Where(p => IsFunction(p.Source.Method)))
             {
@@ -1023,8 +1023,13 @@ namespace CsVerify.Verifier.Boogie
         /// What a data field's value is, of its type: one of its cases, in its range; not null, a reference its type says
         /// isn't (each construction checks its arguments, CSV1014).
         /// </summary>
-        private static MExpr FieldOfType(MExpr v, ITypeSymbol t) =>
-            MathTypes.OfType(v, t) ?? (!IsData(t) && TypeOf(t) == "Ref" && IsNullable(t) && NotNullable(t) ? NotNull(v) : null);
+        private static MExpr FieldOfType(MExpr v, ITypeSymbol t)
+        {
+            // (a struct's or a tuple's parts, a nullable struct's value's where it has one: each within its type's range)
+            var parts = MathTypes.PartsWithin(v, t).ToList();
+            var whole = MathTypes.OfType(v, t) ?? (!IsData(t) && TypeOf(t) == "Ref" && IsNullable(t) && NotNullable(t) ? NotNull(v) : null);
+            return parts.Count == 0 ? whole : MOp.AndAll(whole == null ? parts : parts.Prepend(whole));
+        }
 
         /// <summary>What a function of a data value d gives, of its type: a data value one of its cases (or null, where its type allows), any other as FieldOfType.</summary>
         private static MExpr FieldFact(string function, ITypeSymbol type)
@@ -1066,9 +1071,14 @@ namespace CsVerify.Verifier.Boogie
         }
 
         /// <summary>The data types named, their cases and the data types of their fields: Dafny's datatypes.</summary>
-        private void DataTypes()
+        private void DataTypes(IEnumerable<ISymbol> heapFields)
         {
             var defs = new HashSet<INamedTypeSymbol>(_pending.SelectMany(p => p.Source.DataTypes).Concat(_signatures.Values.SelectMany(s => s.DataTypes)), SymbolEqualityComparer.Default);
+            // (the types of the fields: each map says its values are of its type's cases)
+            foreach (var t in heapFields.Select(FieldType).Where(t => IsData(t) && !t.IsValueType))
+            {
+                defs.Add(Verifier.DataTypes.Def(t));
+            }
             // (the types of the procedures' parameters and results: their facts name them, a body or none)
             foreach (var t in _pending.Select(p => p.Source).Concat(_signatures.Values).SelectMany(p => p.Method.Parameters.Select(x => x.Type).Append(Returns(p.Method))).Where(t => t != null && IsData(t)))
             {

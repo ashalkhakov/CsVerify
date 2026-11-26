@@ -28,8 +28,9 @@ namespace CsVerify.Verifier
         /// A class whose instance constructor has no body of its own (it has none, or a primary constructor) is never
         /// verified as a method, so its fields' initializers are checked here: each non-nullable field (not
         /// <c>required</c>) must start not null. Its initializer must make an object or array, be a string literal
-        /// or interpolation, call a method that returns non-null, or be a non-nullable parameter of the primary
-        /// constructor. <c>= null!</c>, or no initializer, is reported (CSV1014).
+        /// or interpolation, call a method that returns non-null, be a non-nullable parameter of the primary
+        /// constructor, or be a static readonly field that itself starts with an object.
+        /// <c>= null!</c>, or no initializer, is reported (CSV1014).
         /// </summary>
         internal static IEnumerable<(ISymbol field, SyntaxNode at, string message)> ImplicitConstructorNulls(INamedTypeSymbol type, System.Func<SyntaxTree, SemanticModel> modelOf)
         {
@@ -81,14 +82,16 @@ namespace CsVerify.Verifier
                     return true;
                 case LiteralExpressionSyntax l: return l.IsKind(Microsoft.CodeAnalysis.CSharp.SyntaxKind.StringLiteralExpression);
                 case ParenthesizedExpressionSyntax paren: return StartsNotNull(paren.Expression, model);
+                // (a static readonly field that starts with an object stays that one: string.Empty, the program's own)
+                case ExpressionSyntax e when model.GetSymbolInfo(e).Symbol is IFieldSymbol { IsStatic: true, IsReadOnly: true } made && IsNonNullableType(made.Type):
+                    return made.ContainingType.SpecialType == SpecialType.System_String && made.Name == "Empty" || made.DeclaringSyntaxReferences.Select(r => r.GetSyntax()).OfType<VariableDeclaratorSyntax>().Any(v =>
+                        v.Initializer?.Value is BaseObjectCreationExpressionSyntax or ArrayCreationExpressionSyntax or ImplicitArrayCreationExpressionSyntax or CollectionExpressionSyntax ||
+                        v.Initializer?.Value is LiteralExpressionSyntax text && text.IsKind(Microsoft.CodeAnalysis.CSharp.SyntaxKind.StringLiteralExpression));
                 case InvocationExpressionSyntax call:
                     return model.GetSymbolInfo(call).Symbol is IMethodSymbol m && IsNonNullableReturn(m) && !(model.GetOperation(call) is null);
                 case IdentifierNameSyntax id:
                     // a primary constructor's parameter: each caller proves it is not null
                     return model.GetSymbolInfo(id).Symbol is IParameterSymbol ps && ps.RefKind == RefKind.None && IsNonNullableType(ps.Type);
-                case MemberAccessExpressionSyntax ma when ma.Name.Identifier.Text == "Empty":
-                    // string.Empty, Array.Empty<T>() is a call
-                    return model.GetSymbolInfo(ma).Symbol is IFieldSymbol f && f.ContainingType.SpecialType == SpecialType.System_String;
                 default: return false;
             }
         }

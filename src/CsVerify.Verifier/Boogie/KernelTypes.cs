@@ -43,6 +43,8 @@ namespace CsVerify.Verifier.Boogie
         [System.ThreadStatic] public static Dictionary<string, int> StaticReadonlyIds;
         /// <summary>Of those, the ones never null (made by new, of a non-nullable type): an axiom each.</summary>
         [System.ThreadStatic] public static HashSet<int> StaticReadonlyNonNull;
+        /// <summary>Each one's type: its value is a value of it.</summary>
+        [System.ThreadStatic] public static Dictionary<int, ITypeSymbol> StaticReadonlyTypes;
 
         /// <summary>The scalar types the user's code has arrays, spans or memory of: of any type an expression or a declaration of it has.</summary>
         public static HashSet<SpecialType> NamesScalarArrays(Compilation c, IEnumerable<SyntaxTree> userTrees)
@@ -1215,6 +1217,55 @@ namespace CsVerify.Verifier.Boogie
         /// </summary>
         public static bool HasObjectInvariant(ITypeSymbol t) =>
             t is INamedTypeSymbol n && IsClass(n) && !SpecSymbols.IsOwned(n) && HasInvariantMethods(n) && Immutable(n);
+
+        /// <summary>
+        /// A class of the program that derives from t and whose objects aren't built while t's constructor runs: its own
+        /// constructor is yet to set a non-nullable field (one with no initializer, which would run first) or to
+        /// establish an invariant of its own. Null where there is none.
+        /// </summary>
+        public static INamedTypeSymbol BuiltLater(INamedTypeSymbol t)
+        {
+            if (t.IsSealed || t.TypeKind != TypeKind.Class || Compilation == null)
+            {
+                return null;
+            }
+            bool Later(INamedTypeSymbol d)
+            {
+                var b = d.BaseType;
+                while (b != null && !SymbolEqualityComparer.Default.Equals(b.OriginalDefinition, t.OriginalDefinition))
+                {
+                    b = b.BaseType;
+                }
+                return b != null && (HasInvariantMethods(d) ||
+                    d.GetMembers().Any(m => !m.IsStatic && IsField(m) && IsNullable(FieldType(m)) && NotNullable(FieldType(m)) && !HasInitializer(m)));
+            }
+            INamedTypeSymbol Find(INamespaceOrTypeSymbol scope)
+            {
+                foreach (var m in scope.GetMembers())
+                {
+                    if (m is INamespaceSymbol || m is INamedTypeSymbol { DeclaringSyntaxReferences.Length: > 0 })
+                    {
+                        if (m is INamedTypeSymbol d && Later(d))
+                        {
+                            return d;
+                        }
+                        if (Find((INamespaceOrTypeSymbol)m) is INamedTypeSymbol inner)
+                        {
+                            return inner;
+                        }
+                    }
+                }
+                return null;
+            }
+            return Find(Compilation.Assembly.GlobalNamespace);
+        }
+
+        /// <summary>A field or auto-property with an initializer, or a primary constructor's parameter's: set before any constructor's body runs.</summary>
+        private static bool HasInitializer(ISymbol field) =>
+            field.DeclaringSyntaxReferences.Select(r => r.GetSyntax()).Any(s =>
+                s is Microsoft.CodeAnalysis.CSharp.Syntax.ParameterSyntax ||
+                s is Microsoft.CodeAnalysis.CSharp.Syntax.VariableDeclaratorSyntax { Initializer: not null } ||
+                s is Microsoft.CodeAnalysis.CSharp.Syntax.PropertyDeclarationSyntax { Initializer: not null });
 
         /// <summary>Guarded by a lock, and nothing else of CsVerify's.</summary>
         private static bool OnlyGuardedBy(ISymbol s) =>

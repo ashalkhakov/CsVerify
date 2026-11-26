@@ -225,8 +225,14 @@ captures too, but specification arguments never run: what they lower to is left 
 choice of either way, which meet again at the `Spec` call. The specification itself is read whole, from the operation
 the source has.
 
-**Integers.** Every C# integer type is a Boogie `int` kept in its range: a parameter by a `free requires`, a result by a
-`free ensures`, a local by a `where` clause (which Boogie assumes after a loop havocs it too). A float cast to an integer in a specification must fit (CSV1012), as a divisor mustn't be zero. As
+**Integers.** Every C# integer type is a Boogie `int` kept in its range: a parameter by a `free requires`, a result
+and an `out` or `ref` parameter by a `free ensures`, a local by a `where` clause (which Boogie assumes after a loop
+havocs it too). The same holds of every type with a range (a `decimal`, a `DateTime`'s or a `TimeSpan`'s ticks), and
+of each part of a struct or a tuple at any depth: one definition (`MathTypes.Within`) says what the range is, and
+each of those places states it, as a record's member's function does of its value and its parts, and an axiom of
+each static readonly field's constant (a nullable struct's parts are its value's, where it has one). A record's
+constructor function is defined on values of its members' types, so a record made of a value whose range weren't
+known wouldn't be known to exist (CSV1014 where it is returned). A float cast to an integer in a specification must fit (CSV1012), as a divisor mustn't be zero. As
 [the semantics](semantics.md#bounded-integers) says, `+ - *`, `++`, compound assignments, unary minus and explicit
 narrowing conversions are:
 - in the default context, an `assert` that the value is in range (CSV1010);
@@ -281,8 +287,9 @@ checks its sizes aren't negative (CSV1003) and fills its initializer's cells.
 which for a library's is none), and none of CsVerify's attributes: not `[Owned]`, no `[Invariant]`,
 no locks or atomics) is a `Ref`, as an array is. Each of its fields and auto-properties is a map `$F.C.f: [Ref]T`
 (Dafny's heap encoding); a static field is the map's value at `null`, the one object no reference aliases. The map
-of a field whose type has a range (an integer; a decimal; a `DateTime`'s or a `TimeSpan`'s ticks) has a `where`
-clause keeping every value in it.
+of a field whose type has a range (an integer; a decimal; a `DateTime`'s or a `TimeSpan`'s ticks), or is a struct
+with such a part (a nullable struct's value's too), has a `where` clause keeping every value in it; one of a data
+type's says each value is null or one of the type's cases, by its tag.
 - `o.f` reads `$F.C.f[o]`, and `o.f = v` writes it, each asserting `o != null` first (CSV1013; `this` needs none).
 - A field of non-nullable type is never null once its object is built: each write asserts it (CSV1014), each read
   assumes it (but `this`'s, in its constructor; and but an EF entity's reference navigation, which EF sets, to the
@@ -297,8 +304,15 @@ clause keeping every value in it.
   then its body. `new C(args)` allocates the object, sets its fields to their defaults and calls the constructor. An
   implicit constructor's initialized fields are unknown values at the call. A constructor that
   chains to `this(...)` skips the initializers and calls the other constructor on `this`, as `base(...)` is called
-  (its arguments evaluated first, branching or not). `this` may escape (`a[0] = this`, a call with it): where the
-  class has invariants or non-nullable fields, that's CSV1015, as the object isn't built yet. An object
+  (its arguments evaluated first, branching or not). `this` may be handed over (`a[0] = this`, a call with it or on it, a
+  property's accessor): whoever gets it takes it for an object of its class, so it must be built there, each
+  non-nullable field set and its invariant holding (CSV1015, naming the field). A flag, `built$`, says whether it
+  has been: from there on it is an object like any other, so a non-nullable field a call may have written is not
+  null, where it is read and where the constructor returns, and a field of an immutable class with an invariant may
+  not be written again (CSV1015), as the invariant is relied on already. An object of a derived class isn't built
+  while its base's constructor runs, where its own constructor is yet to set a non-nullable field (one with no
+  initializer, which would run first) or to establish an invariant: `this` may not leave the base's constructor
+  then (CSV1015, naming the derived class). An object
   initializer's assignments are field stores on the new object (the control-flow graph spells them out).
 - A method that runs alongside other code (`[RunsConcurrently]`, or started as a task or thread), or reads a field a
   lock guards, is checked for races (CSV1027, and warnings: `Lowering.Races`).
@@ -490,7 +504,8 @@ and from integers are the integers'. A switch expression no arm of which matches
 
 **Nullable values.** An `int?` (a `Nullable<T>` of an integer type, `bool`, `decimal`, `DateTime`, `TimeSpan`, `DateOnly` or `Guid`) is a reference: `null` where it has no
 value, `$nmk.Int32(v)` where it has `v`, one reference per value (`$nmk` and `$nv`, its value, are each other's
-inverse, `$nv` in the type's range), so the lifted `==` is the references' (a `DateTime?`'s too, which C# lifts
+inverse; where the type has a range, an integer's, a `decimal`'s, a `DateTime`'s or a `TimeSpan`'s, `$nmk` is
+defined on it and `$nv` is within it), so the lifted `==` is the references' (a `DateTime?`'s too, which C# lifts
 from `DateTime`'s own operator). A nullable struct of the subset (`AccountKey?` of a `readonly record struct
 AccountKey(Guid Value)`) is one too, `$nmk.S$AccountKey(v)` of the struct's value `v`; a record struct's lifted `==`
 is both null, or neither and the two values equal as the struct's `==` has them (with the literal `null`, whether it
@@ -1362,8 +1377,8 @@ nullable one).
 either is, else the operation of their values, checked as code's arithmetic is (the values 0 where either is null,
 which can't overflow). Static properties' getters and setters are methods, as instance ones are.
 
-**Constructors' `this` as a value** (passed, stored) escapes before the object is built: where its class has an
-object invariant or non-nullable fields, CSV1015; the object goes on as it is.
+**Constructors' `this` as a value** (passed, stored, a call's receiver) is handed over: the object must be built
+there, its non-nullable fields set and its invariant holding (CSV1015), and is an object like any other after.
 **Deconstruction** into array cells, fields and variables, `(a[i], a[j]) = (a[j], a[i])`, reads every value first,
 then writes each target. In `Spec.Old`, a parameter the body assigns is the parameter as it came in.
 

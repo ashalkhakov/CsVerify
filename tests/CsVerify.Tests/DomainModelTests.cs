@@ -1369,5 +1369,182 @@ public sealed record Money
             Assert.Equal(new[] { "CSV1004" }, r.Errors("Wrong"));
             Assert.Equal(new[] { "CSV1004" }, r.Errors("NestedWrong"));
         }
+
+        [Fact]
+        public void AValueOfATypeWithARange_IsWithinIt_WhereverItComesFrom()
+        {
+            // (a decimal, a DateTime's or a TimeSpan's ticks, an integer: within its type's range as a nullable value's
+            // value, a struct's field, a tuple's item, an out parameter's or a result's value, a field's, a record's
+            // member's part, a static readonly field's. A field of a data type holds one of its cases. A nullable
+            // struct's parts are its value's, where it has one. A record made of one exists, then: its constructor takes
+            // values of its members' types)
+            var r = Harness.Verify(@"using System.Collections.Generic;
+public enum Tone { Low, High }
+public readonly record struct Slot(decimal Amount, DateTime At);
+public sealed record Reading(decimal Total, DateTime At, TimeSpan Took, int Count, Tone Tone);
+public sealed record Stamp(DateTime At, string? Text);
+public sealed record Stamps(Stamp? First, DateTime? Second, bool Both);
+public readonly record struct Weight(decimal Grams);
+public sealed record Loads(Weight Total, Weight Net);
+public sealed record Dials(bool A, bool B, DateTime? ChangedAt) { public static readonly Dials Off = new(false, false, null); }
+public abstract record Note;
+public sealed record Turned(Dials From, Dials To) : Note;
+public sealed class Panel
+{
+    public Dials Current { get; private set; } = Dials.Off;
+    public List<Note> Turn(bool a, bool b, DateTime at) { var saved = new Dials(a, b, at); var notes = new List<Note>(); if (saved.A != Current.A) { notes.Add(new Turned(Current, saved)); } return notes; }
+    public Turned Kept(Dials saved) => new Turned(Current, saved);
+}
+public readonly record struct Mass
+{
+    public Mass(decimal grams, string unit) { Spec.Ensures(Grams == grams && Unit == unit); Grams = grams; Unit = unit; }
+    public decimal Grams { get; }
+    public string Unit { get; }
+    public static Mass Of(decimal grams) => new(grams, ""g"");
+}
+public sealed record Tariff(Mass Fee, int Free, Mass Limit, Mass? Least = null)
+{
+    public static readonly Mass Standard = Mass.Of(0.20m);
+    public static readonly decimal Rate = 0.5m;
+    public static readonly DateTime Epoch = DateTime.MinValue;
+    public static Mass Mutable = Mass.Of(0.40m);
+    public static Tariff WithLeast(int free, decimal limit, decimal? least) => new(Standard, free, Mass.Of(limit), least is { } l ? Mass.Of(l) : null);
+    public static Tariff Plain(int free, decimal limit) => new(Standard, free, Mass.Of(limit));
+    public static Tariff OfMutable(int free, decimal limit) => new(Mutable, free, Mass.Of(limit));
+    public static Reading OfConstants() => new Reading(Rate, Epoch, TimeSpan.Zero, 0, Tone.Low);
+    public static Turned OfOff(Dials saved) => new Turned(Dials.Off, saved);
+}
+public sealed class Source
+{
+    public decimal? Amount { get; set; }
+    public DateTime? At { get; set; }
+    public TimeSpan? Took { get; set; }
+    public int? Count { get; set; }
+    public Tone? Tone { get; set; }
+    public Slot? Slot { get; set; }
+    public Slot Kept { get; set; }
+    public Dictionary<string, DateTime> Seen { get; } = new Dictionary<string, DateTime>();
+}
+public static class Readings
+{
+    public static Reading OrElse(decimal? a, DateTime? at, TimeSpan? took, int? n, Tone? tone, DateTime now) => new Reading(a ?? 0m, at ?? now, took ?? TimeSpan.Zero, n ?? 0, tone ?? Tone.Low);
+    public static Reading Later(decimal total, DateTime? last, DateTime now) { var at = last ?? now; return new Reading(total, at, TimeSpan.Zero, 0, Tone.Low); }
+    public static Stamps Both(DateTime? first, DateTime? second) { var stamp = first is { } t ? new Stamp(t, null) : null; return new Stamps(stamp, second, false); }
+    public static Reading Values(decimal? a, DateTime? at, TimeSpan? took)
+    {
+        if (a is null || at is null || took is null) { return new Reading(0m, DateTime.MinValue, TimeSpan.Zero, 0, Tone.Low); }
+        return new Reading(a.Value, at.Value, took.Value, 0, Tone.Low);
+    }
+    public static Reading OfProperties(Source s, DateTime now) => new Reading(s.Amount ?? 0m, s.At ?? now, s.Took ?? TimeSpan.Zero, s.Count ?? 0, s.Tone ?? Tone.Low);
+    public static Reading OfSlot(Slot? slot, DateTime now) => slot is { } s ? new Reading(s.Amount, s.At, TimeSpan.Zero, 0, Tone.Low) : new Reading(0m, now, TimeSpan.Zero, 0, Tone.Low);
+    public static Reading OfSlotProperty(Source s, DateTime now) { var slot = s.Slot; return slot is null ? new Reading(0m, now, TimeSpan.Zero, 0, Tone.Low) : new Reading(slot.Value.Amount, slot.Value.At, TimeSpan.Zero, 0, Tone.Low); }
+    public static Reading OfKept(Source s) => new Reading(s.Kept.Amount, s.Kept.At, TimeSpan.Zero, 0, Tone.Low);
+    public static Reading OfTuple((decimal a, DateTime at) t) => new Reading(t.a, t.at, TimeSpan.Zero, 0, Tone.Low);
+    public static Reading OfMap(Source s, string key, DateTime now) => new Reading(0m, s.Seen.TryGetValue(key, out var at) ? at : now, TimeSpan.Zero, 0, Tone.Low);
+    public static DateTime Pick(DateTime? at, DateTime now) => at ?? now;
+    public static Reading OfResult(DateTime? at, DateTime now) => new Reading(0m, Pick(at, now), TimeSpan.Zero, 0, Tone.Low);
+    public static Reading Again(Reading r) => new Reading(r.Total, r.At, r.Took, r.Count, r.Tone);
+    public static Reading OfMember(Loads l, DateTime now) => new Reading(l.Total.Grams, now, TimeSpan.Zero, 0, Tone.Low);
+    // (a range says no more than it is)
+    public static bool Hoped(DateTime? at) { Spec.Ensures<bool>(r => r); return at == null; }
+    public static bool Feared(decimal? a) { Spec.Ensures<bool>(r => r); return a is { } v && v >= 0m; }
+    public static Reading Total(Reading r) { Spec.Ensures<Reading>(x => x.Total > 0m); return new Reading(r.Total, r.At, r.Took, r.Count, r.Tone); }
+}");
+            foreach (var ok in new[] { "OrElse", "Later", "Both", "Values", "OfProperties", "OfSlot", "OfSlotProperty", "OfKept", "OfTuple", "OfMap", "Pick", "OfResult", "Again", "OfMember", "Turn", "Kept", "WithLeast", "Plain", "OfMutable", "OfConstants", "OfOff" })
+            {
+                Assert.True(r.Errors(ok).Length == 0, r.Explain(ok));
+            }
+            Assert.Equal(new[] { "CSV1002" }, r.Errors("Hoped"));
+            Assert.Equal(new[] { "CSV1002" }, r.Errors("Feared"));
+            Assert.Equal(new[] { "CSV1002" }, r.Errors("Readings.Total"));
+        }
+
+        [Fact]
+        public void ThisIsHandedOver_OnceItsObjectIsBuilt()
+        {
+            // (this as a value in its constructor (an argument, a receiver, a value stored): whoever gets it takes it for
+            // an object of its class, so each non-nullable field is set and its invariant holds there, CSV1015. From
+            // there on it is an object like any other: what a call leaves in its fields is not null)
+            var r = Harness.Verify(@"using System.Collections.Generic; using System.Diagnostics.CodeAnalysis;
+public sealed class Leaf { public Tree? Owner { get; set; } public object? Holder { get; set; } }
+public sealed class Tree
+{
+    public string Name { get; private set; }
+    public string Label { get; private set; }
+    public Tree(string name, Leaf? leaf) { Name = name; Label = name; if (leaf is not null) { leaf.Owner = this; } }
+}
+public sealed class Early { public string Name; public string Label; public Early(string name, Leaf leaf) { Name = name; leaf.Holder = this; Label = name; } }
+public sealed class Renamed
+{
+    public string Name; public string Label;
+    public Renamed(string name) { Name = name; Label = name; Rename(name); Spec.Assert(Label.Length >= 0); }
+    public void Rename(string to) { Label = to; }
+}
+public sealed class Hasty
+{
+    public string Name; public string Label;
+    public Hasty(string name) { Name = name; Rename(name); Label = name; }
+    public void Rename(string to) { Label = to; }
+}
+public sealed class Nulled { public string Name; public string Label; public Nulled(string name, Leaf leaf, string? maybe) { Name = name; Label = name; leaf.Holder = this; Label = maybe!; } }
+public sealed class Looped { public string Name; public Looped(string name, List<Leaf> leaves) { Name = name; foreach (var leaf in leaves) { leaf.Holder = this; } } }
+public sealed class LoopedEarly { public string Name; public LoopedEarly(string name, List<Leaf> leaves) { foreach (var leaf in leaves) { leaf.Holder = this; } Name = name; } }
+public sealed record Maker(string Id, string Name);
+public sealed class Link
+{
+    private string makerId = string.Empty;
+    private string makerName = string.Empty;
+    public Link() { }
+    [SetsRequiredMembers] public Link(Maker maker, DateTime at) { At = at; Maker = maker; }
+    public required DateTime At { get; init; }
+    public required Maker Maker { get => new(makerId, makerName); init { makerId = value.Id; makerName = value.Name; } }
+}
+public static class Uses
+{
+    public static void Made(Leaf leaf) { var t = new Tree(""a"", leaf); Spec.Assert(leaf.Owner != t); }
+    public static int Read(Leaf leaf) { var t = new Tree(""a"", leaf); return leaf.Owner is { } o ? o.Name.Length : 0; }
+}
+public sealed class Book { public object? Last; public void Note(object s) { Last = s; } }
+public sealed class Seal
+{
+    public readonly int Id;
+    [Invariant, Pure] public bool Valid() => Id > 0;
+    public Seal(int id, Book book) { Spec.Requires(id > 0); Id = id; book.Note(this); }
+}
+public sealed class SealEarly
+{
+    public readonly int Id;
+    [Invariant, Pure] public bool Valid() => Id > 0;
+    public SealEarly(int id, Book book) { Spec.Requires(id > 0); book.Note(this); Id = id; }
+}
+public sealed class SealChanged
+{
+    public readonly int Id;
+    [Invariant, Pure] public bool Valid() => Id > 0;
+    public SealChanged(int id, Book book) { Spec.Requires(id > 1); Id = id; book.Note(this); Id = id - 1; }
+}
+public class Shape { public string Kind; public Shape(string kind, List<Shape> all) { Kind = kind; all.Add(this); } }
+public sealed class Square : Shape { public string Side; public Square(string side, List<Shape> all) : base(""square"", all) { Side = side; } }
+public class Pet { public string Kind; public Pet(string kind, List<Pet> all) { Kind = kind; all.Add(this); } }
+public sealed class Cat : Pet { public string Sound = ""meow""; public Cat(List<Pet> all) : base(""cat"", all) { } }");
+            foreach (var ok in new[] { "Tree..ctor", "Renamed..ctor", "Looped..ctor", "Read", "Seal..ctor", "Pet..ctor", "Cat..ctor", "Square..ctor" })
+            {
+                Assert.True(r.Errors(ok).Length == 0, r.Explain(ok));
+            }
+            // (a property's init accessor run by a constructor that sets the required members)
+            Assert.Empty(r.Methods.Where(m => m.Name.StartsWith("Link.")).SelectMany(m => m.Diagnostics).Where(d => d.IsError).Select(d => d.Id + " " + d.Message));
+            // (before a field is set: as a value stored, as a receiver, in a loop)
+            Assert.Equal(new[] { "CSV1015" }, r.Errors("Early..ctor"));
+            Assert.Equal(new[] { "CSV1015" }, r.Errors("Hasty..ctor"));
+            Assert.Equal(new[] { "CSV1015" }, r.Errors("LoopedEarly..ctor"));
+            // (a built object's field takes no null; the new object is known to who was handed it)
+            Assert.Equal(new[] { "CSV1014" }, r.Errors("Nulled..ctor"));
+            Assert.Equal(new[] { "CSV1004" }, r.Errors("Made"));
+            // (an immutable object's invariant: holding where it is handed over, and its fields as they were from there)
+            Assert.Equal(new[] { "CSV1015" }, r.Errors("SealEarly..ctor"));
+            Assert.Equal(new[] { "CSV1015" }, r.Errors("SealChanged..ctor"));
+            // (a derived class's object isn't built while its base's constructor runs, unless initializers set its fields)
+            Assert.Equal(new[] { "CSV1015" }, r.Errors("Shape..ctor"));
+        }
     }
 }
