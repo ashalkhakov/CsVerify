@@ -537,6 +537,79 @@ public sealed class Flow
         }
 
         [Fact]
+        public void ADecimal_IsWithinItsRange_WhereverItComesFrom()
+        {
+            // (#136, T: a record's constructor takes a decimal of decimal's range, which a parameter, a result, a
+            // struct's part and what arithmetic gives without overflowing are)
+            var r = Harness.Verify(@"public readonly record struct Fee(decimal Amount);
+public sealed record Pair(int? A, decimal B)
+{
+    public Pair Make(int a, decimal b) => new Pair(a, b);
+    public static Pair Of(int a, decimal b) { return new Pair(a, b); }
+    public static Pair Sum(decimal a, decimal b) { var s = a + b; return new Pair(1, s); }
+    public static Pair Times(decimal a, decimal b) { var s = a * b; return new Pair(1, s); }
+    public static Pair Over(decimal a, decimal b) { Spec.Requires(b != 0m); var s = a / b; return new Pair(1, s); }
+    public static Pair OfFee(Fee f) { return new Pair(2, f.Amount); }
+    public static Pair Again(Pair p) { return new Pair(p.A, Twice(p.B)); }
+    public static decimal Twice(decimal x) { return x + x; }
+}");
+            Assert.True(r.Success, string.Join("\n", r.Diagnostics.Where(d => d.IsError).Select(d => d.Id + " " + d.Message)));
+        }
+
+        [Fact]
+        public void ANewArray_ChangesNoArray_SoAListsCountStays()
+        {
+            // (a new array is an object not allocated before whose cells are what it is made with: no cell is written,
+            // so what a list read through an interface held before a params array was made, it holds after)
+            var r = Harness.Verify(@"using System.Collections.Generic; using System.Linq;
+public readonly record struct BatchId(Guid Value);
+public readonly record struct Fee(decimal Amount);
+public sealed record Member(BatchId Item, Fee Amount);
+public sealed record Terms(BatchId Id, DateOnly Day, IReadOnlyList<Member> Members, string Note, DateTime At, BatchId Other);
+public abstract record Command { private protected Command(DateTime now) => Now = now; public DateTime Now { get; } }
+public sealed record Request(Terms Terms, DateTime Now) : Command(Now);
+public abstract record Event;
+public sealed record Requested(Terms Terms, DateTime At) : Event;
+public enum Why { Nothing }
+public abstract record Decision<TEvent, TWhy>
+{
+    private Decision() { }
+    public static Decision<TEvent, TWhy> Accept(params TEvent[] events) { Spec.Ensures<Decision<TEvent, TWhy>>(r => r is Accepted a && a.Events == events); return new Accepted(events); }
+    public static Decision<TEvent, TWhy> Reject(TWhy why) { Spec.Ensures<Decision<TEvent, TWhy>>(r => r is Rejected j && j.Events.Count == 0); return new Rejected(why); }
+    public sealed record Accepted(IReadOnlyList<TEvent> Events) : Decision<TEvent, TWhy>;
+    public sealed record Rejected(TWhy Reason) : Decision<TEvent, TWhy> { public IReadOnlyList<TEvent> Events { get; init; } = Array.Empty<TEvent>(); }
+}
+public static class Batches
+{
+    public static Decision<Event, Why> DecideNew(Request command)
+    {
+        Spec.Ensures<Decision<Event, Why>>(r =>
+            r is Decision<Event, Why>.Accepted a
+                ? a.Events.Count == 1 && a.Events[0] is Requested b && b.Terms == command.Terms && command.Terms.Members.Count > 0
+                : r is Decision<Event, Why>.Rejected j && j.Events.Count == 0);
+        return command.Terms.Members.Count == 0 || command.Terms.Members.Any(m => m.Amount.Amount <= 0m)
+            ? Decision<Event, Why>.Reject(Why.Nothing)
+            : Decision<Event, Why>.Accept(new Requested(command.Terms, command.Now));
+    }
+}
+public static class Arrays
+{
+    public static int[] Three() { Spec.Ensures<int[]>(r => r.Length == 3 && r[0] == 1 && r[2] == 3); return new[] { 1, 2, 3 }; }
+    public static int[] Zeros(int n) { Spec.Requires(n > 0); Spec.Ensures<int[]>(r => r.Length == n && r[0] == 0); return new int[n]; }
+    public static int Kept(int[] a) { Spec.Requires(a.Length > 0 && a[0] == 7); Spec.Ensures<int>(r => r == 7); var b = new int[2]; b[0] = 9; return a[0]; }
+    public static bool Fresh(int[] a) { Spec.Ensures<bool>(r => r); var b = new int[1]; return !ReferenceEquals(a, b); }
+    public static int Loop(int n) { Spec.Requires(0 < n && n < 100); Spec.Ensures<int>(r => r == 5); int[] last = new[] { 5 }; for (int i = 0; i < n; i++) { Spec.Invariant(last.Length == 1 && last[0] == 5); last = new[] { 5 }; } return last[0]; }
+    public static int Count(IReadOnlyList<int> xs) { Spec.Requires(xs.Count > 0); Spec.Ensures<int>(r => r > 0); var tmp = new[] { 1, 2 }; return xs.Count; }
+    public static bool Wrong() { Spec.Ensures<bool>(r => r); var a = new[] { 1 }; var b = new[] { 2 }; return a[0] == b[0]; }
+}");
+            foreach (var ok in new[] { "DecideNew", "Three", "Zeros", "Kept", "Fresh", "Loop", "Arrays.Count" })
+            {
+                Assert.True(r.Errors(ok).Length == 0, r.Explain(ok));
+            }
+            Assert.Equal(new[] { "CSV1002" }, r.Errors("Wrong"));
+        }
+
+        [Fact]
         public void AFuncsResult_IsNotNull_WhereItsTypeSaysSo()
         {
             // (#136, Q: each lambda made one is checked to return what its type says; and a Func may give a generic record)

@@ -139,28 +139,27 @@ namespace CsVerify.Verifier.Boogie
                             var map = Elements(n.ArrayType);
                             var t = new MVar(n.Var);
                             p.Source.AddModifies("$Alloc");
-                            p.Source.AddModifies(map);
                             p.Source.AddAnyWrite("$Alloc");
-                            p.Source.AddAnyWrite(map);
                             // (a negative size throws: the path ends)
                             stmts.Add(MAssume.Of(Ge(n.Size, MLit.Zero)));
                             Allocate(stmts, n.Var, AndAlso(Eq(Length(t), n.Size), new MOp("$arr", t)));
                             var zero = ElementValue(map) switch { "bool" => "false", "Ref" => "null", _ => "0" };
                             // (a struct's array: each cell the struct's default value)
                             var element = ((IArrayTypeSymbol)n.ArrayType).ElementType;
-                            stmts.Add(MMapUpdate.Of(
-                                map,
-                                t,
-                                IsStruct(element) ? MapLambda("j", "int", MathTypes.StructDefault(element))
-                                                                         : IsFloating(element) ? MapLambda("j", "int", MathTypes.FloatLiteral(0.0, element))
-                                                                         : new MLit($"(lambda j: int :: {zero})")));
-                            if (n.Elements != null)
+                            MExpr cell = IsStruct(element) ? MathTypes.StructDefault(element)
+                                : IsFloating(element) ? MathTypes.FloatLiteral(0.0, element)
+                                : new MLit(zero);
+                            // (the new array's cells are what it is made with: an object not allocated before has cells
+                            // nothing was known of, so they are these, and no array's cells change. Cell by cell, the
+                            // initializer's and then every other: a row's equality with a lambda is hard on the solver)
+                            int given = n.Elements?.Length ?? 0;
+                            for (int k = 0; k < given; k++)
                             {
-                                for (int k = 0; k < n.Elements.Length; k++)
-                                {
-                                    stmts.Add(MMapUpdate.Of(map, t, index: new MLit(k.ToString()), value: n.Elements[k]));
-                                }
+                                stmts.Add(MAssume.Of(Eq(Sel(new MVar(map), t, new MLit(k.ToString())), n.Elements[k])));
                             }
+                            var j = new MVar("j$");
+                            stmts.Add(MAssume.Of(MQuant.ForAll("j$", Eq(Sel(new MVar(map), t, j), cell),
+                                given == 0 ? null : OrElse(Lt(j, MLit.Zero), Le(new MLit(given.ToString()), j)))));
                             break;
                         }
                         case MLambda lam:

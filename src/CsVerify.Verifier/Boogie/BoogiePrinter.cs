@@ -274,7 +274,11 @@ namespace CsVerify.Verifier.Boogie
             Optional("$dround(|$dq(", "function $drep(u: int): bool { (u mod 10000000000000000000000000000 == 0 && -792281625142643375935439503360000000000000000000000000000 < u && u < 792281625142643375935439503360000000000000000000000000000) || (u mod 1000000000000000000000000000 == 0 && -79228162514264337593543950336000000000000000000000000000 < u && u < 79228162514264337593543950336000000000000000000000000000) || (u mod 100000000000000000000000000 == 0 && -7922816251426433759354395033600000000000000000000000000 < u && u < 7922816251426433759354395033600000000000000000000000000) || (u mod 10000000000000000000000000 == 0 && -792281625142643375935439503360000000000000000000000000 < u && u < 792281625142643375935439503360000000000000000000000000) || (u mod 1000000000000000000000000 == 0 && -79228162514264337593543950336000000000000000000000000 < u && u < 79228162514264337593543950336000000000000000000000000) || (u mod 100000000000000000000000 == 0 && -7922816251426433759354395033600000000000000000000000 < u && u < 7922816251426433759354395033600000000000000000000000) || (u mod 10000000000000000000000 == 0 && -792281625142643375935439503360000000000000000000000 < u && u < 792281625142643375935439503360000000000000000000000) || (u mod 1000000000000000000000 == 0 && -79228162514264337593543950336000000000000000000000 < u && u < 79228162514264337593543950336000000000000000000000) || (u mod 100000000000000000000 == 0 && -7922816251426433759354395033600000000000000000000 < u && u < 7922816251426433759354395033600000000000000000000) || (u mod 10000000000000000000 == 0 && -792281625142643375935439503360000000000000000000 < u && u < 792281625142643375935439503360000000000000000000) || (u mod 1000000000000000000 == 0 && -79228162514264337593543950336000000000000000000 < u && u < 79228162514264337593543950336000000000000000000) || (u mod 100000000000000000 == 0 && -7922816251426433759354395033600000000000000000 < u && u < 7922816251426433759354395033600000000000000000) || (u mod 10000000000000000 == 0 && -792281625142643375935439503360000000000000000 < u && u < 792281625142643375935439503360000000000000000) || (u mod 1000000000000000 == 0 && -79228162514264337593543950336000000000000000 < u && u < 79228162514264337593543950336000000000000000) || (u mod 100000000000000 == 0 && -7922816251426433759354395033600000000000000 < u && u < 7922816251426433759354395033600000000000000) || (u mod 10000000000000 == 0 && -792281625142643375935439503360000000000000 < u && u < 792281625142643375935439503360000000000000) || (u mod 1000000000000 == 0 && -79228162514264337593543950336000000000000 < u && u < 79228162514264337593543950336000000000000) || (u mod 100000000000 == 0 && -7922816251426433759354395033600000000000 < u && u < 7922816251426433759354395033600000000000) || (u mod 10000000000 == 0 && -792281625142643375935439503360000000000 < u && u < 792281625142643375935439503360000000000) || (u mod 1000000000 == 0 && -79228162514264337593543950336000000000 < u && u < 79228162514264337593543950336000000000) || (u mod 100000000 == 0 && -7922816251426433759354395033600000000 < u && u < 7922816251426433759354395033600000000) || (u mod 10000000 == 0 && -792281625142643375935439503360000000 < u && u < 792281625142643375935439503360000000) || (u mod 1000000 == 0 && -79228162514264337593543950336000000 < u && u < 79228162514264337593543950336000000) || (u mod 100000 == 0 && -7922816251426433759354395033600000 < u && u < 7922816251426433759354395033600000) || (u mod 10000 == 0 && -792281625142643375935439503360000 < u && u < 792281625142643375935439503360000) || (u mod 1000 == 0 && -79228162514264337593543950336000 < u && u < 79228162514264337593543950336000) || (u mod 100 == 0 && -7922816251426433759354395033600 < u && u < 7922816251426433759354395033600) || (u mod 10 == 0 && -792281625142643375935439503360 < u && u < 792281625142643375935439503360) || (-79228162514264337593543950336 < u && u < 79228162514264337593543950336) }");
             Optional("$dround(|$dq(", "function $dround(u: int): int;");
             Optional("$dround(|$dq(", "axiom (forall u: int :: { $dround(u) } ($drep(u) ==> $dround(u) == u) && (u > 0 ==> $dround(u) > 0) && (u < 0 ==> $dround(u) < 0));");
+            // (within MaxValue where the exact result is, to half a unit of 1: past that the operation throws)
+            var (dmax, dbound) = (Lowering.DecimalMax, Lowering.DecimalMax + Lowering.DecimalOne / 2);
+            Optional("$dround(|$dq(", $"axiom (forall u: int :: {{ $dround(u) }} (-{dbound}) < u && u < {dbound} ==> (-{dmax}) <= $dround(u) && $dround(u) <= {dmax});");
             Optional("$dround(|$dq(", "function $dq(n: int, d: int): int;");
+            Optional("$dround(|$dq(", $"axiom (forall n: int, d: int :: {{ $dq(n, d) }} (d > 0 && (-{dbound}) * d < n && n < {dbound} * d) || (d < 0 && {dbound} * d < n && n < (-{dbound}) * d) ==> (-{dmax}) <= $dq(n, d) && $dq(n, d) <= {dmax});");
             Optional("$dround(|$dq(", "axiom (forall n: int, d: int :: { $dq(n, d) } (d != 0 && n mod d == 0 && $drep(n div d) ==> $dq(n, d) == n div d) && ((n >= 0 && d > 0) || (n <= 0 && d < 0) ==> $dq(n, d) >= 0) && ((n <= 0 && d > 0) || (n >= 0 && d < 0) ==> $dq(n, d) <= 0));");
             Line("// arrays: references, the allocated ones, each one's length, and a map of elements per element type");
             Line("type Ref;");
@@ -1654,14 +1658,14 @@ namespace CsVerify.Verifier.Boogie
             {
                 Line($"  free ensures {(Snapshots(e.Expr) || MentionsAny(e.Expr, p.Source.AssignedParams.Keys) ? "true" : E(e.Expr, cx))};");
             }
-            if (Returns(m) != null && IsIntegral(Returns(m)) && !p.Source.Ghost)
+            if (Returns(m) != null && (IsIntegral(Returns(m)) || IsDecimal(Returns(m))) && !p.Source.Ghost)
             {
-                Line($"  free ensures {E(MathTypes.InRange(new MVar("result"), Returns(m)), cx)};");
+                Line($"  free ensures {E(MathTypes.OfType(new MVar("result"), Returns(m)), cx)};");
             }
             // (a struct's or a tuple's parts: each of its type, an integer in its range, a data value one of its cases)
             if (Returns(m) is ITypeSymbol rt && (IsStruct(rt) || IsTuple(rt) || IsNullableStruct(rt)) && !p.Source.Ghost)
             {
-                foreach (var (part, pt) in MathTypes.Parts(new MVar("result"), rt).Where(x => IsIntegral(x.type) || IsData(x.type)))
+                foreach (var (part, pt) in MathTypes.Parts(new MVar("result"), rt).Where(x => IsIntegral(x.type) || IsDecimal(x.type) || IsData(x.type)))
                 {
                     Line($"  free ensures {ByTag(MathTypes.OfType(part, pt), cx)};");
                 }
@@ -1738,7 +1742,7 @@ namespace CsVerify.Verifier.Boogie
             foreach (var l in p.Source.Locals)
             {
                 Line(l.Raw != null ? $"  var {l.Name}: {l.Raw};" :
-                     IsIntegral(l.Type) ? $"  var {l.Name}: int where {E(MathTypes.InRange(new MVar(l.Name), l.Type), cx)};" :
+                     IsIntegral(l.Type) || IsDecimal(l.Type) ? $"  var {l.Name}: int where {E(MathTypes.OfType(new MVar(l.Name), l.Type), cx)};" :
                      l.Name.StartsWith("l$") && (IsData(l.Type) || IsGhost(l.Type) && IsData(GhostOf(l.Type))) && _caseTags != null ? $"  var {l.Name}: Ref where {ByTag(MathTypes.OfType(new MVar(l.Name), l.Type), cx)};" :
                      l.Name.StartsWith("l$") && IsNullable(l.Type) && NotNullable(l.Type) && TypeOf(l.Type) == "Ref" ? $"  var {l.Name}: Ref where {l.Name} != null;" :
                      $"  var {l.Name}: {TypeOf(l.Type)};");
@@ -1923,17 +1927,17 @@ namespace CsVerify.Verifier.Boogie
             {
                 yield return E(MathTypes.InRange(new MVar(local), type), cx);
             }
-            // (a DateTime's or a TimeSpan's ticks: within its range)
-            if (IsOpaqueTicks(type) && MathTypes.OfType(new MVar(local), type) is MExpr ticks)
+            // (a DateTime's or a TimeSpan's ticks, a decimal: within its range)
+            if ((IsOpaqueTicks(type) || IsDecimal(type)) && MathTypes.OfType(new MVar(local), type) is MExpr ticks)
             {
                 yield return E(ticks, cx);
             }
-            // (a struct's integer fields, at any depth: each in its type's range; a nullable struct's value's)
+            // (a struct's integer and decimal fields, at any depth: each in its type's range; a nullable struct's value's)
             if (IsStruct(type) || IsNullableStruct(type))
             {
-                foreach (var (part, pt) in MathTypes.Parts(new MVar(local), type).Where(x => IsIntegral(x.type)))
+                foreach (var (part, pt) in MathTypes.Parts(new MVar(local), type).Where(x => IsIntegral(x.type) || IsDecimal(x.type)))
                 {
-                    yield return E(MathTypes.InRange(part, pt), cx);
+                    yield return E(MathTypes.OfType(part, pt), cx);
                 }
             }
             // (a span from elsewhere: its cells some array's, within its length)

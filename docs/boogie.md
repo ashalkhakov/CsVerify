@@ -253,7 +253,10 @@ complement bits, which Boogie's Euclidean `div` and `mod` by a power of two read
 
 **Arrays.** Dafny's encoding: an array is a `Ref`; `a.Length` is `len(a)`; `a[i]` is `$E.T[a][i]`. A read or a write
 asserts `a != null` (CSV1013) and `0 <= i && i < len(a)` (CSV1003). `new T[n]` is a reference not allocated before (`havoc`, then
-`assume !$Alloc[t]`), now allocated, of length `n`, its elements the default (or the initializer's). A non-nullable
+`assume !$Alloc[t]`), now allocated, of length `n`, its elements the default (or the initializer's): assumed of its
+row, not written, as nothing was known of the cells of an object not allocated, so making an array changes no element
+map (a `params` array made for a call leaves what a collection behind an interface holds, a value of the state, as it
+was). A non-nullable
 array parameter is asserted not null at each call's argument (CSV1014), and assumed in the callee; a non-nullable
 result is asserted where it's returned.
 
@@ -611,7 +614,9 @@ of integers, decimals, `DateTime`s and `TimeSpan`s is the sign of `x - y`, and `
 0 <= *e* <= 28), so comparisons are exact. `+` and `-` are `$dround` of the exact result, and `*` and `/` are
 `$dq(n, d)` of the exact result *n* / *d* (in units, *a* · *b* / 10^28 and *a* · 10^28 / *b*): the result itself where
 it is representable (`$drep`, *m* / 10^*e* for some *e*), else a rounded value of its sign, as .NET's, whose rounding
-depends on the exact result alone. A sum or a difference that isn't zero doesn't round to zero (a whole number of
+depends on the exact result alone, and within `decimal`'s range where the exact result is within half a unit of it
+(past that the operation throws). A `decimal` parameter, result, local and struct's part is within that range, as an
+integer is within its type's. A sum or a difference that isn't zero doesn't round to zero (a whole number of
 units under 2^96 is representable), so `total - fee > 0m` where `total > fee`; `(total - fee) + fee == total` isn't
 known, as either may round. Past `MaxValue` they throw an `OverflowException`. `%` is exact (`cs#remI` of the
 units), and `/` or `%` by zero is CSV1009, as for integers. An integer converts exactly.
