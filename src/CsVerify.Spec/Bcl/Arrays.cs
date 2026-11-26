@@ -10,6 +10,8 @@ namespace CsVerify.Bcl
     [ContractsFor(typeof(Array))]
     public static class ArrayContracts
     {
+        // (the same array each time: nothing of T's runs)
+        [Pure]
         public static T[] Empty<T>()
         {
             Spec.Ensures<T[]>(r => r.Length == 0);

@@ -601,7 +601,9 @@ of integers, decimals, `DateTime`s and `TimeSpan`s is the sign of `x - y`, and `
 0 <= *e* <= 28), so comparisons are exact. `+` and `-` are `$dround` of the exact result, and `*` and `/` are
 `$dq(n, d)` of the exact result *n* / *d* (in units, *a* · *b* / 10^28 and *a* · 10^28 / *b*): the result itself where
 it is representable (`$drep`, *m* / 10^*e* for some *e*), else a rounded value of its sign, as .NET's, whose rounding
-depends on the exact result alone. Past `MaxValue` they throw an `OverflowException`. `%` is exact (`cs#remI` of the
+depends on the exact result alone. A sum or a difference that isn't zero doesn't round to zero (a whole number of
+units under 2^96 is representable), so `total - fee > 0m` where `total > fee`; `(total - fee) + fee == total` isn't
+known, as either may round. Past `MaxValue` they throw an `OverflowException`. `%` is exact (`cs#remI` of the
 units), and `/` or `%` by zero is CSV1009, as for integers. An integer converts exactly.
 
 **Record structs.** A positional `record struct` of the subset (`readonly record struct OrderId(Guid Value)`) is a
@@ -859,7 +861,10 @@ exception type, where classes have dynamic types too: see "Dynamic types").
   handlers, and where it returns the function was in its domain (a postcondition of its procedure). A specification
   may read it only in its domain: that is part of what makes the specification well-defined (CSV1012), as a
   function's precondition is. Its other postconditions are axioms of the function within its domain, and its value
-  outside it is its type's default, of which nothing is said. A lemma, ghost code and a `[Pure]` member whose body
+  outside it is its type's default, of which nothing is said. A postcondition that holds is well-defined (each
+  return checks it, under the postconditions before it), and a procedure promises that with it: after a call whose
+  postcondition reads the function, the caller's own may read it too, with no read of its own on the way. A lemma,
+  ghost code and a `[Pure]` member whose body
   isn't its definition may not read one (CSV1902): they may not throw. A throw in a `try` of the function's own
   stays CSV1011.
 
@@ -1056,7 +1061,8 @@ and a record's `==` (where its fields compare as values: integers, booleans, enu
   reference that generic code passes on and stores, and reads only the `Count` of (its elements' map is its type
   argument's); where the type argument is known, it is read as that type's collection. A static method that makes a case (`Grant(params T[] xs) => new Granted(xs)`) tells its
   callers which case it gives only if it is `[Pure]` (its body is then its function) or says so in a postcondition.
-  `Array.Empty<T>()` is `$aempty()`, an array of none.
+  `Array.Empty<T>()` is `$aempty()`, an array of none: the same each time, so its contract is `[Pure]` (a call that
+  reaches it runs nothing of `T`'s, and writes no field).
 - A case's init property besides its positional ones (`public IReadOnlyList<T> Undone { get; init; } = ...`) is a
   field after them: `new Refused(why)` has its initializer's value, `new Refused(why) { Undone = xs }` has `xs`. A
   `with` expression (`t with { Seen = t.Seen + 1 }`) is the case's constructor of its arguments, each read back from

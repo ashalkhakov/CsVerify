@@ -162,6 +162,46 @@ public static class Make
         }
 
         [Fact]
+        public void AMethodNotSelected_ThatReachesAnEmptyArray_ChangesNoField()
+        {
+            // (a method not selected is its contract and what the effects analysis says it writes: Array.Empty<T>(),
+            // the same array each time, runs nothing of T's, so it writes no field)
+            const string desk = @"using System.Collections.Generic;
+public abstract record Answer<T>
+{
+    private Answer() { }
+    public static Answer<T> Nothing() { Spec.Ensures<Answer<T>>(r => r is Listed l && l.Items.Count == 0); return new Listed(Array.Empty<T>()); }
+    public sealed record Listed(IReadOnlyList<T> Items) : Answer<T>;
+}
+public sealed record Note(string Text);
+public sealed record Ticket(string Value);
+public sealed class Desk
+{
+    public int Served { get; private set; }
+    public Ticket? Held { get; private set; }
+    public void Reset() { Served = 0; Held = null; }
+    public Answer<Note> Idle() { Spec.Ensures<Answer<Note>>(r => r is Answer<Note>.Listed l && l.Items.Count == 0); return Answer<Note>.Nothing(); }
+}
+public static class Use
+{
+    public static Answer<Note> Ask(Desk d) { Spec.Ensures<Answer<Note>>(r => d.Served == Spec.Old(d.Served) && d.Held == Spec.Old(d.Held)); return d.Idle(); }
+    public static bool Same(Desk d, Ticket asked)
+    {
+        Spec.Ensures<bool>(r => !r || d.Held == asked);
+        if (d.Held is not { } known) { return false; }
+        if (known != asked) { return false; }
+        var none = d.Idle();
+        return true;
+    }
+    public static void Wrong(Desk d) { Spec.Ensures(d.Served == Spec.Old(d.Served)); d.Reset(); }
+}";
+            var r = Run(desk, only: "Use.");
+            Assert.True(r.Errors("Ask").Length == 0, r.Explain("Ask"));
+            Assert.True(r.Errors("Same").Length == 0, r.Explain("Same"));
+            Assert.Equal(new[] { "CSV1002" }, r.Errors("Wrong"));
+        }
+
+        [Fact]
         public void Cache_ProvesAgainOnlyWhatChanged()
         {
             var cache = Path.GetTempFileName();

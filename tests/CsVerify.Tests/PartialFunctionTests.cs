@@ -121,6 +121,24 @@ public sealed class Account
         }
 
         [Fact]
+        public void APostconditionThatHolds_IsDefined_ForItsCallers()
+        {
+            // (each return checks the postcondition well-defined: a caller's may read the same function, with no read of its own)
+            var r = Verify(@"
+    private bool MayClose() { Spec.Ensures<bool>(r => !r || Current == State.Open); if (Current == State.Open) { return true; } return false; }
+    public bool Close(bool asked) { Spec.Ensures<bool>(r => !r || Current != State.Closed); if (!asked) { return false; } return MayClose(); }
+    private bool Asked(bool asked) { Spec.Ensures<bool>(r => r == asked); return asked; }
+    public bool Unread(bool asked) { Spec.Ensures<bool>(r => !r || Current != State.Closed); return Asked(asked); }
+");
+            foreach (var ok in new[] { "MayClose", "Close", "Asked" })
+            {
+                Assert.True(r.Errors(ok).Length == 0, r.Explain(ok));
+            }
+            // (its callee's postcondition reads nothing that may throw, and says nothing of Stored)
+            Assert.Contains("CSV1012", r.Errors("Unread"));
+        }
+
+        [Fact]
         public void ALemma_MayNotReadWhatMayThrow()
         {
             var r = Verify(@"

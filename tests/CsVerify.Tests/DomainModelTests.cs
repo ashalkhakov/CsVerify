@@ -240,6 +240,27 @@ public static class Amounts
         }
 
         [Fact]
+        public void ADecimalSumOrDifference_KeepsItsSign()
+        {
+            // (a whole number of units under 2^96 is representable, so what rounds is far from zero)
+            var r = Harness.Verify(@"public static class Rests
+{
+    public static decimal Rest(decimal total, decimal fee) { Spec.Requires(total > fee); Spec.Ensures<decimal>(r => r > 0m); return total - fee; }
+    public static decimal Owed(decimal paid, decimal due) { Spec.Requires(paid < due); Spec.Ensures<decimal>(r => r < 0m); return paid - due; }
+    public static decimal Both(decimal a, decimal b) { Spec.Requires(a > 0m && b > 0m); Spec.Ensures<decimal>(r => r > 0m); return a + b; }
+    public static decimal RestOrNone(decimal total, decimal fee) { Spec.Requires(total >= fee); Spec.Ensures<decimal>(r => r > 0m); return total - fee; }
+    public static void BackAgain(decimal total, decimal fee) { Spec.Assert(total - fee + fee == total); }
+}");
+            foreach (var ok in new[] { "Rest", "Owed", "Both" })
+            {
+                Assert.True(r.Errors(ok).Length == 0, r.Explain(ok));
+            }
+            Assert.Equal(new[] { "CSV1002" }, r.Errors("RestOrNone"));
+            // (the difference may round, and the sum again)
+            Assert.Equal(new[] { "CSV1004" }, r.Errors("BackAgain"));
+        }
+
+        [Fact]
         public void DecimalProductsAndQuotients_AreExact_WhereTheyAreRepresentable()
         {
             var r = Harness.Verify(@"public static class Prices
