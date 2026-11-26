@@ -873,7 +873,27 @@ namespace CsVerify.Verifier.Boogie
                 var actual = Actual(oc.Type, ip.Name)?.Type ?? ip.Type;
                 args.Add(Box(set.TryGetValue(ip, out var given) ? InitValue(given, ip, actual, mode) : InitDefault(ip, def), ip.Type, actual));
             }
-            var made = new KOp(CaseName((INamedTypeSymbol)oc.Type), args.ToArray());
+            KExpr made = new KOp(CaseName((INamedTypeSymbol)oc.Type), args.ToArray());
+            // (a case whose constructor checks its arguments before it stores them: built where no check throws)
+            if (StoredChecksHold(oc, def, ordered, values) is KExpr holds0)
+            {
+                if (mode.InSpec)
+                {
+                    made = Ite(holds0, made, Thrown(oc.Type, oc.Syntax));
+                }
+                else if ((_p.Ghost || _contract.IsPure || _contract.IsLemma) && !(_p.Partial && !_p.Ghost))
+                {
+                    Emit(KCheck.Of(holds0, "CSV1011", oc.Syntax, $"'{oc.Syntax}' might throw: what {oc.Type.Name}'s constructor checks might not hold"));
+                }
+                else
+                {
+                    // (where it throws: to the handlers, or the path ends)
+                    var held = Declare("t$" + _temps++, KernelTypes.Compilation.GetSpecialType(SpecialType.System_Boolean));
+                    Emit(KAssign.Of(held, holds0));
+                    CastThrows(new KVar(held), false);
+                    Emit(KAssume.Of(new KVar(held)));
+                }
+            }
             if (mode.InSpec || !HasInvariants(oc.Type))
             {
                 return made;
@@ -898,6 +918,46 @@ namespace CsVerify.Verifier.Boogie
             }
             AssumeValid(new KVar(t), oc.Type);
             return new KVar(t);
+        }
+
+        /// <summary>
+        /// What a case's constructor checks of its arguments before it stores them (SpecSymbols.StoredChecks), all
+        /// holding, of these arguments; null where it checks nothing.
+        /// </summary>
+        private KExpr StoredChecksHold(IObjectCreationOperation oc, IMethodSymbol ctor, List<IArgumentOperation> ordered, KExpr[] values)
+        {
+            var checks = SpecSymbols.StoredChecks(ctor.ContainingType.OriginalDefinition);
+            if (checks.Count == 0 || !SymbolEqualityComparer.Default.Equals(ctor, DataTypes.Constructor(ctor.ContainingType.OriginalDefinition)))
+            {
+                return null;
+            }
+            KExpr Argument(IParameterSymbol p) => values[ordered.FindIndex(a => a.Parameter.Ordinal == p.Ordinal)];
+            KExpr all = KLit.True;
+            foreach (var (condition, throwsWhen, isNull) in checks)
+            {
+                KExpr c;
+                if (isNull != null)
+                {
+                    c = IsNull(Argument(isNull));
+                }
+                else
+                {
+                    var model = Compilations.ModelOf(KernelTypes.Compilation, condition.SyntaxTree);
+                    c = Spec(model.GetOperation(condition) ?? throw new NotTranslated("a constructor's check: " + condition), null);
+                    // (each parameter named apart, then given its argument: an argument may be a variable of a parameter's name)
+                    var names = ctor.Parameters.Select(_ => "k$" + _temps++).ToList();
+                    foreach (var p in ctor.Parameters)
+                    {
+                        c = Nameless.Substitute(c, new KVar(Local(p)), new KVar(names[p.Ordinal]));
+                    }
+                    foreach (var p in ctor.Parameters)
+                    {
+                        c = Nameless.Substitute(c, new KVar(names[p.Ordinal]), Argument(p));
+                    }
+                }
+                all = AndAlso(all, throwsWhen ? Not(c) : c);
+            }
+            return all;
         }
 
         private KExpr PositionalProperty(IPropertyReferenceOperation dp, LowerMode mode)
@@ -1102,12 +1162,8 @@ namespace CsVerify.Verifier.Boogie
                 _p.AddField(f);
                 KExpr Read(KExpr o) => new KField { Field = f, Instance = o, NoNull = true, At = at, InstanceAt = at };
                 var (a, b) = (Read(l), Read(r));
-                all = AndAlso(all,
-                    Scalar(ft) ? Eq(a, b)
-                    : IsString(ft) ? new KOp("streq", a, b)
-                    : IsData(ft) && KernelTypes.Data.HasValueEquality((INamedTypeSymbol)ft) ? Eq(a, b)
-                    : IsValueObject(ft) && depth < 4 ? OrElse(Eq(a, b), AndAlso(AndAlso(NotNull(a), NotNull(b)), FieldsEqual(a, b, ft, at, depth + 1)))
-                    : throw new NotTranslated("== of " + type.Name + ", whose field " + f.Name + " is a " + ft));
+                // (as a record's synthesized Equals compares it: a struct by its fields, a date by its ticks, a nullable value)
+                all = AndAlso(all, ValuesEqual(a, b, ft, at, depth + 1) ?? throw new NotTranslated("== of " + type.Name + ", whose field " + f.Name + " is a " + ft));
             }
             return all;
         }

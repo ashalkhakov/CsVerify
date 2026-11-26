@@ -1629,6 +1629,7 @@ namespace CsVerify.Verifier.Boogie
             if (!list && _phase == 0)
             {
                 CountFacts(callee, receiver, onThis, args, result, call.Syntax);
+                KindFact(callee, result, call.Syntax);
             }
             foreach (var (_, rv) in refOuts)
             {

@@ -247,7 +247,12 @@ namespace CsVerify.Verifier
         public static IPropertySymbol PositionalProperty(INamedTypeSymbol t, int ordinal)
         {
             t = Def(t);
-            var name = PrimaryConstructor(t)?.Parameters[ordinal].Name;
+            // (a record with no primary constructor has no positional property)
+            if (!(PrimaryConstructor(t) is { } primary) || ordinal >= primary.Parameters.Length)
+            {
+                return null;
+            }
+            var name = primary.Parameters[ordinal].Name;
             for (var s = t; s != null; s = Def(s.BaseType))
             {
                 if (s.GetMembers(name).OfType<IPropertySymbol>().FirstOrDefault() is IPropertySymbol p)

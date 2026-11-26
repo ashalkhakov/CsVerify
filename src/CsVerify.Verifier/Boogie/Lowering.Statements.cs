@@ -1050,7 +1050,7 @@ namespace CsVerify.Verifier.Boogie
                     // (its constructor's arguments, each read back from the field that holds it: a value of the case only
                     // where every field is such a one, else the copy is a value no construction gives)
                     var type = (INamedTypeSymbol)dcr.Type;
-                    var holders = DataTypes.PrimaryConstructor(type)?.Parameters.Select(p => KernelTypes.Data.Holder(type, p)).Concat(DataTypes.InitFields(type)).ToList();
+                    var holders = DataTypes.Constructor(type)?.Parameters.Select(p => KernelTypes.Data.Holder(type, p)).Concat(DataTypes.InitFields(type)).ToList();
                     if (holders == null || holders.Any(h => h == null) || holders.Count != KernelTypes.Data.Fields(type).Count)
                     {
                         throw new NotTranslated($"a copy of a {type.Name} with '{prop.Name}' set: a field of it isn't a parameter of its constructor as given");
@@ -1203,6 +1203,7 @@ namespace CsVerify.Verifier.Boogie
                 Emit(KAssign.Of("result", Expr(b.BranchValue)));
                 HelperCandidates(b.BranchValue);
                 CountCandidates(b.BranchValue);
+                KindCandidate(b.BranchValue);
             }
             else if (fall?.Semantics == ControlFlowBranchSemantics.Throw || fall?.Semantics == ControlFlowBranchSemantics.Rethrow)
             {

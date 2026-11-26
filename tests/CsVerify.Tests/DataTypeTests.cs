@@ -292,6 +292,53 @@ internal static class C {
         }
 
         [Fact]
+        public void ACaseWhoseConstructorChecksItsArguments_IsData()
+        {
+            // (a case's one constructor that checks its arguments and stores them: its value where no check throws)
+            var r = Harness.Verify(@"using System.Collections.Generic;
+public abstract record Report
+{
+    private Report() { }
+    public sealed record Filled : Report
+    {
+        public Filled(IReadOnlyList<int> fills, string note)
+        {
+            if (note.Length > 10) { throw new ArgumentException(""long"", nameof(note)); }
+            Fills = fills is { Count: > 0 } ? fills : throw new ArgumentException(""No fills."", nameof(fills));
+            Note = note ?? throw new ArgumentNullException(nameof(note));
+        }
+        public IReadOnlyList<int> Fills { get; }
+        public string Note { get; }
+    }
+    public sealed record Empty : Report;
+    public sealed record Counted : Report
+    {
+        public Counted(int n) { N = n + 1; }
+        public int N { get; }
+    }
+}
+public static class Reports
+{
+    public static int Fills(Report.Filled f) { Spec.Ensures<int>(r => r == f.Fills.Count); return f.Fills.Count; }
+    public static int Kind(Report r) { Spec.Ensures<int>(k => (k == 1) == (r is Report.Filled)); return r is Report.Filled ? 1 : 0; }
+    public static Report Make(IReadOnlyList<int> fills) { Spec.Ensures<Report>(r => r is Report.Filled f && f.Fills == fills && fills.Count > 0); return new Report.Filled(fills, ""ok""); }
+    public static Report Caught(IReadOnlyList<int> fills)
+    {
+        Spec.Ensures<Report>(r => fills.Count > 0 || r is Report.Empty);
+        try { return new Report.Filled(fills, ""ok""); } catch (ArgumentException) { return new Report.Empty(); }
+    }
+    public static Report Wrong(IReadOnlyList<int> fills) { Spec.Ensures<Report>(r => r is Report.Filled f && f.Fills.Count > 1); return new Report.Filled(fills, ""ok""); }
+}");
+            foreach (var ok in new[] { "Reports.Fills", "Kind", "Make", "Caught" })
+            {
+                Assert.True(r.Errors(ok).Length == 0, r.Explain(ok));
+            }
+            Assert.Equal(new[] { "CSV1002" }, r.Errors("Wrong"));
+            // (one that computes what it stores is no data record)
+            Assert.Contains(r.Diagnostics, d => d.Id == "CSV1902" && d.Message.Contains("Counted"));
+        }
+
+        [Fact]
         public void AnAsCastOfARecord_IsNull_WhereItIsntOfTheCase()
         {
             // (it never throws: on 0.5.28 it was assumed to succeed, and Absurd verified)

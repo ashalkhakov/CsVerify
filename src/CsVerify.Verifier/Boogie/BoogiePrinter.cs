@@ -1215,7 +1215,8 @@ namespace CsVerify.Verifier.Boogie
                 string where = "";
                 if (m.Name == SizeMap || m.Name == "$F.$M.Length")
                 {
-                    where = $" where (forall o: Ref :: {m.Name}[o] >= 0)";
+                    // (a Count, an int: read through an interface it is this map's value, with no getter's result to bound it)
+                    where = $" where (forall o: Ref :: 0 <= {m.Name}[o] && {m.Name}[o] <= 2147483647)";
                 }
                 else if (m.Range != null && RangeOfKind(m.Range, "x") != null)
                 {

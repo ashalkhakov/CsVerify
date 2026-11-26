@@ -199,6 +199,73 @@ namespace CsVerify.Verifier.Boogie
             }
         }
 
+        // ------------------------------------------------------------------ what a returned list interface is
+
+        private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<IMethodSymbol, string> _returnedKind =
+            new System.Runtime.CompilerServices.ConditionalWeakTable<IMethodSymbol, string>();
+
+        /// <summary>
+        /// A member that returns a list through an interface (public IReadOnlyList&lt;Part&gt; Parts => parts): what each
+        /// expression it returns is by its type, an array ("$arr") or a modeled collection ("$coll"), where they are all
+        /// one; else null. What a collection behind an interface is goes with it where it is converted, in the member:
+        /// that its result is one is a candidate postcondition, as a computed list's count is, so that a caller reads
+        /// the list, not a collection it knows nothing of.
+        /// </summary>
+        private static string ReturnedKind(IMethodSymbol m) => _returnedKind.GetValue(m.OriginalDefinition, def =>
+        {
+            if (def.MethodKind is not (MethodKind.Ordinary or MethodKind.PropertyGet) || def.IsAbstract || def.IsVirtual || def.IsOverride || def.IsExtern || def.IsAsync ||
+                !IsCollectionInterface(def.ReturnType) || (def.AssociatedSymbol ?? def).DeclaringSyntaxReferences.Length != 1 || KernelTypes.Compilation == null)
+            {
+                return null;
+            }
+            var decl = (def.AssociatedSymbol ?? def).DeclaringSyntaxReferences[0].GetSyntax();
+            var getter = (decl as PropertyDeclarationSyntax)?.AccessorList?.Accessors.FirstOrDefault(a => a.Keyword.Text == "get");
+            SyntaxNode body = decl switch
+            {
+                PropertyDeclarationSyntax p => p.ExpressionBody?.Expression ?? getter?.ExpressionBody?.Expression ?? (SyntaxNode)getter?.Body,
+                MethodDeclarationSyntax d => d.ExpressionBody?.Expression ?? (SyntaxNode)d.Body,
+                _ => null,
+            };
+            if (body == null)
+            {
+                return null;
+            }
+            var returned = body is ExpressionSyntax one ? new List<ExpressionSyntax> { one }
+                : body.DescendantNodes(n => !(n is AnonymousFunctionExpressionSyntax || n is LocalFunctionStatementSyntax)).OfType<ReturnStatementSyntax>().Select(r => r.Expression).ToList();
+            var model = CsVerify.Analyzers.Compilations.ModelOf(KernelTypes.Compilation, body.SyntaxTree);
+            var kinds = returned.Select(e => e == null ? null : model.GetTypeInfo(e).Type is ITypeSymbol t ? (IsArray(t) ? "$arr" : IsCollection(t) ? "$coll" : null) : null).Distinct().ToList();
+            return kinds.Count == 1 ? kinds[0] : null;
+        });
+
+        private static string KindKey(IMethodSymbol m) => FactPrefix(m) + "is:" + ReturnedKind(m);
+
+        /// <summary>At a return of such a member: the candidate that its result is what its type said where it was converted.</summary>
+        private void KindCandidate(IOperation returned)
+        {
+            if (_m == null || ReturnedKind(_m) is not string kind)
+            {
+                return;
+            }
+            var check = KCheck.Of(OrElse(IsNull(new KVar("result")), new KOp(kind, new KVar("result"))), Checks.Candidate, returned.Syntax, "what a returned list is");
+            check.Key = KindKey(_m);
+            Emit(check);
+        }
+
+        /// <summary>After a call of such a member: its result is an array, or a modeled collection, while the candidate holds.</summary>
+        private void KindFact(IMethodSymbol callee, string result, SyntaxNode at)
+        {
+            if (result == null || _awaiting || ReturnedKind(callee) is not string kind)
+            {
+                return;
+            }
+            Emit(new KFactUse
+            {
+                Cond = OrElse(IsNull(new KVar(result)), new KOp(kind, new KVar(result))),
+                Key = KindKey(callee),
+                At = at,
+            });
+        }
+
         /// <summary>The query parameter of this method a query reads, through operators that keep, drop or map its rows one to one; else null.</summary>
         private IParameterSymbol GivenRows(IOperation op)
         {

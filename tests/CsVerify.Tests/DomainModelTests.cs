@@ -391,6 +391,105 @@ public sealed class Basket
         }
 
         [Fact]
+        public void AListThroughAGetter_IsThatList()
+        {
+            // (what a collection behind an interface is goes with it where it is converted, in the getter: a candidate
+            // postcondition, so that its caller reads the list)
+            var r = Harness.Verify(@"using System.Collections.Generic;
+public sealed record Part(int No);
+public sealed class Order
+{
+    private readonly List<int> ids = new();
+    private readonly List<Part> parts = new();
+    private readonly int[] codes = new int[4];
+    public IReadOnlyList<int> Ids => ids;
+    public IReadOnlyList<Part> Parts => parts;
+    public IReadOnlyList<int> Codes() { return codes; }
+    public IReadOnlyList<int> Either(bool a) { if (a) { return ids; } return codes; }
+    public int First() { Spec.Requires(ids.Count > 0); Spec.Ensures<int>(r => r == ids[0]); return Ids[0]; }
+    public int Size() { Spec.Ensures<int>(r => r == ids.Count); return Ids.Count; }
+    public Part FirstPart() { Spec.Requires(parts.Count > 0); Spec.Ensures<Part>(r => r == parts[0]); return Parts[0]; }
+    public int Code() { Spec.Requires(codes.Length == 4); Spec.Ensures<int>(r => r == codes[0]); return Codes()[0]; }
+    public int After() { Spec.Requires(ids.Count == 1); Spec.Ensures<int>(r => r == 2); var seen = Ids; ids.Add(7); return seen.Count; }
+    public static int Other(Order o) { Spec.Requires(o.ids.Count > 0); Spec.Ensures<int>(r => r == o.ids[0]); return o.Ids[0]; }
+    public int Unknown(bool a) { Spec.Requires(ids.Count > 0 && codes.Length > 0); return Either(a)[0]; }
+    public static bool Has(IReadOnlyList<int> xs, int x)
+    {
+        Spec.Ensures<bool>(r => !r || xs.Count > 0);
+        for (int i = 0; i < xs.Count; i++) { if (xs[i] == x) { return true; } }
+        return false;
+    }
+}");
+            foreach (var ok in new[] { "First", "Size", "FirstPart", "Code", "After", "Other", "Has" })
+            {
+                Assert.True(r.Errors(ok).Length == 0, r.Explain(ok));
+            }
+            // (a list or an array, by the path taken: neither is said)
+            Assert.Equal(new[] { "CSV1003" }, r.Errors("Unknown"));
+        }
+
+        [Fact]
+        public void ARecordsEquality_ComparesAStructADateAndADecimalField()
+        {
+            // (a record's synthesized Equals compares each field as its type does: a typed id by its value)
+            var r = Harness.Verify(@"public readonly record struct TicketId
+{
+    public TicketId(Guid value) { if (value == Guid.Empty) { throw new ArgumentException(""empty"", nameof(value)); } Value = value; }
+    public Guid Value { get; }
+}
+public sealed record Seat
+{
+    public Seat(TicketId id, string row, DateOnly day, decimal price) { Id = id; Row = row; Day = day; Price = price; }
+    public TicketId Id { get; }
+    public string Row { get; }
+    public DateOnly Day { get; }
+    public decimal Price { get; }
+}
+public static class Seats
+{
+    public static bool Same(Seat a, Seat b) { Spec.Ensures<bool>(r => r == (a.Id == b.Id && a.Row == b.Row && a.Day == b.Day && a.Price == b.Price)); return a == b; }
+    public static bool SameId(TicketId a, TicketId b) { Spec.Ensures<bool>(r => r == (a.Value == b.Value)); return a == b; }
+    public static bool Wrong(Seat a, Seat b) { Spec.Ensures<bool>(r => r == (a.Id == b.Id)); return a == b; }
+}");
+            Assert.True(r.Errors("Same").Length == 0, r.Explain("Same"));
+            Assert.True(r.Errors("SameId").Length == 0, r.Explain("SameId"));
+            Assert.Equal(new[] { "CSV1002" }, r.Errors("Wrong"));
+        }
+
+        [Fact]
+        public void AnEmptyPropertyPattern_OfANullableValue_IsItsValue()
+        {
+            // (x is { } v of an int?, an enum?, a date?: where it has a value, v is it; xs is { Count: > 0 }: not null, and its count)
+            var r = Harness.Verify(@"using System.Collections.Generic;
+public enum Step { One, Two }
+public readonly record struct Fee(decimal Amount);
+public sealed class Flow
+{
+    public Step? Failed { get; private set; }
+    public DateTime? LockedUntil { get; private set; }
+    public DateOnly? Start { get; private set; }
+    public int? Enrolment { get; private set; }
+    public Fee? Goal { get; private set; }
+    public Guid? Owner { get; private set; }
+    public bool CanRestart => Failed is { } failed && failed == Step.Two;
+    public bool Restarts() { Spec.Ensures<bool>(r => r == (Failed == Step.Two)); return CanRestart; }
+    public bool Locked(DateTime now) { Spec.Ensures<bool>(r => r == (LockedUntil != null && now < LockedUntil.Value)); return LockedUntil is { } until && now < until; }
+    public bool Within(int cap) { Spec.Ensures<bool>(r => r == (Enrolment != null && Enrolment.Value <= cap)); return Enrolment is { } number && number <= cap; }
+    public bool Started(DateOnly today) { Spec.Ensures<bool>(r => !r || Start != null); if (Start is not { } start || start > today) { return false; } return true; }
+    public decimal GoalOr(decimal none) { Spec.Ensures<decimal>(r => Goal != null || r == none); if (Goal is not { } goal) { return none; } return goal.Amount; }
+    public bool Owned(Guid by) { Spec.Ensures<bool>(r => r == (Owner != null && Owner.Value == by)); return Owner is { } owner && owner == by; }
+    public static int Size(IReadOnlyList<int> xs) { Spec.Ensures<int>(r => r >= 0 && (r == 0 || xs != null)); return xs is { Count: > 0 } ? xs.Count : 0; }
+    public static bool Text(string s) { Spec.Ensures<bool>(r => r == (s != null && s.Length == 3)); return s is { Length: 3 }; }
+    public static bool Wrong(int? x) { Spec.Ensures<bool>(r => r); return x is { } v && v > 0; }
+}");
+            foreach (var ok in new[] { "get_CanRestart", "Restarts", "Locked", "Within", "Started", "GoalOr", "Owned", "Size", "Text" })
+            {
+                Assert.True(r.Errors(ok).Length == 0, r.Explain(ok));
+            }
+            Assert.Equal(new[] { "CSV1002" }, r.Errors("Wrong"));
+        }
+
+        [Fact]
         public void AFuncsResult_IsNotNull_WhereItsTypeSaysSo()
         {
             // (#136, Q: each lambda made one is checked to return what its type says; and a Func may give a generic record)

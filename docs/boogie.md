@@ -538,7 +538,9 @@ is no function, as each call makes a new list, and can state no contract. Of eac
 field of its object, a parameter), that its result has as many elements is a candidate postcondition: checked where it
 returns, as a loop's inferred fact is at its back edge (Houdini), and assumed after a call of it while it holds
 (`Items.Count == lines.Count`, at that moment); where it doesn't (a `Where` keeps fewer), nothing is said, and no one
-is the worse.
+is the worse. So is what a returned list interface is: where each expression a member returns is a list by its type (or
+each an array), `public IReadOnlyList<Part> Parts => parts;`, that its result is a modeled collection (an array) is
+such a candidate, and a caller's `Parts[0]` and `Parts.Count` read the list.
 
 **Entity Framework.** EF Core is read with a model of it (`EfModel`: entities, keys, unique indexes,
 query filters, navigations, tokens; Lowering.Ef, Lowering.EfTracker):
@@ -790,7 +792,9 @@ an upcast written as a cast, `(object)o`, is `o`). A `[Pure]` virtual or abstrac
 called on another object is its function, which each `[Pure]` override defines for objects of exactly its class
 (`dtype(this) == T#D ==> f$B(..) == f$D(..)`).
 
-**Patterns.** Besides the null patterns: a class's property pattern (`p is { Age: >= 18 }`: not null, each field
+**Patterns.** Besides the null patterns: `x is { } v` of a nullable value (an `int?`, an enum's, a `DateOnly?`: where
+it has one, `v` is it); a list's, an array's or a string's count (`xs is { Count: > 0 }`, `s is { Length: 3 }`: not
+null, and its count as the pattern says); a class's property pattern (`p is { Age: >= 18 }`: not null, each field
 read unchecked; a computed property's getter, in code, called only where what is before it matched, and in a contract
 a `[Pure]` one's function); an array's list pattern (`a is [1, .., 9]`, `[_, 0]`, `[>= 9, ..]`: not null, of the length,
 each element as its pattern says, those after a slice counted from the end; in code, a slice with a pattern of its own
@@ -929,7 +933,7 @@ dictionary is; a query's, or an interface's list's, elements are read where the 
 is an enumerator whose elements aren't known (see Iterators).
 
 **Collections.** A `List<T>`, `Dictionary<K, V>`, `HashSet<T>`, `Stack<T>` or `Queue<T>` of the subset's values is an object whose contents
-are CsVerify.Bcl's models: maps as fields are, `$F.$M.Size: [Ref]int` (never negative), `$F.$M.Version: [Ref]int`, and
+are CsVerify.Bcl's models: maps as fields are, `$F.$M.Size: [Ref]int` (an `int`'s, never negative), `$F.$M.Version: [Ref]int`, and
 per kind of value `$F.$M.Items.`*T*`: [Ref][int]`*T* (a list's, stack's or queue's), `$F.$M.Members.`*T*`: [Ref][T]bool`
 (a set's), `$F.$M.Domain.`*K*`: [Ref][K]bool` and `$F.$M.Entries.`*K*`.`*V*`: [Ref][K]V` (a dictionary's), an integer
 type's values in its range, so frames, modifies clauses and delegates' states take them in as they do fields, and a
@@ -1069,8 +1073,12 @@ Fact(Prev.N + 1, ...)`; `C(int X) : B(X + 1)` under `B(int N) : A(N * 2)` has `N
 may keep its state without a parameter list: its one constructor, where all it does is store its parameters, each in
 a get-only auto-property (`private protected Command(DateTime now) => Now = now;`), is a primary constructor
 written out, and `sealed record Start(int Amount, DateTime Now) : Command(Now)` a case whose `Now` is its
-parameter's. Such a constructor has nothing to verify; one that does more (validates, computes) leaves the record
-outside the subset. A value of a case is that case's constructor of its arguments read back (triggered on
+parameter's. Such a constructor has nothing to verify. A case under a record base may have one too, and its may
+check its arguments first: `if (c) throw ...;`, `P = c ? p : throw ...`, `P = p ?? throw ...`, each of its parameters
+alone (`public Filled(IReadOnlyList<Fill> fills) => Fills = fills is { Count: > 0 } ? fills : throw ...;`). Its value
+is built where no check throws: in code `new Filled(xs)` throws where one does (to the handlers, or the path ends), and
+what follows knows they held (`xs.Count > 0`); in a specification it is defined there. One that computes what it
+stores leaves the record outside the subset. A value of a case is that case's constructor of its arguments read back (triggered on
 `$is.`*C*): each parameter from the field that holds it as given, and one no field holds (`D(int N) : A(N + 1)`)
 from a function of its own (`$arg.`*C.p*, some argument the value was built of). So equal fields mean equal values,
 and a record's `==` (where its fields compare as values: integers, booleans, enums, `DateTime`s, `TimeSpan`s,

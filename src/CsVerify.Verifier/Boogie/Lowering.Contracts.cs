@@ -128,6 +128,8 @@ namespace CsVerify.Verifier.Boogie
                 return false;
             }
             return body.SelectMany(b => b.DescendantsAndSelf()).Any(o => o is IThrowOperation ||
+                // (a record built by a constructor that checks its arguments)
+                o is IObjectCreationOperation { Constructor: { } made } && SpecSymbols.StoredChecks(made.ContainingType.OriginalDefinition).Count > 0 ||
                 Called(o) is IMethodSymbol read && read.DeclaringSyntaxReferences.Length > 0 && Partial(read, seen));
         }
 

@@ -1097,7 +1097,7 @@ namespace CsVerify.Verifier.Boogie
             var fields = new Dictionary<string, (string type, MExpr fact)>();
             foreach (var c in cases.OrderBy(x => Data.TagOf(x)))
             {
-                var ctor = Verifier.DataTypes.PrimaryConstructor(c) ?? throw new NotTranslated("a data case without its primary constructor: " + c.Name);
+                var ctor = Verifier.DataTypes.Constructor(c) ?? throw new NotTranslated("a data case without its constructor: " + c.Name);
                 var dc = new BoogiePrinter.DataCase
                 {
                     Type = c,
