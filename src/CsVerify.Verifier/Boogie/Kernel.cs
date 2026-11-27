@@ -513,6 +513,11 @@ namespace CsVerify.Verifier.Boogie
         public KExpr Instance, Value;
         public bool OnThis;
         public SyntaxNode At, InstanceAt;
+        /// <summary>
+        /// A constructor nobody wrote sets a member of the object it builds: no write of the program's, so nothing is
+        /// checked of it (an initializer's null is the static checks', where the class is), and no other object changes.
+        /// </summary>
+        public bool Initial;
     }
 
     /// <summary>Own.New(obj, out View) (Kind "new": the view of a new object) or Own.Drop(Obj) (Kind "drop").</summary>
@@ -551,6 +556,15 @@ namespace CsVerify.Verifier.Boogie
         public SyntaxNode[] ArgsAt;
         public SyntaxNode At;
         public Check Check;
+        /// <summary>Of a constructor nobody wrote: the members what follows sets (the rest of those with a value are unknown). Its invariant is assumed there (KConstructed).</summary>
+        public HashSet<ISymbol> Given;
+    }
+
+    /// <summary>An object a constructor nobody wrote has built: its class's invariant holds from here.</summary>
+    internal sealed class KConstructed : KStmt
+    {
+        public string Var;
+        public ITypeSymbol Type;
     }
 
     /// <summary>A view's cells come into hand (Grant), or go (they're another's now, or freed).</summary>

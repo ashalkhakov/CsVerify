@@ -1316,6 +1316,10 @@ namespace CsVerify.Verifier.Boogie
                     of.Add($"({map}[o] == null || {E(MathTypes.IsCase(Sel(map, new MVar("o")), t), InProcedure)})");
                     _tags = null;
                 }
+                if (Kind(t) is string kind)
+                {
+                    of.Add($"({map}[o] == null || {kind}({map}[o]))");
+                }
                 var where = of.Count > 0 ? $" where (forall o: Ref :: {{ {map}[o] }} {string.Join(" && ", of)})" : "";
                 Line($"var {map}: [Ref]{TypeOf(t)}{where};");
             }
@@ -1635,9 +1639,9 @@ namespace CsVerify.Verifier.Boogie
                 {
                     Line($"  free ensures {Local(x)} == null || $Alloc[{Local(x)}];");
                 }
-                if (IsArray(x.Type))
+                if (Kind(x.Type) is string kind)
                 {
-                    Line($"  free ensures {Local(x)} == null || $arr({Local(x)});");
+                    Line($"  free ensures {Local(x)} == null || {kind}({Local(x)});");
                 }
                 // (a data value given back: one of its type's cases, a record's too, or null)
                 if (IsData(x.Type))
@@ -1699,14 +1703,18 @@ namespace CsVerify.Verifier.Boogie
             {
                 Line("  free ensures result == null || $Alloc[result];");
             }
-            if (Returns(m) != null && IsArray(Returns(m)))
+            if (Returns(m) != null && Kind(Returns(m)) is string made)
             {
-                Line("  free ensures result == null || $arr(result);");
+                Line($"  free ensures result == null || {made}(result);");
             }
             // (a list's constructor: a new list)
             if (p.Source.ListCtor)
             {
                 Line("  free ensures result != null && !old($Alloc[result]) && $Alloc[result];");
+                if (Kind(m.ContainingType) is string built)
+                {
+                    Line($"  free ensures {built}(result);");
+                }
             }
             if (Returns(m) != null && IsNullable(Returns(m)) && NotNullable(Returns(m)))
             {
@@ -1938,6 +1946,9 @@ namespace CsVerify.Verifier.Boogie
         /// A value of a type is within the type's range (an integer, a decimal, a DateTime's or a TimeSpan's ticks), and
         /// so is each of its parts (MathTypes.PartsWithin).
         /// </summary>
+        /// <summary>What an object of this type is, where a collection interface reads it: an array, a modeled collection (null: neither known).</summary>
+        private static string Kind(ITypeSymbol t) => IsArray(t) ? "$arr" : IsCollection(t) ? "$coll" : null;
+
         private IEnumerable<string> Ranges(MExpr v, ITypeSymbol type, Context cx)
         {
             if (MathTypes.Within(v, type) is MExpr within)
@@ -1967,10 +1978,10 @@ namespace CsVerify.Verifier.Boogie
             {
                 yield return $"{name} == null || $Alloc[{name}]";
             }
-            // (an array: one, as a collection interface over it reads it)
-            if (IsArray(type))
+            // (an array, a modeled collection: one, as a collection interface over it reads it)
+            if (Kind(type) is string kind)
             {
-                yield return $"{name} == null || $arr({name})";
+                yield return $"{name} == null || {kind}({name})";
             }
             // (not null: checked at each call's argument)
             if (IsNullable(type) && (NotNullable(type) || x != null && (NotNullParameter(x) || IsQueryParameter(x) || IsConverterParameter(x))))

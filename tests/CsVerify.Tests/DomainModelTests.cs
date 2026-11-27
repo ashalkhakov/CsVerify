@@ -1613,5 +1613,148 @@ public sealed class Cat : Pet { public string Sound = ""meow""; public Cat(List<
             // (a derived class's object isn't built while its base's constructor runs, unless initializers set its fields)
             Assert.Equal(new[] { "CSV1015" }, r.Errors("Shape..ctor"));
         }
+
+        private const string Effects = @"using System.Collections.Generic;
+public sealed class Dial
+{
+    public int mark;
+    private int spare;
+    public static int turns;
+    public int Via { get { return mark; } set { mark = value; } }
+    public int Counted { get { turns = turns < 9 ? turns + 1 : 0; return mark; } }
+    public int this[int i] { get { turns = 0; return i; } set { mark = value; } }
+    public static Dial operator +(Dial a, Dial b) { a.mark = 3; return a; }
+    public static implicit operator int(Dial d) { d.mark = 4; return 0; }
+    public void Deconstruct(out int a, out int b) { mark = 5; a = 0; b = 0; }
+    public void Pair(int a, int b) { (mark, spare) = (a, b); }
+    public void ByRef(int a) { ref int r = ref mark; r = a; }
+    public event EventHandler Changed { add { mark = 6; } remove { mark = 8; } }
+    public override string ToString() { turns = 0; return string.Empty; }
+}
+public sealed class Shut : IDisposable { public Dial Kept = new Dial(); public void Dispose() { Kept.mark = 12; } }
+public sealed class Row { public Steps GetEnumerator() { Dial.turns = 0; return new Steps(); } }
+public sealed class Steps { public int Current => 0; public bool MoveNext() { Dial.turns = 0; return false; } }
+public class Root { public int low; public static int made; public Root() { low = 1; made = 0; } }
+public class Stem : Root { public int mid = 2; }
+public class Leafy : Root { public int top; public Leafy() { top = 3; } public Leafy(int x) : this() { top = x; } }
+public sealed class Kept { public int a = 1; public int P { get; set; } = 2; private readonly List<int> all = new(); public Kept() { } public int Count => all.Count; }
+public sealed class Seeded(int seed) { public int Seed { get; } = seed; public int twice = seed < 9 ? seed * 2 : 0; }
+public static class Does
+{
+    public static void Setter(Dial d) { d.Via = 5; }
+    public static void Getter(Dial d) { var x = d.Counted; }
+    public static void IndexGet(Dial d) { var x = d[0]; }
+    public static void IndexSet(Dial d) { d[0] = 2; }
+    public static void Operator(Dial d) { var c = d + d; }
+    public static void Conversion(Dial d) { int c = d; }
+    public static void Deconstructed(Dial d) { var (x, y) = d; }
+    public static void Pair(Dial d) { d.Pair(2, 3); }
+    public static void ByRef(Dial d) { d.ByRef(2); }
+    public static void Event(Dial d) { d.Changed += null; }
+    public static void Using(Shut s) { using (s) { } }
+    public static void Walk(Row r) { foreach (var x in r) { } }
+    public static void Text(Dial d) { var s = $""{d}""; }
+    public static void Joined(Dial d) { var s = ""a"" + d; }
+    public static void Made() { var s = new Stem(); }
+    public static int Read(Dial d) { return d.mark; }
+}
+public static class Uses
+{
+    public static void Setter(Dial d) { d.mark = 1; Does.Setter(d); Spec.Assert(d.mark == 1); }
+    public static void Getter(Dial d) { Dial.turns = 7; Does.Getter(d); Spec.Assert(Dial.turns == 7); }
+    public static void IndexGet(Dial d) { Dial.turns = 7; Does.IndexGet(d); Spec.Assert(Dial.turns == 7); }
+    public static void IndexSet(Dial d) { d.mark = 1; Does.IndexSet(d); Spec.Assert(d.mark == 1); }
+    public static void Operator(Dial d) { d.mark = 1; Does.Operator(d); Spec.Assert(d.mark == 1); }
+    public static void Conversion(Dial d) { d.mark = 1; Does.Conversion(d); Spec.Assert(d.mark == 1); }
+    public static void Deconstructed(Dial d) { d.mark = 1; Does.Deconstructed(d); Spec.Assert(d.mark == 1); }
+    public static void Pair(Dial d) { d.mark = 1; Does.Pair(d); Spec.Assert(d.mark == 1); }
+    public static void ByRef(Dial d) { d.mark = 1; Does.ByRef(d); Spec.Assert(d.mark == 1); }
+    public static void Event(Dial d) { d.mark = 1; Does.Event(d); Spec.Assert(d.mark == 1); }
+    public static void Using(Shut s) { s.Kept.mark = 1; Does.Using(s); Spec.Assert(s.Kept.mark == 1); }
+    public static void Walk(Row r) { Dial.turns = 7; Does.Walk(r); Spec.Assert(Dial.turns == 7); }
+    public static void Text(Dial d) { Dial.turns = 7; Does.Text(d); Spec.Assert(Dial.turns == 7); }
+    public static void Joined(Dial d) { Dial.turns = 7; Does.Joined(d); Spec.Assert(Dial.turns == 7); }
+    public static void Made() { Root.made = 7; Does.Made(); Spec.Assert(Root.made == 7); }
+    public static void Read(Dial d) { d.mark = 1; Dial.turns = 7; var x = Does.Read(d); Spec.Assert(d.mark == 1 && Dial.turns == 7); }
+    public static void Initializer() { var k = new Kept(); Spec.Assert(false); }
+    public static void FieldSet() { var k = new Kept(); Spec.Assert(k.a == 0); }
+    public static void PropertySet() { var k = new Kept(); Spec.Assert(k.P == 0); }
+    public static void BaseSets() { var l = new Leafy(); Spec.Assert(l.low == 0); }
+    public static void ThisSets() { var l = new Leafy(5); Spec.Assert(l.low == 0); }
+    public static void BaseWrites() { Root.made = 7; var l = new Leafy(5); Spec.Assert(Root.made == 7); }
+    public static void Primary() { var s = new Seeded(4); Spec.Assert(s.twice == 0); }
+    public static void PrimaryProperty() { var s = new Seeded(4); Spec.Assert(s.Seed == 0); }
+    public static void Unwritten() { var s = new Stem(); Spec.Assert(s.low == 0); }
+    public static void UnwrittenWrites() { Root.made = 7; var s = new Stem(); Spec.Assert(Root.made == 7); }
+}";
+
+        [Fact]
+        public void AMethodCalledByItsContract_MayChangeWhatItsBodyMay()
+        {
+            // (#137, Z: a body that isn't translated is framed by the effects analysis, which reads what the code does:
+            // a constructor runs its class's initializers and the constructor it chains to, written or not; an
+            // accessor, an operator, a conversion, Deconstruct, an enumerator, Dispose and ToString are calls, though
+            // nobody wrote them as calls; a tuple's part and a ref local are written)
+            var r = Harness.Verify(Effects, only: "Uses.");
+            foreach (var m in r.Methods.Where(m => m.Name.StartsWith("Uses.") && m.Name != "Uses.Read"))
+            {
+                Assert.True(r.Errors(m.Name.Substring(5)).SequenceEqual(new[] { "CSV1004" }), r.Explain(m.Name.Substring(5)));
+            }
+            // (what it doesn't write is as it was)
+            Assert.True(r.Errors("Read").Length == 0, r.Explain("Read"));
+        }
+
+        [Fact]
+        public void AConstructorNobodyWrote_RunsItsInitializers_ThenItsBasesConstructor()
+        {
+            // (#137, AA: new of a class without a constructor does what the constructor nobody wrote does: each
+            // initializer's value is its member's, a new list empty; then its base's constructor is called, by its
+            // contract. A list is one wherever it is read: through a getter typed as a list interface too)
+            var r = Harness.Verify(@"using System.Collections.Generic;
+public sealed class Line { public Line(decimal amount) { Spec.Ensures(Amount == amount); Amount = amount; } public decimal Amount { get; private set; } }
+public sealed class Slip
+{
+    private readonly List<Line> lines = new();
+    public int Start = 3;
+    public decimal Amount { get; private set; }
+    public IReadOnlyList<Line> Lines => lines;
+    public static Slip Of(decimal amount)
+    {
+        Spec.Ensures<Slip>(s => s.Lines.Count == 1 && s.Lines[0].Amount == s.Amount && s.Start == 3);
+        var slip = new Slip { Amount = amount };
+        slip.lines.Add(new Line(amount));
+        return slip;
+    }
+    public static void Grown(Slip s, decimal amount)
+    {
+        int n = s.lines.Count;
+        s.lines.Add(new Line(amount));
+        Spec.Assert(s.Lines.Count == n + 1);
+    }
+    public static void Hoped() { var s = new Slip(); Spec.Assert(s.Lines.Count == 1); }
+}
+public class Root { public int low; public static int made; public Root() { Spec.Ensures(low == 1); low = 1; made = 0; } }
+public class Stem : Root { public int mid = 2; }
+public sealed class Twig : Stem { public int top = 5; public Twig() { Spec.Ensures(top == 5 && mid == 2 && low == 1); } }
+public sealed class Loud { public static int said; public override string ToString() { said = 0; return string.Empty; } }
+public static class Uses
+{
+    public static void Unwritten() { var s = new Stem(); Spec.Assert(s.mid == 2 && s.low == 1); }
+    public static void Chained() { var t = new Twig(); Spec.Assert(t.top == 5 && t.mid == 2 && t.low == 1); }
+    public static void Writes() { Root.made = 7; var s = new Stem(); Spec.Assert(Root.made == 7); }
+    public static void Text(Loud l) { Loud.said = 7; var s = $""{l}""; Spec.Assert(Loud.said == 7); }
+    public static void Joined(Loud l) { Loud.said = 7; var s = ""a"" + l; Spec.Assert(Loud.said == 7); }
+    public static void Plain(int n) { Loud.said = 7; var s = $""{n}"" + n; Spec.Assert(Loud.said == 7); }
+}");
+            foreach (var ok in new[] { "Of", "Grown", "Unwritten", "Chained", "Twig..ctor", "Plain" })
+            {
+                Assert.True(r.Errors(ok).Length == 0, r.Explain(ok));
+            }
+            // (an empty list has no item; the base's constructor writes what it writes; a ToString of the program's runs)
+            Assert.Equal(new[] { "CSV1004" }, r.Errors("Hoped"));
+            Assert.Equal(new[] { "CSV1004" }, r.Errors("Writes"));
+            Assert.Equal(new[] { "CSV1004" }, r.Errors("Text"));
+            Assert.Equal(new[] { "CSV1004" }, r.Errors("Joined"));
+        }
     }
 }

@@ -45,9 +45,15 @@ namespace CsVerify.Tests
                 .Select(d => d.Id).OrderBy(x => x).ToArray();
         }
 
-        public static VerificationResult Verify(string source, bool overflow = true)
+        /// <param name="only">As --only: the methods verified, the others called by their contracts.</param>
+        public static VerificationResult Verify(string source, bool overflow = true, string only = null)
         {
-            var result = Engine.VerifySources(new[] { ("Test.cs", Usings + source) }, new VerifierOptions { CheckOverflow = overflow });
+            var options = new VerifierOptions { CheckOverflow = overflow };
+            if (only != null)
+            {
+                options.AddOnly(only);
+            }
+            var result = Engine.VerifySources(new[] { ("Test.cs", Usings + source) }, options);
             Xunit.Assert.True(result.CompilationErrors.Count == 0, string.Join("\n", result.CompilationErrors));
             return result;
         }

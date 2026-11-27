@@ -242,6 +242,9 @@ namespace CsVerify.Verifier.Boogie
                 case KOwn { Kind: "drop" } drop:
                     Emit(MMapUpdate.Of("perm", Code(drop.Obj), MLit.False));
                     return;
+                case KConstructed made:
+                    ObjectInvariant(new MVar(made.Var), made.Type);
+                    break;
                 case KNewObj n:
                 {
                     NewObject(n);
@@ -395,6 +398,11 @@ namespace CsVerify.Verifier.Boogie
         {
             var value = Code(fs.Value);
             var o = fs.Instance == null ? MLit.Null : Code(fs.Instance);
+            if (fs.Initial)
+            {
+                Emit(MFieldStore.Of(fs, o, value));
+                return;
+            }
             if (fs.Instance != null && !fs.OnThis)
             {
                 Assert(NotNull(o), NullAt(fs.At, fs.InstanceAt, $"'{fs.InstanceAt}' might be null in '{fs.At}'"));
@@ -622,7 +630,10 @@ namespace CsVerify.Verifier.Boogie
                     Assume(new MOp("set.subset", Sel(FieldMap(f), new MVar(n.Var)), new MVar("$Alloc")));
                 }
             }
-            ObjectInvariant(new MVar(n.Var), n.Type);
+            if (n.Given == null)
+            {
+                ObjectInvariant(new MVar(n.Var), n.Type);
+            }
             return;
         }
 

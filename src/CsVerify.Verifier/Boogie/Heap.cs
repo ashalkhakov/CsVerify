@@ -65,7 +65,7 @@ namespace CsVerify.Verifier.Boogie
                             var map = FieldMap(fs.Field);
                             p.Source.AddModifies(map);
                             // (an [Owned] object's field is written only with its view: framed by the views a call gets)
-                            if (!(p.Source.IsCtor && fs.OnThis) && !IsOwnedField(fs.Field))
+                            if (!(p.Source.IsCtor && fs.OnThis) && !fs.Initial && !IsOwnedField(fs.Field))
                             {
                                 p.Source.AddAnyWrite(map);
                             }
@@ -99,6 +99,10 @@ namespace CsVerify.Verifier.Boogie
                                 // an implicit constructor runs the initializers: what they make isn't known here (a non-nullable field's is set)
                                 foreach (var field in InstanceFields(n.Type).Where(f => HasInitializer(f) || IsNullable(FieldType(f)) && NotNullable(FieldType(f))))
                                 {
+                                    if (n.Given?.Contains(field) == true)
+                                    {
+                                        continue;
+                                    }
                                     var u = "u$" + FieldMap(field);
                                     if (!p.Source.Locals.Any(l => l.Name == u))
                                     {

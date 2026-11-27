@@ -1141,6 +1141,7 @@ AndAlso(Eq(Sel(r, new KVar(t)), Sel(r, instance)), Ne(Sel(r, new KVar(t)), new K
                 // (read into a variable: its checks are where it's read)
                 var hole = InSubset(part.Expression.Type) ? part.Expression : Unconverted(part.Expression);
                 Emit(KAssign.Of(Declare("t$" + _temps++, hole.Type), Expr(hole)));
+                MadeString(hole);
                 if (part.Alignment != null)
                 {
                     Expr(part.Alignment);
@@ -1228,6 +1229,17 @@ AndAlso(Eq(Sel(r, new KVar(t)), Sel(r, instance)), Ne(Sel(r, new KVar(t)), new K
             return RelationalStrings(sb, StringBinary(sb.OperatorKind, v[0], v[1]), v[0], v[1]);
         }
 
+        /// <summary>A value made a string runs its ToString: one of the program's that may write is a call that may change anything.</summary>
+        private void MadeString(IOperation value)
+        {
+            if (KernelTypes.StringOfWrites?.Invoke(Unconverted(value).Type) == true && !_p.Ghost && !_contract.IsPure && !_contract.IsLemma)
+            {
+                _p.HavocsAll = true;
+                _p.CallsDelegates = true;
+                Emit(new KHavocAll());
+            }
+        }
+
         private KExpr StringConcatenation(IBinaryOperation so)
         {
             var stringLeft = IsString(Unconverted(so.LeftOperand).Type);
@@ -1238,6 +1250,7 @@ AndAlso(Eq(Sel(r, new KVar(t)), Sel(r, instance)), Ne(Sel(r, new KVar(t)), new K
                 throw new NotTranslated("a string + " + other.Type);
             }
             Expr(other);
+            MadeString(other);
             var text = Declare("t$" + _temps++, so.Type);
             Emit(KHavoc.Of(text));
             Emit(KAssume.Of(NotNull(new KVar(text))));
@@ -1349,6 +1362,8 @@ AndAlso(Eq(Sel(r, new KVar(t)), Sel(r, instance)), Ne(Sel(r, new KVar(t)), new K
             {
                 _p.AddField(f);
             }
+            // (a constructor nobody wrote: what it does is done here, as it has no contract to be called by)
+            bool inline = isImplicit && ctor.ContainingType.DeclaringSyntaxReferences.Length > 0 && ctor.ContainingType.TypeKind == TypeKind.Class;
             Emit(new KNewObj
             {
                 Var = t,
@@ -1357,7 +1372,13 @@ AndAlso(Eq(Sel(r, new KVar(t)), Sel(r, instance)), Ne(Sel(r, new KVar(t)), new K
                 Args = args,
                 ArgsAt = ordered.Select(a => a.Value.Syntax).ToArray(),
                 At = oc.Syntax,
+                Given = inline ? new HashSet<ISymbol>(InstanceFields(oc.Type), SymbolEqualityComparer.Default) : null,
             });
+            if (inline)
+            {
+                ImplicitConstructor(new KVar(t), ctor.ContainingType, oc.Syntax, made: true);
+                Emit(new KConstructed { Var = t, Type = oc.Type });
+            }
             // (exactly a C)
             if (IsModeledClass(oc.Type))
             {

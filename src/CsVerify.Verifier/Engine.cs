@@ -674,7 +674,9 @@ namespace CsVerify.Verifier
             return result;
         }
 
-        internal SemanticModel ModelOf(SyntaxTree tree) => _compilation.ModelOf(tree);
+        internal SemanticModel ModelOf(SyntaxTree tree) => _models.GetOrAdd(tree, t => _compilation.ModelOf(t));
+
+        private readonly System.Collections.Concurrent.ConcurrentDictionary<SyntaxTree, SemanticModel> _models = new System.Collections.Concurrent.ConcurrentDictionary<SyntaxTree, SemanticModel>();
 
         private HashSet<IMethodSymbol> _underInvariants;
 
@@ -1075,6 +1077,8 @@ namespace CsVerify.Verifier
             Boogie.KernelTypes.FieldWrites = m => engine.Fields.WritesOf(m).fields;
             Boogie.KernelTypes.FieldReads = engine.Fields.ReadsOf;
             Boogie.KernelTypes.SelfWritesOf = engine.Fields.SelfWritesOf;
+            Boogie.KernelTypes.TreeModel = engine.ModelOf;
+            Boogie.KernelTypes.StringOfWrites = engine.Fields.StringOfWrites;
             Boogie.KernelTypes.FieldEffectsOf = m =>
             {
                 var (f, all) = engine.Fields.WritesOf(m);

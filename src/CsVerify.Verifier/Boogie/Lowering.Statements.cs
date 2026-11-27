@@ -742,11 +742,15 @@ namespace CsVerify.Verifier.Boogie
         {
             // base(...): the base class's constructor, on this object
             var ctor = chain.TargetMethod.OriginalDefinition;
-            // (an implicit one of a class without field initializers does nothing)
-            if (ctor.IsImplicitlyDeclared && !ctor.ContainingType.GetMembers().Any(x => !x.IsStatic && x.DeclaringSyntaxReferences.Any(r =>
-                    r.GetSyntax() is VariableDeclaratorSyntax { Initializer: not null } || r.GetSyntax() is PropertyDeclarationSyntax { Initializer: not null })))
+            // (one nobody wrote: what it does, here)
+            if (ctor.IsImplicitlyDeclared && ctor.ContainingType.DeclaringSyntaxReferences.Length > 0)
             {
+                ImplicitConstructor(new KVar("this"), ctor.ContainingType, chain.Syntax, made: false);
                 return;
+            }
+            if (ctor.IsImplicitlyDeclared)
+            {
+                return; // (a library's class: nothing of the program's)
             }
             if (!_isProcedure(ctor))
             {
@@ -765,6 +769,103 @@ namespace CsVerify.Verifier.Boogie
                 At = chain.Syntax,
             });
             return;
+        }
+
+        /// <summary>
+        /// A constructor nobody wrote, run on an object whose members are their defaults: its class's initializers in
+        /// order, then its base's constructor (called where it is written, the same again where it isn't; a library's
+        /// does nothing of the program's). Where it is all that makes the object, a non-nullable member without an
+        /// initializer is unknown: whoever makes the object sets it.
+        /// </summary>
+        private void ImplicitConstructor(KExpr target, INamedTypeSymbol type, SyntaxNode at, bool made)
+        {
+            for (var t = type.OriginalDefinition; ;)
+            {
+                var initialized = new HashSet<ISymbol>(SymbolEqualityComparer.Default);
+                foreach (var (member, init) in FieldEffects.Initializers(t))
+                {
+                    if (IsLockObject(member) || !IsField(member))
+                    {
+                        continue;
+                    }
+                    initialized.Add(member);
+                    Store(member, InitializerValue(member, init));
+                }
+                foreach (var member in t.GetMembers().Where(x => made && !x.IsStatic && IsField(x) && !initialized.Contains(x) && !IsLockObject(x) && IsNullable(FieldType(x)) && NotNullable(FieldType(x))))
+                {
+                    Store(member, Unknown(FieldType(member)));
+                }
+                var next = FieldEffects.ImplicitBase(t)?.OriginalDefinition;
+                if (next == null || next.ContainingType.DeclaringSyntaxReferences.Length == 0)
+                {
+                    return;
+                }
+                if (next.IsImplicitlyDeclared)
+                {
+                    t = next.ContainingType;
+                    continue;
+                }
+                if (next.Parameters.Length > 0 || !_isProcedure(next))
+                {
+                    throw new NotTranslated("a call of " + next.ContainingType.Name + "'s constructor");
+                }
+                _p.AddCall(next);
+                Emit(new KCall
+                {
+                    Callee = next,
+                    Receiver = target,
+                    ReceiverIsThis = true,
+                    Args = new KExpr[0],
+                    ArgsAt = new SyntaxNode[0],
+                    At = at,
+                });
+                return;
+            }
+
+            void Store(ISymbol member, KExpr value)
+            {
+                _p.AddField(member.OriginalDefinition);
+                Emit(new KFieldStore
+                {
+                    Field = member.OriginalDefinition,
+                    Instance = target,
+                    Value = value,
+                    OnThis = !made,
+                    Initial = true,
+                    At = at,
+                    InstanceAt = at,
+                });
+            }
+        }
+
+        private KExpr Unknown(ITypeSymbol type)
+        {
+            var u = Declare("t$" + _temps++, type);
+            Emit(KHavoc.Of(u));
+            return new KVar(u);
+        }
+
+        /// <summary>An initializer's value, where it is run by a constructor nobody wrote: unknown where it doesn't translate.</summary>
+        private KExpr InitializerValue(ISymbol member, EqualsValueClauseSyntax init)
+        {
+            var (model, block, count) = (_model, _block, _block.Stmts.Count);
+            try
+            {
+                _model = init.SyntaxTree == model.SyntaxTree ? model : KernelTypes.TreeModel?.Invoke(init.SyntaxTree) ?? model.Compilation.GetSemanticModel(init.SyntaxTree);
+                if (_model.GetOperation(init) is ISymbolInitializerOperation op)
+                {
+                    return Expr(op.Value);
+                }
+            }
+            catch (NotTranslated) when (_block == block)
+            {
+                _block.Stmts.RemoveRange(count, _block.Stmts.Count - count);
+            }
+            finally
+            {
+                _model = model;
+            }
+            return Unknown(FieldType(member));
         }
 
         private void TupleDeconstruction(IDeconstructionAssignmentOperation tdc, List<ILocalSymbol> tparts)
