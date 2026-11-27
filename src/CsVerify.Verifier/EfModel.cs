@@ -44,6 +44,15 @@ namespace CsVerify.Verifier
             /// query filter keeps.
             /// </summary>
             public List<(List<string> columns, bool whereFiltered)> KeyColumns;
+            /// <summary>
+            /// The unique indexes that are keys only among the rows their filters keep: their columns, and what a row
+            /// must not hold in a column to be one of those (a filter's [C] &lt;&gt; v: the column, and the value of its
+            /// type stored as v, as EfRuntimeModel.Index.Excluded has it).
+            /// </summary>
+            public List<(List<string> columns, List<(string column, string value)> unless, bool whereFiltered)> KeysUnless =
+                new List<(List<string>, List<(string, string)>, bool)>();
+            /// <summary>The properties EF's model maps to columns, as read from it: one kept in a field written by hand too.</summary>
+            public HashSet<IPropertySymbol> Columns = new HashSet<IPropertySymbol>(SymbolEqualityComparer.Default);
             /// <summary>The shadow columns that are NOT NULL, as EF's model has them.</summary>
             public HashSet<string> ShadowNotNull = new HashSet<string>();
             /// <summary>A reference navigation's foreign key, its columns' names (shadow ones too), as EF's model has it.</summary>

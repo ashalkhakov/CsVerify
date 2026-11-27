@@ -23,6 +23,11 @@ namespace CsVerify.Verifier.Boogie
             public HashSet<string> Columns;
             /// <summary>Every column NOT NULL, of the row itself: no two rows tie in an order by them.</summary>
             public bool Total;
+            /// <summary>
+            /// Of a unique index with a filter: a key only among the rows that don't hold these values in these columns
+            /// (EfModel.Entity.KeysUnless). Empty: a key of all the rows.
+            /// </summary>
+            public List<(string column, string value)> Unless = new List<(string, string)>();
         }
 
         private sealed class Rel
@@ -30,6 +35,9 @@ namespace CsVerify.Verifier.Boogie
             public EfModel.Entity Table;
             public List<RelKey> Keys;
             public HashSet<string> Constant = new HashSet<string>();
+            /// <summary>What each constant column is fixed to, and what a predicate says a column is not (C != v).</summary>
+            public Dictionary<string, IOperation> Fixed = new Dictionary<string, IOperation>();
+            public List<(string column, IOperation value)> Not = new List<(string, IOperation)>();
             /// <summary>The columns the rows are sorted by, outermost first (null: an order the database doesn't fix).</summary>
             public List<string> Order;
             /// <summary>Of a projection: each member's column ("" the row itself); null: the rows are the table's.</summary>
@@ -38,14 +46,16 @@ namespace CsVerify.Verifier.Boogie
             public string ProjectedValue;
             public bool Projected;
 
-            public bool AtMostOne => Keys.Any(k => k.Columns.IsSubsetOf(Constant));
-            public bool Ordered => Order != null && Keys.Any(k => k.Total && k.Columns.IsSubsetOf(Order));
+            public bool AtMostOne => Keys.Any(k => k.Unless.Count == 0 && k.Columns.IsSubsetOf(Constant));
+            public bool Ordered => Order != null && Keys.Any(k => k.Unless.Count == 0 && k.Total && k.Columns.IsSubsetOf(Order));
 
             public Rel Copy() => new Rel
             {
                 Table = Table,
                 Keys = Keys,
                 Constant = new HashSet<string>(Constant),
+                Fixed = new Dictionary<string, IOperation>(Fixed),
+                Not = Not.ToList(),
                 Order = Order?.ToList(),
                 Projection = Projection,
                 ProjectedValue = ProjectedValue,
@@ -103,6 +113,11 @@ namespace CsVerify.Verifier.Boogie
             {
                 yield return new RelKey { Columns = key.Select(c => prefix + c).ToHashSet(), Total = total && key.All(c => ColumnNamed(e, c) is { NotNull: true }) };
             }
+            // (and its unique indexes that are keys among the rows their filters keep)
+            foreach (var (columns, unless, whereFiltered) in e.KeysUnless.Where(k => filtered || !k.whereFiltered))
+            {
+                yield return new RelKey { Columns = columns.Select(c => prefix + c).ToHashSet(), Total = false, Unless = unless.Select(u => (prefix + u.column, u.value)).ToList() };
+            }
             if (depth >= 3)
             {
                 yield break;
@@ -121,7 +136,7 @@ namespace CsVerify.Verifier.Boogie
                     var rest = key.Where(c => !columns.Contains(c)).Select(c => prefix + c).ToList();
                     foreach (var k in KeysOf(to, prefix + nav.Name + ".", depth + 1, false, filtered))
                     {
-                        yield return new RelKey { Columns = rest.Concat(k.Columns).ToHashSet(), Total = false };
+                        yield return new RelKey { Columns = rest.Concat(k.Columns).ToHashSet(), Total = false, Unless = k.Unless };
                     }
                 }
             }
@@ -153,7 +168,8 @@ namespace CsVerify.Verifier.Boogie
         /// <summary>An entity's column by its name; else null.</summary>
         private static RelColumn ColumnNamed(EfModel.Entity owner, string name)
         {
-            if (EfModel.PropertiesOf(owner.Type).FirstOrDefault(x => x.Name == name) is IPropertySymbol p && IsField(p))
+            // (a property that is a field, or one EF's model maps to a column: its value kept in a field written by hand)
+            if (EfModel.PropertiesOf(owner.Type).FirstOrDefault(x => x.Name == name) is IPropertySymbol p && (IsField(p) || owner.Columns.Contains(p.OriginalDefinition)))
             {
                 return new RelColumn
                 {
@@ -219,9 +235,100 @@ namespace CsVerify.Verifier.Boogie
                     (FixedColumn(eq.LeftOperand, eq.RightOperand, p, r) ?? FixedColumn(eq.RightOperand, eq.LeftOperand, p, r)) is string col)
                 {
                     r.Constant.Add(col);
+                    r.Fixed[col] = PathOf(eq.LeftOperand, p, r) == col ? eq.RightOperand : eq.LeftOperand;
+                }
+                // (a column that isn't a value: the rows left are among those an index's filter [C] <> v keeps)
+                else if (c is IBinaryOperation { OperatorKind: BinaryOperatorKind.NotEquals } ne)
+                {
+                    foreach (var (column, value) in new[] { (ne.LeftOperand, ne.RightOperand), (ne.RightOperand, ne.LeftOperand) })
+                    {
+                        if (!value.DescendantsAndSelf().OfType<IParameterReferenceOperation>().Any(x => SymbolEqualityComparer.Default.Equals(x.Parameter, p)) &&
+                            PathOf(column, p, r) is { Length: > 0 } path && ColumnAt(r.Table, path) is { Scalar: true })
+                        {
+                            r.Not.Add((path, value));
+                        }
+                    }
                 }
             }
             return r;
+        }
+
+        /// <summary>
+        /// Where a filter's rows are one at most by a key that is one only among the rows an index's filter keeps
+        /// (RelKey.Unless): what makes each row the predicate keeps one of those. The predicate fixes the key's columns;
+        /// and for each value v a column C must not hold, it fixes C to a value that isn't v (rows equal to a value
+        /// aren't null there) or says C != v itself. Null: no such key.
+        /// </summary>
+        private KExpr AtMostOneWhen(Rel r)
+        {
+            foreach (var key in r.Keys.Where(k => k.Unless.Count > 0 && k.Columns.IsSubsetOf(r.Constant)))
+            {
+                var when = new List<KExpr>();
+                foreach (var (column, value) in key.Unless)
+                {
+                    KExpr met = null;
+                    try
+                    {
+                        met = r.Fixed.TryGetValue(column, out var to) ? IsValue(to, value, false)
+                            : r.Not.Where(n => n.column == column).Select(n => IsValue(n.value, value, true)).FirstOrDefault(x => x != null);
+                    }
+                    catch (NotTranslated)
+                    {
+                    }
+                    if (met == null)
+                    {
+                        when = null;
+                        break;
+                    }
+                    when.Add(met);
+                }
+                if (when != null)
+                {
+                    return when.Aggregate((KExpr)KLit.True, AndAlso);
+                }
+            }
+            return null;
+        }
+
+        /// <summary>
+        /// That a value of the program's is (or isn't) the value an index's filter leaves out, as the model names it
+        /// (EfRuntimeModel.Index.Excluded); null where that can't be said.
+        /// </summary>
+        private KExpr IsValue(IOperation operand, string value, bool equal)
+        {
+            var v = Unconverted(operand);
+            bool isNull = v.ConstantValue is { HasValue: true, Value: null };
+            switch (value)
+            {
+                // (no value is stored as it: a row equal to a value isn't one of it; nor is one that isn't it, null or not)
+                case "none":
+                    return equal ? null : KLit.True;
+                case "null":
+                    return equal ? (isNull ? KLit.True : null) : KLit.True;
+            }
+            if (isNull || v.Type == null || v.Type is INamedTypeSymbol { OriginalDefinition.SpecialType: SpecialType.System_Nullable_T })
+            {
+                return null;
+            }
+            KExpr same;
+            if (value == "default" && v.Type.IsValueType)
+            {
+                same = Eq(Expr(v), KernelTypes.Default(v.Type));
+            }
+            else if (value.StartsWith("number:") && (IsIntegral(v.Type) || v.Type.TypeKind == TypeKind.Enum))
+            {
+                var n = System.Numerics.BigInteger.Parse(value.Substring("number:".Length), System.Globalization.CultureInfo.InvariantCulture);
+                same = Eq(Expr(v), new KLit(n.Sign < 0 ? "(" + n + ")" : n.ToString()));
+            }
+            else if (value == "string:" && IsString(v.Type))
+            {
+                same = Eq(new KOp("slen", Expr(v)), KLit.Zero);
+            }
+            else
+            {
+                return null;
+            }
+            return equal ? same : Not(same);
         }
 
         /// <summary>A projection: the rows, one to one, in their order; its members read back to the columns they are.</summary>
@@ -346,7 +453,7 @@ namespace CsVerify.Verifier.Boogie
             {
                 return;
             }
-            foreach (var key in r.Keys.Where(k => k.Columns.Count == 1))
+            foreach (var key in r.Keys.Where(k => k.Columns.Count == 1 && k.Unless.Count == 0))
             {
                 var path = key.Columns.First();
                 // (a column the elements have: a property of a class, not null, a value or a string)

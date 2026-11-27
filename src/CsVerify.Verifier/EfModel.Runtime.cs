@@ -39,7 +39,7 @@ namespace CsVerify.Verifier
                 foreach (var r in runtime.Entities.Values)
                 {
                     Console.Error.WriteLine($"[ef-model] {r.Type}: key {string.Join(",", r.Key ?? new List<string>())}; filtered-false {string.Join(",", r.FilteredFalse)}; " +
-                        $"unique {string.Join(" | ", r.UniqueIndexes.Select(ix => string.Join(",", ix.Properties) + (ix.Filter == null ? "" : " where " + ix.Filter) + " => " + FilterKind(ix, r)))}; " +
+                        $"unique {string.Join(" | ", r.UniqueIndexes.Select(ix => string.Join(",", ix.Properties) + (ix.Filter == null ? "" : " where " + ix.Filter) + " => " + FilterKind(ix, r, out var unless) + (unless.Count == 0 ? "" : " unless " + string.Join(",", unless.Select(u => u.column + "=" + u.value)))))}; " +
                         $"columns {string.Join(",", r.Properties.Select(p => p.Name + (p.Column != p.Name ? "=" + p.Column : "") + (p.Shadow ? "(shadow)" : "")))}");
                 }
                 foreach (var fk in runtime.ForeignKeys)
@@ -121,6 +121,8 @@ namespace CsVerify.Verifier
                 e.ShadowNotNull.Clear();
                 e.ReferenceColumns.Clear();
                 e.KeyColumns = new List<(List<string>, bool)>();
+                e.KeysUnless.Clear();
+                e.Columns.Clear();
                 if (r.Key is { Count: > 0 })
                 {
                     e.KeyColumns.Add((r.Key, false));
@@ -128,8 +130,12 @@ namespace CsVerify.Verifier
                 e.KeyColumns.AddRange(r.AlternateKeys.Select(k => (k, false)));
                 foreach (var ix in r.UniqueIndexes)
                 {
-                    var kind = FilterKind(ix, r);
-                    if (kind != IndexFilter.Other)
+                    var kind = FilterKind(ix, r, out var unless);
+                    if (kind != IndexFilter.Other && unless.Count > 0)
+                    {
+                        e.KeysUnless.Add((ix.Properties, unless, kind == IndexFilter.QueryFilter));
+                    }
+                    else if (kind != IndexFilter.Other)
                     {
                         e.KeyColumns.Add((ix.Properties, kind == IndexFilter.QueryFilter));
                     }
@@ -146,10 +152,10 @@ namespace CsVerify.Verifier
                 {
                     if (Mapped(ix.Properties) is List<IPropertySymbol> index)
                     {
-                        switch (FilterKind(ix, r))
+                        switch (FilterKind(ix, r, out var unless))
                         {
-                            case IndexFilter.None: e.AddUnique(index); break;
-                            case IndexFilter.QueryFilter: e.UniqueWhereFiltered.Add(index); break;
+                            case IndexFilter.None when unless.Count == 0: e.AddUnique(index); break;
+                            case IndexFilter.QueryFilter when unless.Count == 0: e.UniqueWhereFiltered.Add(index); break;
                         }
                     }
                 }
@@ -169,6 +175,7 @@ namespace CsVerify.Verifier
                     }
                     var def = symbol.OriginalDefinition;
                     e.Configured.Add(def);
+                    e.Columns.Add(def);
                     e.ModelNullable[def] = p.Nullable;
                     if (p.Converted)
                     {
@@ -209,7 +216,7 @@ namespace CsVerify.Verifier
                 {
                     // (its unique index: of all rows, or of those the dependent's query filter keeps)
                     var index = read[d].UniqueIndexes.FirstOrDefault(ix => ix.Properties.SequenceEqual(fk.Properties));
-                    var kind = index == null ? IndexFilter.None : FilterKind(index, read[d]);
+                    var kind = index == null ? IndexFilter.None : FilterKind(index, read[d], out var unless) is var k && unless.Count == 0 ? k : IndexFilter.Other;
                     foreach (var end in new[] { toPrincipal, toDependent }.Where(x => x != null))
                     {
                         if (kind == IndexFilter.None)
@@ -248,10 +255,13 @@ namespace CsVerify.Verifier
         /// <summary>
         /// What a unique index's filter leaves of its uniqueness. Each conjunct that a column of the index IS NOT NULL
         /// leaves it whole (a row a value not null fixes meets it). Each that a bool column is false, where the entity's
-        /// query filter says so of every row, leaves it among the rows the query filter keeps. Any other: nothing.
+        /// query filter says so of every row, leaves it among the rows the query filter keeps. Each that a column isn't
+        /// a value the model knows (Index.Excluded) leaves it among the rows that don't hold that value there (unless).
+        /// Any other: nothing.
         /// </summary>
-        private static IndexFilter FilterKind(EfRuntimeModel.Index ix, EfRuntimeModel.Entity e)
+        private static IndexFilter FilterKind(EfRuntimeModel.Index ix, EfRuntimeModel.Entity e, out List<(string column, string value)> unless)
         {
+            unless = new List<(string, string)>();
             if (string.IsNullOrWhiteSpace(ix.Filter))
             {
                 return IndexFilter.None;
@@ -270,6 +280,12 @@ namespace CsVerify.Verifier
                     e.Properties.FirstOrDefault(p => p.Column == isFalse.Groups[1].Value) is { ClrType: "System.Boolean" } flag && e.FilteredFalse.Contains(flag.Name))
                 {
                     kind = IndexFilter.QueryFilter;
+                    continue;
+                }
+                if (Regex.Match(c, EfRuntimeModel.Unequal) is { Success: true } unequal && e.Properties.FirstOrDefault(p => p.Column == unequal.Groups[1].Value) is { } left &&
+                    ix.Excluded.FirstOrDefault(x => x.Property == left.Name) is { Value: { } value })
+                {
+                    unless.Add((left.Name, value));
                     continue;
                 }
                 return IndexFilter.Other;

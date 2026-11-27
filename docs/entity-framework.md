@@ -59,6 +59,15 @@ provider itself and fails), a warning says why, and the configuration is read fr
 reads only the sources. A unique index with a filter counts where the filter is that its columns are not null, and,
 among the rows the entity's query filter keeps, where it is that a flag the query filter requires false is false
 (`HasFilter("[IsDeleted] = 0")` with `HasQueryFilter(x => !x.IsDeleted)`): not for a query with `IgnoreQueryFilters`.
+A filter that a column isn't a value (`[State] <> 'Done'`, `[Code] <> ''`, `[Made] <> '00000000-0000-0000-0000-000000000000'`)
+leaves the index a key among the rows that don't hold that value there. It counts for a query whose rows are all of
+those: one that says `x.State != JobState.Done`, or that fixes the column to a value that isn't it, which is proved
+where the query is (`x.State == state` under `state != JobState.Done`; `x.Made == made` after `made.Value` was checked
+not empty). The value is read from EF's model as a value of the property's type: what the property's converter reads
+the filter's literal as (an enum's member, a number, the empty string, a value type's default, null), and no value
+where the converter throws on it, as one that validates does on `''`. A converter's two directions are taken to be
+each other's inverse, as EF takes them where it compares a column to a value. A literal the converter reads as some
+other value leaves the index out.
 
 Read from the sources, as EF reads them (entity types, their classes' columns, query filters' bodies, and all of it
 where EF's own model isn't read):
@@ -215,8 +224,10 @@ value converter stores (`HasConversion`), compared to a value of its type (the d
 index unique, by the column's collation or its stored value). A nullable column, or one reached through a navigation
 (null where the navigation is), is fixed only by a value not null, since null matches each row whose column is; one
 configured required (`IsRequired()`, `[Required]`) is not null whatever its annotation, an entity's without nullable
-annotations among them. A filtered index (`HasFilter`) is unique only where its filter holds, so it counts only for a
-filter that a column of it `IS NOT NULL`. An order fixes the rows' places where its columns hold a key of columns NOT
+annotations among them. A filtered index (`HasFilter`) is unique only where its filter holds, so it counts for a
+filter that a column of it `IS NOT NULL`, and for the others above only where the query's rows meet them. A column is a
+property EF's model maps, one whose value is kept in a field written by hand too (`get => number; init => number =
+value;`). An order fixes the rows' places where its columns hold a key of columns NOT
 NULL of the row itself (CSV1031).
 
 **Not read from the definitions:** on a database, those operators on other values (strings by the database's
