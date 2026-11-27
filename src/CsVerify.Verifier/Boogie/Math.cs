@@ -527,6 +527,13 @@ namespace CsVerify.Verifier.Boogie
         public ITypeSymbol ArrayType;
         public MExpr Size;
         public MExpr[] Elements;
+        public MExpr Cells;
+    }
+
+    internal sealed class MNewCollection : MStmt
+    {
+        public string Var;
+        public (string map, MExpr value)[] Rows;
     }
 
     internal sealed class MCall : MStmt, IHeapStmt
@@ -898,5 +905,10 @@ namespace CsVerify.Verifier.Boogie
         public SyntaxNode At;
         /// <summary>For a requires: what a failure of it at a call is about.</summary>
         public Check Check;
+        /// <summary>
+        /// A function's domain (where its body doesn't throw), promised where its procedure returns: no fact of the
+        /// function's value at every input, but what its other postconditions hold within.
+        /// </summary>
+        public bool Domain;
     }
 }

@@ -334,8 +334,8 @@ C#'s nullable reference types are only warnings, and deliberately unsound ones: 
 - **Fields** of non-nullable type are not null once their object is built (see [Mutable objects](objects.md#mutable-objects)), and positional fields of data records are not null either (see [Data types and object invariants](objects.md#data-types-and-object-invariants)). Fields and auto-properties of nullable type are maybe-null.
 - **A class with no constructor of its own** (or only a primary constructor) has no constructor body to verify, so its
   non-nullable fields' initializers are checked instead. Each must make an object or array, be a string literal or
-  interpolation, `string.Empty`, a call to a method that returns non-null, or a non-nullable primary-constructor
-  parameter. `= null!`, or no initializer, is reported (CSV1014). Before this, such a class's `= null!` went unchecked,
+  interpolation, `string.Empty`, a `static readonly` field that itself starts with an object (`= Settings.Off`), a
+  call to a method that returns non-null, or a non-nullable primary-constructor parameter. `= null!`, or no initializer, is reported (CSV1014). Before this, such a class's `= null!` went unchecked,
   and `new C().Name.Length` verified.
 - **Objects a framework builds.** `required` members are set by every object initializer, which the compiler checks.
   `[JsonRequired]` members (System.Text.Json) are trusted to be set by whoever builds the object, as the deserializer

@@ -88,7 +88,7 @@ namespace CsVerify.Verifier.Boogie
         /// <summary>Could this method be a procedure (before its body is looked at)?</summary>
         public static bool Candidate(IMethodSymbol m, Contract c, bool asContract = false)
         {
-            if (EmptyDataConstructor(m))
+            if (DataConstructor(m))
             {
                 return true;
             }
@@ -113,10 +113,10 @@ namespace CsVerify.Verifier.Boogie
             {
                 return c.OfDelegate && IsDelegate(m.ContainingType);
             }
-            // (a lambda or a local function: a unit of its own, in a class's member or a static one)
+            // (a lambda or a local function: a unit of its own, in a class's member, a data type's, or a static one)
             if (IsNested(m))
             {
-                return StaticContext(m) || IsClass(m.ContainingType);
+                return StaticContext(m) || IsClass(m.ContainingType) || IsData(m.ContainingType);
             }
             if (m.IsStatic)
             {
@@ -200,11 +200,14 @@ namespace CsVerify.Verifier.Boogie
             return b.Requires.Count == 0 && b.Ensures.Count == 0 && b.ThrowEnsures.Count == 0 && b.Modifies == null;
         }
 
-        /// <summary>A data type's constructor that does nothing (a closed base's private Avl() { }): nothing to verify.</summary>
-        public static bool EmptyDataConstructor(IMethodSymbol m) =>
-            m.MethodKind == MethodKind.Constructor && !m.IsStatic && IsData(m.ContainingType) && m.Parameters.Length == 0 &&
-            m.DeclaringSyntaxReferences.Length == 1 && m.DeclaringSyntaxReferences[0].GetSyntax() is Microsoft.CodeAnalysis.CSharp.Syntax.ConstructorDeclarationSyntax
-                { Initializer: null, ExpressionBody: null, Body: { Statements.Count: 0 } };
+        /// <summary>
+        /// A data type's constructor that its values' definition already says all of: one that does nothing (a closed
+        /// base's private Avl() { }), or one that only stores its parameters (DataTypes.Stored). Nothing to verify.
+        /// </summary>
+        public static bool DataConstructor(IMethodSymbol m) =>
+            m.MethodKind == MethodKind.Constructor && !m.IsStatic && IsData(m.ContainingType) &&
+            m.DeclaringSyntaxReferences.Length == 1 && m.DeclaringSyntaxReferences[0].GetSyntax() is Microsoft.CodeAnalysis.CSharp.Syntax.ConstructorDeclarationSyntax syntax &&
+            (m.Parameters.Length == 0 ? syntax is { Initializer: null, ExpressionBody: null, Body: { Statements.Count: 0 } } : Verifier.DataTypes.Stored(m.ContainingType) != null);
 
         /// <summary>CsVerify's attributes that the translation knows; any other (an atomic step, a lock's) is StaticChecks' to check.</summary>
         private static readonly HashSet<string> Known = new HashSet<string>
@@ -228,9 +231,9 @@ namespace CsVerify.Verifier.Boogie
         public static string WhyNot(IMethodSymbol m, Contract c)
         {
             var t = m.ContainingType;
-            if (!StaticContext(m) && !IsClass(t) && !IsInterface(t) && !EmptyDataConstructor(m))
+            if (!StaticContext(m) && !IsClass(t) && !IsInterface(t) && !DataConstructor(m))
             {
-                return "a member of " + t.Name + ", a type outside the subset" + (WhyNotClass(t) is string why ? ": it " + why : "");
+                return "a member of " + t.Name + ", a type outside the subset" + (WhyNotClass(t) is string why ? ": it " + why : WhyNotRecord(t) is string record ? ": " + record : "");
             }
             if (m.IsAsync && !IsTaskLike(m.ReturnType))
             {
@@ -272,6 +275,12 @@ namespace CsVerify.Verifier.Boogie
             return "an inherited contract";
         }
 
+        /// <summary>What keeps a record class out of the subset: neither data nor a value object (for CSV1902's message).</summary>
+        private static string WhyNotRecord(INamedTypeSymbol t) =>
+            t.IsRecord && t.TypeKind == TypeKind.Class && !IsData(t) && !IsValueObject(t)
+                ? "a record whose state isn't its constructor's parameters as given (positional, or stored by an abstract base's constructor and nothing else), nor a sealed one derived from object"
+                : null;
+
         /// <summary>A kind of method the translation takes somewhere: a method, an accessor, a constructor, a lambda or local function.</summary>
         private static bool TakenKind(IMethodSymbol m)
         {
@@ -304,8 +313,11 @@ namespace CsVerify.Verifier.Boogie
                     // (and the getters of the properties it reads)
                     .Concat(decl.DescendantNodes().OfType<SimpleNameSyntax>().Select(n => (model.GetSymbolInfo(n).Symbol as IPropertySymbol)?.GetMethod?.OriginalDefinition))
                     .Where(x => x != null && _procedures.Contains(x)), SymbolEqualityComparer.Default);
-                _fieldsRead[m.OriginalDefinition] = new HashSet<ISymbol>(decl.DescendantNodes().OfType<SimpleNameSyntax>()
-                    .Select(n => model.GetSymbolInfo(n).Symbol).Where(IsField).Select(x => x.OriginalDefinition), SymbolEqualityComparer.Default);
+                var named = decl.DescendantNodes().OfType<SimpleNameSyntax>().Select(n => model.GetSymbolInfo(n).Symbol).Where(x => x != null).ToList();
+                _fieldsRead[m.OriginalDefinition] = new HashSet<ISymbol>(named.Where(IsField).Select(x => x.OriginalDefinition), SymbolEqualityComparer.Default);
+                // (the collections it names, by their types: their models are memory a function of it reads, as fields are)
+                _modelsRead[m.OriginalDefinition] = named.Select(TypeNamed).Concat(m.Parameters.Select(x => x.Type)).Append(m.ContainingType)
+                    .SelectMany(ModelsNamed).GroupBy(x => x.Name).Select(g => g.First()).ToList();
             }
             foreach (var m in calls.Keys)
             {
@@ -328,6 +340,37 @@ namespace CsVerify.Verifier.Boogie
                 }
                 _reaches[m] = seen;
             }
+            // (a member taken as [Pure] for its body (ExpressionFunctions) is a function only where its expression is a
+            // specification's; one that isn't stays code, as it was. Until none changes: one may read another)
+            for (bool changed = true; changed;)
+            {
+                changed = false;
+                foreach (var (m, _, _) in list)
+                {
+                    if (ContractOf?.Invoke(m) is Contract c && c.InferredPure)
+                    {
+                        bool defined;
+                        try
+                        {
+                            var body = Lowering.Signature(m, c, IsFunction, Literal, ContractOf).FunctionBody;
+                            var reads = new FunctionsCalled();
+                            reads.Visit(body);
+                            // (nor one that reads a collection through an interface: a value of the whole state)
+                            defined = body != null && !reads.WholeState;
+                        }
+                        catch (NotTranslated)
+                        {
+                            defined = false;
+                        }
+                        if (!defined)
+                        {
+                            c.IsPure = c.InferredPure = false;
+                            c.PureBody = null;
+                            changed = true;
+                        }
+                    }
+                }
+            }
         }
 
         public bool Recursive(IMethodSymbol a, IMethodSymbol b) =>
@@ -349,6 +392,41 @@ namespace CsVerify.Verifier.Boogie
 
         /// <summary>The fields each procedure's declaration names.</summary>
         private readonly Dictionary<IMethodSymbol, HashSet<ISymbol>> _fieldsRead = new Dictionary<IMethodSymbol, HashSet<ISymbol>>(SymbolEqualityComparer.Default);
+
+        /// <summary>The collection models each procedure's declaration may read: those of the collection types it names.</summary>
+        private readonly Dictionary<IMethodSymbol, List<ModelMap>> _modelsRead = new Dictionary<IMethodSymbol, List<ModelMap>>(SymbolEqualityComparer.Default);
+
+        /// <summary>The models some function takes: declared, though no code may read them.</summary>
+        private readonly Dictionary<string, ModelMap> _functionModels = new Dictionary<string, ModelMap>();
+
+        private static ITypeSymbol TypeNamed(ISymbol s) => s switch
+        {
+            ILocalSymbol l => l.Type,
+            IParameterSymbol p => p.Type,
+            IFieldSymbol f => f.Type,
+            IPropertySymbol p => p.Type,
+            IMethodSymbol m => m.MethodKind == MethodKind.Constructor ? m.ContainingType : m.ReturnType,
+            _ => null,
+        };
+
+        /// <summary>A collection's models, or (a list interface's) those of the list it may be.</summary>
+        private static IEnumerable<ModelMap> ModelsNamed(ITypeSymbol t) =>
+            t is INamedTypeSymbol c && IsCollection(c) ? KernelTypes.ModelsOf(c)
+            : t is INamedTypeSymbol i && IsCollectionInterface(i) ? KernelTypes.ModelsOf(KernelTypes.Compilation.GetTypeByMetadataName("System.Collections.Generic.List`1").Construct(i.TypeArguments[0]))
+            : Enumerable.Empty<ModelMap>();
+
+        /// <summary>The models a function may read: those it, or what it calls, may (every one, of one an override may answer).</summary>
+        private IEnumerable<string> ModelsRead(IMethodSymbol m)
+        {
+            m = m.OriginalDefinition;
+            var of = Engine.IsOverridable(m) ? _modelsRead.Values.SelectMany(x => x)
+                : new[] { m }.Concat(_reaches.TryGetValue(m, out var r) ? r : Enumerable.Empty<IMethodSymbol>()).SelectMany(x => _modelsRead.TryGetValue(x, out var ms) ? ms : Enumerable.Empty<ModelMap>());
+            foreach (var model in of.Where(x => x != null))
+            {
+                _functionModels[model.Name] = model;
+                yield return model.Name;
+            }
+        }
 
         /// <summary>The fields a function may read: those it, or what it calls, names.</summary>
         private HashSet<ISymbol> FieldsOf(IMethodSymbol m)
@@ -374,7 +452,90 @@ namespace CsVerify.Verifier.Boogie
             return all;
         }
 
-        public List<string> FunctionFields(IMethodSymbol m) => FieldsOf(m).Select(FieldMap).Distinct().OrderBy(x => x, StringComparer.Ordinal).ToList();
+        public List<string> FunctionFields(IMethodSymbol m)
+        {
+            if (_memory == null)
+            {
+                Memory();
+            }
+            return (_memory.TryGetValue(m.OriginalDefinition, out var all) ? all : FieldsOf(m).Select(FieldMap).Concat(ModelsRead(m)).Distinct())
+                .OrderBy(x => x, StringComparer.Ordinal).ToList();
+        }
+
+        /// <summary>The functions an expression calls.</summary>
+        private sealed class FunctionsCalled : KRewriter
+        {
+            public readonly List<IMethodSymbol> Found = new List<IMethodSymbol>();
+            /// <summary>It reads a collection through an interface: a value of the whole state, which no function takes.</summary>
+            public bool WholeState;
+
+            protected override KExpr Rebuild(KExpr e)
+            {
+                if (e is KFnCall { Callee: { } callee })
+                {
+                    Found.Add(callee.OriginalDefinition);
+                }
+                WholeState |= e is KIfc || e is KOp { Op: "$state" };
+                return base.Rebuild(e);
+            }
+        }
+
+        /// <summary>Each function's memory: the maps of the fields and collection models it may read.</summary>
+        private Dictionary<IMethodSymbol, HashSet<string>> _memory;
+
+        /// <summary>
+        /// The functions' memory. What a function's declaration names, and what its contract and its definition read as
+        /// lowered (a record's == reads its fields, a list's Count its model, naming neither), and what the functions
+        /// they read take, in turn.
+        /// </summary>
+        private void Memory()
+        {
+            _memory = new Dictionary<IMethodSymbol, HashSet<string>>(SymbolEqualityComparer.Default);
+            var reads = new Dictionary<IMethodSymbol, List<IMethodSymbol>>(SymbolEqualityComparer.Default);
+            foreach (var m in _procedures.Where(IsFunction).ToList())
+            {
+                var all = new HashSet<string>(FieldsOf(m).Select(FieldMap).Concat(ModelsRead(m)));
+                var callees = new List<IMethodSymbol>();
+                KProcedure sig = null;
+                try
+                {
+                    sig = ((IProgramFacts)this).Signature(m);
+                }
+                catch (NotTranslated)
+                {
+                }
+                if (sig != null)
+                {
+                    all.UnionWith(sig.Fields.Where(IsField).Select(FieldMap));
+                    foreach (var model in sig.Models.Values)
+                    {
+                        _functionModels[model.Name] = model;
+                        all.Add(model.Name);
+                    }
+                    var called = new FunctionsCalled();
+                    foreach (var e in new[] { sig.FunctionBody, sig.ReadsFrame }.Concat(sig.Requires.Select(r => r.Expr)).Concat(sig.Ensures.Select(x => x.Expr)).Where(e => e != null))
+                    {
+                        called.Visit(e);
+                    }
+                    callees.AddRange(called.Found);
+                }
+                _memory[m] = all;
+                reads[m] = callees.Distinct<IMethodSymbol>(SymbolEqualityComparer.Default).ToList();
+            }
+            for (bool grew = true; grew;)
+            {
+                grew = false;
+                foreach (var (m, callees) in reads)
+                {
+                    int before = _memory[m].Count;
+                    foreach (var c in callees.Where(_memory.ContainsKey))
+                    {
+                        _memory[m].UnionWith(_memory[c]);
+                    }
+                    grew |= _memory[m].Count != before;
+                }
+            }
+        }
 
         public IEnumerable<ISymbol> FunctionFieldSymbols(IMethodSymbol m) => FieldsOf(m);
 
@@ -550,7 +711,7 @@ namespace CsVerify.Verifier.Boogie
         /// <summary>Writes the functions and the procedures: each modifies what it writes, and what what it calls does.</summary>
         public void Finish()
         {
-            var fields = new HashSet<ISymbol>(_pending.SelectMany(p => p.Source.Fields), SymbolEqualityComparer.Default);
+            var fields = new HashSet<ISymbol>(_pending.SelectMany(p => p.Source.Fields).Concat(_signatures.Values.SelectMany(g => g.Fields.Where(IsField))), SymbolEqualityComparer.Default);
             foreach (var p in _pending.Where(p => IsFunction(p.Source.Method)))
             {
                 fields.UnionWith(FieldsOf(p.Source.Method));
@@ -608,9 +769,13 @@ namespace CsVerify.Verifier.Boogie
             _printer.Fields(fields);
             // (before the data types: their invariants may call functions, which read no arrays)
             OwnArrays();
-            DataTypes();
+            DataTypes(fields);
             // (the lists' models: maps as fields are)
-            var models = _pending.SelectMany(p => p.Source.Models.Values).Concat(_signatures.Values.SelectMany(s => s.Models.Values))
+            foreach (var p in _pending.Where(p => IsFunction(p.Source.Method)))
+            {
+                FunctionFields(p.Source.Method);
+            }
+            var models = _pending.SelectMany(p => p.Source.Models.Values).Concat(_signatures.Values.SelectMany(s => s.Models.Values)).Concat(_functionModels.Values)
                 .GroupBy(m => m.Name).Select(g => g.First()).OrderBy(m => m.Name, StringComparer.Ordinal).ToList();
             _printer.Models(models, _pending.SelectMany(p => p.Source.Pairs).Concat(_signatures.Values.SelectMany(s => s.Pairs)).Distinct().ToList());
             _printer.Declarations(_pending.SelectMany(p => p.Source.Functions).Concat(_signatures.Values.SelectMany(s => s.Functions)).Distinct().OrderBy(x => x, StringComparer.Ordinal));
@@ -858,13 +1023,62 @@ namespace CsVerify.Verifier.Boogie
         /// What a data field's value is, of its type: one of its cases, in its range; not null, a reference its type says
         /// isn't (each construction checks its arguments, CSV1014).
         /// </summary>
-        private static MExpr FieldOfType(MExpr v, ITypeSymbol t) =>
-            MathTypes.OfType(v, t) ?? (!IsData(t) && TypeOf(t) == "Ref" && IsNullable(t) && NotNullable(t) ? NotNull(v) : null);
+        private static MExpr FieldOfType(MExpr v, ITypeSymbol t)
+        {
+            // (a struct's or a tuple's parts, a nullable struct's value's where it has one: each within its type's range)
+            var parts = MathTypes.PartsWithin(v, t).ToList();
+            var whole = MathTypes.OfType(v, t) ?? (!IsData(t) && TypeOf(t) == "Ref" && IsNullable(t) && NotNullable(t) ? NotNull(v) : null);
+            return parts.Count == 0 ? whole : MOp.AndAll(whole == null ? parts : parts.Prepend(whole));
+        }
+
+        /// <summary>What a function of a data value d gives, of its type: a data value one of its cases (or null, where its type allows), any other as FieldOfType.</summary>
+        private static MExpr FieldFact(string function, ITypeSymbol type)
+        {
+            var read = new MOp(function, new MVar("d"));
+            if (!IsData(type))
+            {
+                return FieldOfType(read, type);
+            }
+            return NotNullable(type) ? MathTypes.IsCase(read, type) : OrElse(IsNull(read), MathTypes.IsCase(read, type));
+        }
+
+        /// <summary>
+        /// A record's field, of its constructor's parameters: its own the parameter it holds; a base's what the base makes
+        /// of its constructor's parameters, each the argument the record's header gives it (an integer one wrapped into
+        /// its parameter's range, as unchecked arithmetic does).
+        /// </summary>
+        private MExpr FieldValue(INamedTypeSymbol c, IPropertySymbol field)
+        {
+            var def = Verifier.DataTypes.Def(c);
+            var ctor = Verifier.DataTypes.Constructor(def) ?? throw new NotTranslated("a data record without its constructor: " + def.Name);
+            if (Verifier.DataTypes.Held(def, field) is IParameterSymbol held)
+            {
+                return new MVar(Local(held));
+            }
+            if (!(Verifier.DataTypes.Def(def.BaseType) is INamedTypeSymbol b) || SymbolEqualityComparer.Default.Equals(field.OriginalDefinition.ContainingType, def))
+            {
+                throw new NotTranslated("a field no parameter of its record's constructor gives: " + field.Name);
+            }
+            var inBase = FieldValue(b, field);
+            var given = new Dictionary<string, MExpr>();
+            foreach (var p in Verifier.DataTypes.Constructor(b).Parameters.Where(p => inBase.Mentions(new HashSet<string> { Local(p) })))
+            {
+                var arg = Checks.MathOf(Lowering.BaseArgument(def, p, IsFunction, Literal, ContractOf), this, ctor);
+                // (the field's own value is wrapped where it is declared)
+                given[Local(p)] = arg is MVar || inBase is MVar || !IsIntegral(p.Type) ? arg : MathTypes.Wrap(arg, p.Type);
+            }
+            return inBase.Substitute(given);
+        }
 
         /// <summary>The data types named, their cases and the data types of their fields: Dafny's datatypes.</summary>
-        private void DataTypes()
+        private void DataTypes(IEnumerable<ISymbol> heapFields)
         {
             var defs = new HashSet<INamedTypeSymbol>(_pending.SelectMany(p => p.Source.DataTypes).Concat(_signatures.Values.SelectMany(s => s.DataTypes)), SymbolEqualityComparer.Default);
+            // (the types of the fields: each map says its values are of its type's cases)
+            foreach (var t in heapFields.Select(FieldType).Where(t => IsData(t) && !t.IsValueType))
+            {
+                defs.Add(Verifier.DataTypes.Def(t));
+            }
             // (the types of the procedures' parameters and results: their facts name them, a body or none)
             foreach (var t in _pending.Select(p => p.Source).Concat(_signatures.Values).SelectMany(p => p.Method.Parameters.Select(x => x.Type).Append(Returns(p.Method))).Where(t => t != null && IsData(t)))
             {
@@ -893,7 +1107,7 @@ namespace CsVerify.Verifier.Boogie
             var fields = new Dictionary<string, (string type, MExpr fact)>();
             foreach (var c in cases.OrderBy(x => Data.TagOf(x)))
             {
-                var ctor = Verifier.DataTypes.PrimaryConstructor(c) ?? throw new NotTranslated("a data case without its primary constructor: " + c.Name);
+                var ctor = Verifier.DataTypes.Constructor(c) ?? throw new NotTranslated("a data case without its constructor: " + c.Name);
                 var dc = new BoogiePrinter.DataCase
                 {
                     Type = c,
@@ -902,8 +1116,14 @@ namespace CsVerify.Verifier.Boogie
                 };
                 foreach (var p in ctor.Parameters)
                 {
-                    var prop = Verifier.DataTypes.PositionalProperty(c, p.Ordinal);
-                    dc.AddParam((Local(p), TypeOf(p.Type), IsData(p.Type), FieldFunction(prop)));
+                    // (read back from the field that holds it; one no field holds (D(int N) : A(N + 1)), from a function of
+                    // its own: some argument the value was built of)
+                    var back = Data.Holder(c, p) is IPropertySymbol holder ? FieldFunction(holder) : "$arg." + CaseName(c).Substring(3) + "." + Ident(p.Name);
+                    if (Data.Holder(c, p) == null && !fields.ContainsKey(back))
+                    {
+                        fields[back] = (TypeOf(p.Type), FieldFact(back, p.Type));
+                    }
+                    dc.AddParam((Local(p), TypeOf(p.Type), IsData(p.Type), back));
                     if (FieldOfType(new MVar(Local(p)), p.Type) is MExpr typed)
                     {
                         dc.AddGuard(typed);
@@ -921,10 +1141,7 @@ namespace CsVerify.Verifier.Boogie
                 foreach (var prop in Data.Fields(c))
                 {
                     var fn = FieldFunction(prop);
-                    MExpr value = Verifier.DataTypes.IsInitField(prop) ? new MVar(InitParam(prop))
-                        : SymbolEqualityComparer.Default.Equals(prop.ContainingType.OriginalDefinition, c.OriginalDefinition)
-                        ? new MVar(Local(ctor.Parameters.First(x => x.Name == prop.Name)))
-                        : Checks.MathOf(Lowering.BaseArgument(c, prop, IsFunction, Literal, ContractOf), this, ctor);
+                    MExpr value = Verifier.DataTypes.IsInitField(prop) ? new MVar(InitParam(prop)) : FieldValue(c, prop);
                     // (a computed one, as a base's argument: an integer the C# value, wrapped into the field's range as unchecked
                     // arithmetic does (checked, one that overflows throws, so there is no such value); a data value the
                     // field's where it is of the field's type)
@@ -945,10 +1162,7 @@ namespace CsVerify.Verifier.Boogie
                     // an integer one in its type's range)
                     if (!fields.ContainsKey(fn))
                     {
-                        fields[fn] = (TypeOf(prop.OriginalDefinition.Type), IsData(prop.Type)
-                            ? NotNullable(prop.OriginalDefinition.Type) ? MathTypes.IsCase(new MOp(fn, new MVar("d")), prop.Type)
-                              : OrElse(IsNull(new MOp(fn, new MVar("d"))), MathTypes.IsCase(new MOp(fn, new MVar("d")), prop.Type))
-                            : FieldOfType(new MOp(fn, new MVar("d")), prop.OriginalDefinition.Type));
+                        fields[fn] = (TypeOf(prop.OriginalDefinition.Type), FieldFact(fn, prop.OriginalDefinition.Type));
                     }
                 }
                 list.Add(dc);
@@ -1182,6 +1396,13 @@ namespace CsVerify.Verifier.Boogie
             foreach (var p in _pending.Where(p => p.Source.Opaque))
             {
                 var (written, all) = KernelTypes.FieldEffectsOf?.Invoke(p.Source.Method) ?? (null, true);
+                // (a [Pure] one is a function of the state: it writes no array and makes no object a caller sees, so two
+                // calls with nothing written between them give one value; a field only where the analysis finds a write)
+                if (!all && ContractOf(p.Source.Method) is Contract { IsPure: true })
+                {
+                    sets[p.Source.Method].UnionWith(written.Select(FieldMap).Where(_allMaps.Contains));
+                    continue;
+                }
                 var kept = all ? new HashSet<string>() : new HashSet<string>(_allMaps.Where(x => x.StartsWith("$F.")));
                 if (!all)
                 {

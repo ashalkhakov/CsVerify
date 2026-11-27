@@ -107,7 +107,7 @@ namespace CsVerify.Verifier.Boogie
 
         protected KExpr[] All(KExpr[] es) => es?.Select(Visit).ToArray();
 
-        private KExpr Rebuild(KExpr e) => e switch
+        protected virtual KExpr Rebuild(KExpr e) => e switch
         {
             KOp op => new KOp(op.Op, All(op.Args)),
             KFnApp f => f.WithArgs(All(f.Args), Visit(f.Snap)),
@@ -229,6 +229,7 @@ namespace CsVerify.Verifier.Boogie
                 Value = Visit(cast.Value),
                 Test = Visit(cast.Test),
                 At = cast.At,
+                Domain = cast.Domain,
             },
             _ => throw new InvalidOperationException("a kernel expression the rewrite doesn't know: " + e.GetType().Name),
         };

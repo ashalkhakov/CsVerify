@@ -290,5 +290,191 @@ internal static class C {
             Assert.Equal(new[] { "CSV1013" }, GenericErrors("M", "static int M(List<string>.Cons c) => c.Head.Length;"));
             Assert.Empty(GenericErrors("M", "static int M(List<string?>.Cons c) => c.Head == null ? 0 : c.Head.Length;"));
         }
+
+        [Fact]
+        public void ACaseWhoseConstructorChecksItsArguments_IsData()
+        {
+            // (a case's one constructor that checks its arguments and stores them: its value where no check throws)
+            var r = Harness.Verify(@"using System.Collections.Generic;
+public abstract record Report
+{
+    private Report() { }
+    public sealed record Filled : Report
+    {
+        public Filled(IReadOnlyList<int> fills, string note)
+        {
+            if (note.Length > 10) { throw new ArgumentException(""long"", nameof(note)); }
+            Fills = fills is { Count: > 0 } ? fills : throw new ArgumentException(""No fills."", nameof(fills));
+            Note = note ?? throw new ArgumentNullException(nameof(note));
+        }
+        public IReadOnlyList<int> Fills { get; }
+        public string Note { get; }
+    }
+    public sealed record Empty : Report;
+    public sealed record Counted : Report
+    {
+        public Counted(int n) { N = n + 1; }
+        public int N { get; }
+    }
+}
+public static class Reports
+{
+    public static int Fills(Report.Filled f) { Spec.Ensures<int>(r => r == f.Fills.Count); return f.Fills.Count; }
+    public static int Kind(Report r) { Spec.Ensures<int>(k => (k == 1) == (r is Report.Filled)); return r is Report.Filled ? 1 : 0; }
+    public static Report Make(IReadOnlyList<int> fills) { Spec.Ensures<Report>(r => r is Report.Filled f && f.Fills == fills && fills.Count > 0); return new Report.Filled(fills, ""ok""); }
+    public static Report Caught(IReadOnlyList<int> fills)
+    {
+        Spec.Ensures<Report>(r => fills.Count > 0 || r is Report.Empty);
+        try { return new Report.Filled(fills, ""ok""); } catch (ArgumentException) { return new Report.Empty(); }
+    }
+    public static Report Wrong(IReadOnlyList<int> fills) { Spec.Ensures<Report>(r => r is Report.Filled f && f.Fills.Count > 1); return new Report.Filled(fills, ""ok""); }
+}");
+            foreach (var ok in new[] { "Reports.Fills", "Kind", "Make", "Caught" })
+            {
+                Assert.True(r.Errors(ok).Length == 0, r.Explain(ok));
+            }
+            Assert.Equal(new[] { "CSV1002" }, r.Errors("Wrong"));
+            // (one that computes what it stores is no data record)
+            Assert.Contains(r.Diagnostics, d => d.Id == "CSV1902" && d.Message.Contains("Counted"));
+        }
+
+        [Fact]
+        public void AnAsCastOfARecord_IsNull_WhereItIsntOfTheCase()
+        {
+            // (it never throws: on 0.5.28 it was assumed to succeed, and Absurd verified)
+            var r = Harness.Verify(@"public abstract record Verdict
+{
+    private Verdict() { }
+    public sealed record Yes(int Count) : Verdict;
+    public sealed record No(string Reason) : Verdict;
+}
+public sealed record Outcome(Verdict? Verdict)
+{
+    public string? Why => (Verdict as Verdict.No)?.Reason;
+}
+public static class Casts
+{
+    public static string? Reason(Verdict v) { Spec.Ensures<string?>(r => (r != null) == (v is Verdict.No)); var no = v as Verdict.No; return no?.Reason; }
+    public static bool Why(Outcome o) { Spec.Ensures<bool>(r => r == (o.Verdict is Verdict.No)); return o.Why != null; }
+    public static int Absurd(Verdict v) { Spec.Requires(v is Verdict.Yes); Spec.Ensures<int>(r => r == 1); var no = v as Verdict.No; return 0; }
+}");
+            foreach (var ok in new[] { "Reason", "Why", "get_Why" })
+            {
+                Assert.True(r.Errors(ok).Length == 0, r.Explain(ok));
+            }
+            Assert.Equal(new[] { "CSV1002" }, r.Errors("Absurd"));
+        }
+
+        [Fact]
+        public void ARecord_IsEqualToItself_WhateverItsFieldsAre()
+        {
+            // (a field the kernel doesn't compare, a list's: two records are a relation not known, one is itself)
+            var r = Harness.Verify(@"using System.Collections.Generic;
+public sealed record Line(int Qty);
+public sealed record Basket(IReadOnlyList<Line> Lines);
+public sealed record Placed(Basket Basket, DateTime At);
+public static class Use
+{
+    public static Placed Place(Basket b, DateTime now) { Spec.Ensures<Placed>(r => r.Basket == b); return new Placed(b, now); }
+    public static bool Same(Basket b) { Spec.Ensures<bool>(r => r); return b == b; }
+    public static bool Two(Basket a, Basket b) { Spec.Ensures<bool>(r => r); return a == b; }
+    public static bool TwoNot(Basket a, Basket b) { Spec.Ensures<bool>(r => r); return a != b; }
+}");
+            Assert.True(r.Errors("Place").Length == 0, r.Explain("Place"));
+            Assert.True(r.Errors("Same").Length == 0, r.Explain("Same"));
+            Assert.Equal(new[] { "CSV1002" }, r.Errors("Two"));
+            Assert.Equal(new[] { "CSV1002" }, r.Errors("TwoNot"));
+        }
+
+        // ---- an abstract base whose constructor stores its parameters (#135)
+
+        [Fact]
+        public void ABaseThatStoresItsParameters_IsData()
+        {
+            var r = Harness.Verify(@"public abstract record Command
+{
+    private protected Command(DateTime now, Guid by)
+    {
+        this.Now = now;
+        By = by;
+    }
+    public DateTime Now { get; }
+    public Guid By { get; }
+}
+public sealed record Start(int Amount, DateTime Now, Guid By) : Command(Now, By);
+public sealed record Stop(DateTime At, Guid By) : Command(At, By);
+public static class Use
+{
+    public static int Decide(Start c) { Spec.Ensures<int>(r => r == c.Amount); return c.Amount; }
+    public static Start Make(int a, DateTime now, Guid by) { Spec.Ensures<Start>(r => r.Amount == a && r.Now == now && r.By == by); return new Start(a, now, by); }
+    public static DateTime When(Command c) { Spec.Ensures<DateTime>(r => r == c.Now); return c switch { Start s => s.Now, Stop s => s.At, _ => c.Now }; }
+    public static Start More(Start c) { Spec.Requires(c.Amount < 100); Spec.Ensures<Start>(r => r.Amount == c.Amount + 1 && r.Now == c.Now && r.By == c.By); return c with { Amount = c.Amount + 1 }; }
+    public static bool Same(Start a, Start b) { Spec.Requires(a.Amount == b.Amount && a.Now == b.Now && a.By == b.By); Spec.Ensures<bool>(r => r); return a == b; }
+    public static int Parts(Start c) { Spec.Ensures<int>(r => r == c.Amount); var (amount, now, by) = c; return amount; }
+    public static bool StopRight(Stop s, DateTime t) { Spec.Requires(s.At == t); Spec.Ensures<bool>(r => r); return s.Now == t; }
+    public static bool StopWrong(Stop s, DateTime t) { Spec.Requires(s.At == t); Spec.Ensures<bool>(r => r); return s.Now != t; }
+    public static bool Unrelated(Start a, Start b) { Spec.Ensures<bool>(r => r); return a.Now == b.Now; }
+}");
+            foreach (var ok in new[] { "Command..ctor", "Decide", "Make", "When", "More", "Same", "Parts", "StopRight" })
+            {
+                Assert.True(r.Errors(ok).Length == 0, r.Explain(ok));
+            }
+            Assert.Equal(new[] { "CSV1002" }, r.Errors("StopWrong"));
+            Assert.Equal(new[] { "CSV1002" }, r.Errors("Unrelated"));
+        }
+
+        [Fact]
+        public void ABaseWhoseConstructorDoesMore_IsNotData()
+        {
+            // (one that checks its argument: no value's definition, so the record is neither data nor a class of the subset)
+            var r = Harness.Verify(@"public abstract record Checked
+{
+    protected Checked(int n) { if (n < 0) { throw new ArgumentOutOfRangeException(nameof(n)); } N = n; }
+    public int N { get; }
+}
+public sealed record One(int N) : Checked(N);
+public static class Use
+{
+    public static int Of(One c) { Spec.Ensures<int>(r => r == c.N); return c.N; }
+}");
+            Assert.Equal(new[] { "CSV1902" }, r.Errors("Of"));
+            Assert.Contains("a record whose state isn't its constructor's parameters as given", r.Explain("Checked..ctor"));
+        }
+
+        [Fact]
+        public void ABasesField_IsWhatTheHeaderGivesIt_AtEveryLevel()
+        {
+            // (each was proved before: an argument computed two records up read by its name, a with's arguments in the
+            // fields' order, and a parameter read back from a field that doesn't hold it)
+            var r = Harness.Verify(@"public abstract record A(int N);
+public abstract record B(int N) : A(N * 2);
+public sealed record C(int X) : B(X + 1);
+public sealed record D(int N) : A(N + 1);
+public abstract record Clock(int Now);
+public sealed record Timed(int Amount, int Now) : Clock(Now);
+public sealed record Kept(int Y) : A(Y);
+public static class Use
+{
+    public static int Twice(int x) { Spec.Requires(0 <= x && x < 100); Spec.Ensures<int>(r => r == (x + 1) * 2); return new C(x).N; }
+    public static int TwiceWrong(int x) { Spec.Requires(0 <= x && x < 100); Spec.Ensures<int>(r => r == x + 1); return new C(x).N; }
+    public static Timed Later(Timed c) { Spec.Ensures<Timed>(r => r.Now == 7 && r.Amount == c.Amount); return c with { Now = 7 }; }
+    public static Timed LaterWrong(Timed c) { Spec.Ensures<Timed>(r => r.Amount == 7); return c with { Now = 7 }; }
+    public static int Absurd(D d) { Spec.Ensures<int>(r => r == 1); return 0; }
+    public static int OfD(int n) { Spec.Requires(0 <= n && n < 100); Spec.Ensures<int>(r => r == n + 1); return new D(n).N; }
+    public static int First(Timed c) { Spec.Ensures<int>(r => r == c.Amount); var (amount, now) = c; return amount; }
+    public static int FirstWrong(Timed c) { Spec.Ensures<int>(r => r == c.Now); var (amount, now) = c; return amount; }
+    public static Kept Copied(Kept k) { return k with { N = 5 }; }
+}");
+            foreach (var ok in new[] { "Twice", "Later", "OfD", "First" })
+            {
+                Assert.True(r.Errors(ok).Length == 0, r.Explain(ok));
+            }
+            foreach (var wrong in new[] { "TwiceWrong", "LaterWrong", "Absurd", "FirstWrong" })
+            {
+                Assert.Equal(new[] { "CSV1002" }, r.Errors(wrong));
+            }
+            // (a copy whose base's field is set apart from the parameter it was given: no construction's value)
+            Assert.Equal(new[] { "CSV1902" }, r.Errors("Copied"));
+        }
 }
 }

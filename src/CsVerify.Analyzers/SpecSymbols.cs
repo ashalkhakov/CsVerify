@@ -64,7 +64,10 @@ namespace CsVerify.Analyzers
             return false;
         }
 
-        /// <summary>A record class whose whole state (its own and its bases') is init-only positional properties.</summary>
+        /// <summary>
+        /// A record class whose whole state (its own and its bases') is init-only positional properties, and the
+        /// properties an abstract base's constructor stores its parameters in (StoredParameters).
+        /// </summary>
         public static bool IsValueRecord(ITypeSymbol type)
         {
             for (var t = type as INamedTypeSymbol; t != null && t.SpecialType != SpecialType.System_Object; t = t.BaseType)
@@ -77,11 +80,12 @@ namespace CsVerify.Analyzers
                 {
                     return false;
                 }
-                foreach (var f in t.GetMembers().OfType<IFieldSymbol>())
+                var stored = StoredParameters(t.OriginalDefinition);
+                foreach (var f in t.OriginalDefinition.GetMembers().OfType<IFieldSymbol>())
                 {
                     if (!f.IsStatic && !(f.AssociatedSymbol is IPropertySymbol p && p.SetMethod?.IsInitOnly != false &&
                                          p.DeclaringSyntaxReferences.Length > 0 &&
-                                         p.DeclaringSyntaxReferences.All(r => r.GetSyntax() is Microsoft.CodeAnalysis.CSharp.Syntax.ParameterSyntax)))
+                                         (p.DeclaringSyntaxReferences.All(r => r.GetSyntax() is ParameterSyntax) || stored != null && stored.ContainsKey(p))))
                     {
                         return false;
                     }
@@ -89,6 +93,122 @@ namespace CsVerify.Analyzers
             }
             return true;
         }
+
+        /// <summary>
+        /// A record's one constructor, where all it does is store its parameters, each in a get-only auto-property of
+        /// the record's (private protected Command(DateTime now) => Now = now;): a primary constructor written out. Of
+        /// an abstract record, or of a case under a record base; a case's may check its arguments first (StoredChecks).
+        /// The parameter each property holds; null where the record has no such constructor.
+        /// </summary>
+        public static System.Collections.Generic.Dictionary<IPropertySymbol, IParameterSymbol> StoredParameters(INamedTypeSymbol t) => StoredBy(t)?.Parameters;
+
+        /// <summary>
+        /// What such a constructor checks before it stores: if (c) throw ...;, P = c ? p : throw ..., P = p ?? throw ...
+        /// Each a condition of its parameters alone, and whether it throws where the condition holds or where it
+        /// doesn't (Null: where the parameter is null). The record's value is built where none throws.
+        /// </summary>
+        public static System.Collections.Generic.IReadOnlyList<(ExpressionSyntax Condition, bool ThrowsWhen, IParameterSymbol Null)> StoredChecks(INamedTypeSymbol t) =>
+            StoredBy(t)?.Checks ?? (System.Collections.Generic.IReadOnlyList<(ExpressionSyntax, bool, IParameterSymbol)>)System.Array.Empty<(ExpressionSyntax, bool, IParameterSymbol)>();
+
+        private sealed class StoredConstructor
+        {
+            public System.Collections.Generic.Dictionary<IPropertySymbol, IParameterSymbol> Parameters;
+            public System.Collections.Generic.List<(ExpressionSyntax Condition, bool ThrowsWhen, IParameterSymbol Null)> Checks = new System.Collections.Generic.List<(ExpressionSyntax, bool, IParameterSymbol)>();
+        }
+
+        private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<INamedTypeSymbol, StoredConstructor[]> _storedBy =
+            new System.Runtime.CompilerServices.ConditionalWeakTable<INamedTypeSymbol, StoredConstructor[]>();
+
+        private static StoredConstructor StoredBy(INamedTypeSymbol t) => t == null ? null : _storedBy.GetValue(t, x => new[] { ReadStored(x) })[0];
+
+        private static StoredConstructor ReadStored(INamedTypeSymbol t)
+        {
+            // (an abstract record, or a case of a record's: a sealed record of no record base is an object of its own)
+            bool isCase = t.IsSealed && t.BaseType is { IsRecord: true, SpecialType: not SpecialType.System_Object };
+            if (!t.IsRecord || !(t.IsAbstract || isCase) || t.TypeKind != TypeKind.Class)
+            {
+                return null;
+            }
+            var declared = t.InstanceConstructors.Where(c => !c.IsImplicitlyDeclared).ToList();
+            if (declared.Count != 1 || declared[0].Parameters.Length == 0 || declared[0].Parameters.Any(p => p.RefKind != RefKind.None || p.IsParams) ||
+                declared[0].DeclaringSyntaxReferences.Length != 1 ||
+                !(declared[0].DeclaringSyntaxReferences[0].GetSyntax() is ConstructorDeclarationSyntax { Initializer: null } syntax))
+            {
+                return null;
+            }
+            var ctor = declared[0];
+            var statements = syntax.ExpressionBody != null
+                ? new StatementSyntax[] { Microsoft.CodeAnalysis.CSharp.SyntaxFactory.ExpressionStatement(syntax.ExpressionBody.Expression) }
+                : syntax.Body?.Statements.ToArray();
+            if (statements == null)
+            {
+                return null;
+            }
+            var made = new StoredConstructor { Parameters = new System.Collections.Generic.Dictionary<IPropertySymbol, IParameterSymbol>(SymbolEqualityComparer.Default) };
+            IParameterSymbol Parameter(ExpressionSyntax e) => e is IdentifierNameSyntax r ? ctor.Parameters.FirstOrDefault(p => p.Name == r.Identifier.ValueText) : null;
+            // (of its parameters alone: nothing of the record being built)
+            bool OfParameters(ExpressionSyntax e) => !e.DescendantNodesAndSelf().Any(n => n is ThisExpressionSyntax || n is BaseExpressionSyntax ||
+                n is IdentifierNameSyntax id && !(id.Parent is MemberAccessExpressionSyntax ma && ma.Name == id) && !(id.Parent is NameColonSyntax) &&
+                !ctor.Parameters.Any(p => p.Name == id.Identifier.ValueText) && t.GetMembers(id.Identifier.ValueText).Any(m => !m.IsStatic));
+            foreach (var st in statements)
+            {
+                // (a check: if (c) throw ...;)
+                if (st is IfStatementSyntax { Else: null } guard && (guard.Statement is ThrowStatementSyntax || guard.Statement is BlockSyntax { Statements: { Count: 1 } only } && only[0] is ThrowStatementSyntax))
+                {
+                    if (!isCase || !OfParameters(guard.Condition))
+                    {
+                        return null;
+                    }
+                    made.Checks.Add((guard.Condition, true, null));
+                    continue;
+                }
+                if (!((st as ExpressionStatementSyntax)?.Expression is AssignmentExpressionSyntax { RawKind: (int)Microsoft.CodeAnalysis.CSharp.SyntaxKind.SimpleAssignmentExpression } a))
+                {
+                    return null;
+                }
+                // (a name a parameter has is the parameter; any other, or this.P, the record's member)
+                var member = a.Left switch
+                {
+                    IdentifierNameSyntax id when !ctor.Parameters.Any(p => p.Name == id.Identifier.ValueText) => id.Identifier.ValueText,
+                    MemberAccessExpressionSyntax { Expression: ThisExpressionSyntax, Name: IdentifierNameSyntax name } => name.Identifier.ValueText,
+                    _ => null,
+                };
+                // (the parameter, or the parameter where a check of it holds: c ? p : throw ..., p ?? throw ...)
+                var value = a.Right;
+                while (value is ParenthesizedExpressionSyntax paren)
+                {
+                    value = paren.Expression;
+                }
+                var from = Parameter(value);
+                if (from == null && isCase && value is ConditionalExpressionSyntax { WhenFalse: ThrowExpressionSyntax } kept && Parameter(kept.WhenTrue) is IParameterSymbol whenTrue && OfParameters(kept.Condition))
+                {
+                    from = whenTrue;
+                    made.Checks.Add((kept.Condition, false, null));
+                }
+                else if (from == null && isCase && value is BinaryExpressionSyntax { RawKind: (int)Microsoft.CodeAnalysis.CSharp.SyntaxKind.CoalesceExpression, Right: ThrowExpressionSyntax } coalesce &&
+                         Parameter(coalesce.Left) is IParameterSymbol given)
+                {
+                    from = given;
+                    made.Checks.Add((coalesce.Left, true, given));
+                }
+                var into = member == null ? null : t.GetMembers(member).OfType<IPropertySymbol>().FirstOrDefault();
+                if (from == null || into == null || !IsGetOnlyAuto(into) || made.Parameters.ContainsKey(into) ||
+                    !SymbolEqualityComparer.Default.Equals(into.Type, from.Type) ||
+                    !(SymbolEqualityComparer.IncludeNullability.Equals(into.Type, from.Type) || made.Checks.Any(c => SymbolEqualityComparer.Default.Equals(c.Null, from))))
+                {
+                    return null;
+                }
+                made.Parameters[into] = from;
+            }
+            return made;
+        }
+
+        /// <summary>An instance auto-property with a getter alone and no initializer: set by a constructor, never after.</summary>
+        private static bool IsGetOnlyAuto(IPropertySymbol p) =>
+            !p.IsStatic && !p.IsAbstract && !p.IsVirtual && !p.IsOverride && p.SetMethod == null && p.GetMethod != null &&
+            p.DeclaringSyntaxReferences.Length == 1 &&
+            p.DeclaringSyntaxReferences[0].GetSyntax() is PropertyDeclarationSyntax { ExpressionBody: null, Initializer: null, AccessorList: { } accessors } &&
+            accessors.Accessors.All(x => x.Body == null && x.ExpressionBody == null);
         /// <summary>[Pure] or [GhostFunction]: a mathematical function the verifier may use in specifications.</summary>
         public static bool IsPure(ISymbol s) => HasAttribute(s, "PureAttribute") || IsGhostFunction(s) ||
             s is IMethodSymbol m && (
@@ -211,6 +331,15 @@ namespace CsVerify.Analyzers
         /// Methods ghost and pure code may call: the spec library's ghost members, lemmas, pure functions, System.Math,
         /// and an array's GetLength (its lengths never change).
         /// </summary>
+        /// <summary>
+        /// DateTime's and TimeSpan's arithmetic by name, on their ticks, which their + and - are: d.Add(t), d.Subtract(t)
+        /// (of a TimeSpan or a DateTime), d.AddTicks(n), t.Add(u), t.Subtract(u). Functions of their values.
+        /// </summary>
+        public static bool IsTickArithmetic(IMethodSymbol m) =>
+            m is { IsStatic: false, Parameters.Length: 1 } && m.ContainingType?.ContainingNamespace?.ToDisplayString() == "System" &&
+            (m.ContainingType.Name == "DateTime" && (m.Name is "Add" or "Subtract" || m.Name == "AddTicks" && m.Parameters[0].Type.SpecialType == SpecialType.System_Int64) ||
+             m.ContainingType.Name == "TimeSpan" && m.Name is "Add" or "Subtract");
+
         public static bool IsPureCallee(IMethodSymbol m) =>
             m != null && (IsGhostMethod(m) || IsProofMethod(m.OriginalDefinition) || m.ContainingType?.ToDisplayString() == "System.Math" ||
                           m.Name is "GetLength" or "Empty" && m.ContainingType?.SpecialType == SpecialType.System_Array ||

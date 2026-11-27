@@ -1,4 +1,5 @@
 using System.Numerics;
+using CsVerify.Analyzers;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.Operations;
 using static CsVerify.Verifier.Boogie.KernelTypes;
@@ -33,19 +34,55 @@ namespace CsVerify.Verifier.Boogie
             };
         }
 
-        /// <summary>a ± b of a DateTime's or a TimeSpan's own operator; null where e is none.</summary>
-        private KExpr TimeArith(IOperation e, LowerMode mode)
+        /// <summary>
+        /// A property of a DateTime, a TimeSpan, a DateOnly or a TimeOnly that the kernel has no model of (Year, Days,
+        /// DayOfWeek): a function of the value, which is all there is to it, within its type's range. Not a DateTime's
+        /// Kind, which its ticks don't say. Its function's name, declared; null where p is none.
+        /// </summary>
+        private string ValueProperty(IPropertyReferenceOperation p)
         {
-            if (!(e is IBinaryOperation { OperatorMethod: { } m } b) || !OpaqueOperator(m) || !IsOpaqueTicks(b.Type) ||
-                b.OperatorKind is not (BinaryOperatorKind.Add or BinaryOperatorKind.Subtract))
+            if (p.Instance == null || !IsOpaqueTicks(p.Instance.Type) || p.Property.IsIndexer || !InSubset(p.Type) || TypeOf(p.Type) == "Ref" ||
+                p.Property.Name == "Kind" && p.Instance.Type.ToDisplayString() == "System.DateTime")
             {
                 return null;
             }
-            var (l, r) = mode.InSpec ? (Lower(b.LeftOperand, mode), Lower(b.RightOperand, mode)) : Operands(b.LeftOperand, b.RightOperand) is var v ? (v[0], v[1]) : default;
-            var ticks = new KOp(b.OperatorKind == BinaryOperatorKind.Add ? "+" : "-", l, r);
+            var name = "$vp." + Ident(p.Instance.Type.ToDisplayString() + "." + p.Property.Name);
+            _p.AddFunction($"function {name}(v: int): {TypeOf(p.Type)};");
+            (BigInteger lo, BigInteger hi)? range =
+                IsIntegral(p.Type) ? Range(p.Type)
+                : p.Type.ToDisplayString() == "System.DateTime" ? (BigInteger.Zero, MaxTicks)
+                : p.Type.ToDisplayString() == "System.TimeSpan" ? (long.MinValue, long.MaxValue) : ((BigInteger, BigInteger)?)null;
+            if (range is { } r)
+            {
+                _p.AddFunction($"axiom (forall v: int :: {{ {name}(v) }} {r.lo} <= {name}(v) && {name}(v) <= {r.hi});");
+            }
+            return name;
+        }
+
+        /// <summary>
+        /// a ± b of a DateTime's or a TimeSpan's own operator, or of the method the operator is (d.Add(t), d.Subtract(t),
+        /// d.AddTicks(n): SpecSymbols.IsTickArithmetic); null where e is none.
+        /// </summary>
+        private KExpr TimeArith(IOperation e, LowerMode mode)
+        {
+            IOperation left, right;
+            bool add;
+            switch (e)
+            {
+                case IBinaryOperation { OperatorMethod: { } m } b when OpaqueOperator(m) && IsOpaqueTicks(b.Type) && b.OperatorKind is BinaryOperatorKind.Add or BinaryOperatorKind.Subtract:
+                    (left, right, add) = (b.LeftOperand, b.RightOperand, b.OperatorKind == BinaryOperatorKind.Add);
+                    break;
+                case IInvocationOperation { Instance: { } receiver } call when SpecSymbols.IsTickArithmetic(call.TargetMethod):
+                    (left, right, add) = (receiver, call.Arguments[0].Value, call.TargetMethod.Name != "Subtract");
+                    break;
+                default:
+                    return null;
+            }
+            var (l, r) = mode.InSpec ? (Lower(left, mode), Lower(right, mode)) : Operands(left, right) is var v ? (v[0], v[1]) : default;
+            var ticks = new KOp(add ? "+" : "-", l, r);
             if (!mode.InSpec && _cfgBlock != null)
             {
-                var dateTime = b.Type.ToDisplayString() == "System.DateTime";
+                var dateTime = e.Type.ToDisplayString() == "System.DateTime";
                 var (lo, hi) = dateTime ? (BigInteger.Zero, MaxTicks) : (new BigInteger(long.MinValue), new BigInteger(long.MaxValue));
                 var fits = AndAlso(Le(Number(lo), ticks), Le(ticks, Number(hi)));
                 if (ThrowTarget(_cfgBlock.EnclosingRegion) is string to)

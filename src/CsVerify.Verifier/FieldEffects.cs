@@ -265,23 +265,36 @@ namespace CsVerify.Verifier
                 // a library method cannot name user fields; it can reach them only by running user code it is handed
                 // (its receiver included: a delegate's Invoke)
                 d.All = RunsUserCode(m) && !c.IsPure; // (a [Pure] stub says it has no effects: trusted, like all it says)
-                // model state: a stub says what it changes (Spec.Modifies, or nothing); without one, anything it reaches
-                if (!c.IsStub && MayTouchModels(m))
-                {
-                    d.AddWrites(MutableModels());
-                }
-                if (c.IsStub && (c.Modifies != null || m.MethodKind == MethodKind.Constructor))
-                {
-                    d.AddWrites(ModelsOf(m.ContainingType));
-                }
-                if (c.IsStub)
-                {
-                    AddModelReads(d, c);
-                }
+                LibraryModels(d, m, c);
                 return d;
             }
             bool ctor = m.MethodKind == MethodKind.Constructor;
-            foreach (var node in c.Declaration.DescendantNodes(n => !(n is AnonymousFunctionExpressionSyntax)))
+            // (its body, and the lambdas and methods it hands a library member: the member runs them, so what they
+            // do, it does; the member itself is judged by what each call hands it)
+            var bodies = new List<SyntaxNode> { c.Declaration };
+            var handed = new Dictionary<InvocationExpressionSyntax, IInvocationOperation>();
+            for (int k = 0; k < bodies.Count; k++)
+            {
+                foreach (var inv in Within(bodies[k]).OfType<InvocationExpressionSyntax>())
+                {
+                    if (c.Model.GetOperation(inv) is IInvocationOperation op && DelegatesHanded(op) is List<IOperation> delegates)
+                    {
+                        handed[inv] = op;
+                        foreach (var made in delegates)
+                        {
+                            if (MethodHanded(made) is IMethodSymbol method)
+                            {
+                                AddCallee(d, method);
+                            }
+                            else
+                            {
+                                bodies.Add(made.Syntax);
+                            }
+                        }
+                    }
+                }
+            }
+            foreach (var node in bodies.SelectMany(Within))
             {
                 switch (node)
                 {
@@ -330,6 +343,13 @@ namespace CsVerify.Verifier
                         {
                             d.AddRead((callee.ReducedFrom ?? callee).OriginalDefinition);
                         }
+                        else if (handed.TryGetValue(inv, out var op))
+                        {
+                            // (and what else the member is handed may run, as at any library call)
+                            var lc = _engine.ContractOf(callee.OriginalDefinition);
+                            d.All |= RunsOtherCodeAt(op, v => true) && !lc.IsPure;
+                            LibraryModels(d, Normal(callee), lc);
+                        }
                         else if (!SpecSymbols.IsSpecClass(callee.ContainingType))
                         {
                             AddCallee(d, callee);
@@ -344,6 +364,66 @@ namespace CsVerify.Verifier
                 }
             }
             return d;
+        }
+
+        /// <summary>A body's nodes, but a lambda's or an anonymous method's inside it.</summary>
+        private static IEnumerable<SyntaxNode> Within(SyntaxNode body) => body.DescendantNodes(n => n == body || !(n is AnonymousFunctionExpressionSyntax));
+
+        /// <summary>
+        /// The delegates a call hands a library member that is judged by what this call hands it: one no class
+        /// overrides, every delegate it is handed a lambda or a method's (else null).
+        /// </summary>
+        private static List<IOperation> DelegatesHanded(IInvocationOperation call)
+        {
+            var m = call.TargetMethod;
+            // (a specification's call is no code)
+            if (m.OriginalDefinition.DeclaringSyntaxReferences.Length > 0 || m.MethodKind == MethodKind.DelegateInvoke || Engine.IsOverridable(m) ||
+                SpecSymbols.IsSpecClass(m.ContainingType) || SpecSymbols.IsModel(m.ReducedFrom ?? m.OriginalDefinition))
+            {
+                return null;
+            }
+            var delegates = call.Arguments.Where(a => a.Parameter?.Type.TypeKind == TypeKind.Delegate).Select(a => a.Value).ToList();
+            return delegates.All(x => x.Syntax is AnonymousFunctionExpressionSyntax || MethodHanded(x) != null) ? delegates : null;
+        }
+
+        /// <summary>The method a delegate is made of, where it is one's (xs.Select(Parse)).</summary>
+        private static IMethodSymbol MethodHanded(IOperation value)
+        {
+            while (value is IConversionOperation c && c.IsImplicit)
+            {
+                value = c.Operand;
+            }
+            return value is IDelegateCreationOperation { Target: IMethodReferenceOperation reference } ? reference.Method : null;
+        }
+
+        /// <summary>
+        /// A LINQ query made where it is handed over (xs.Where(f) in xs.Where(f).ToList()): enumerating it runs what
+        /// its own call was handed, which is judged there.
+        /// </summary>
+        private static bool MadeHere(IOperation value)
+        {
+            while (value is IConversionOperation c && c.IsImplicit)
+            {
+                value = c.Operand;
+            }
+            return value is IInvocationOperation q && q.TargetMethod.ContainingType?.ToDisplayString() == "System.Linq.Enumerable";
+        }
+
+        /// <summary>Model state a library member changes or reads: what its stub says (Spec.Modifies, or nothing); without one, anything it reaches.</summary>
+        private void LibraryModels(Direct d, IMethodSymbol m, Contract c)
+        {
+            if (!c.IsStub && MayTouchModels(m))
+            {
+                d.AddWrites(MutableModels());
+            }
+            if (c.IsStub && (c.Modifies != null || m.MethodKind == MethodKind.Constructor))
+            {
+                d.AddWrites(ModelsOf(m.ContainingType));
+            }
+            if (c.IsStub)
+            {
+                AddModelReads(d, c);
+            }
         }
 
         /// <summary>The [Model] functions a stub's contract reads: a [Pure] stubbed member's value depends on them.</summary>
@@ -406,6 +486,9 @@ namespace CsVerify.Verifier
             // (making an empty collection of records calls none of their methods; what it's given to fill it, above, may)
             (m.MethodKind != MethodKind.Constructor || m.Parameters.Length > 0 && !m.Parameters.All(p => p.Type.SpecialType != SpecialType.None)) && m.ContainingType.TypeArguments.Concat(m.TypeArguments).Any(HandsOver);
 
+        /// <summary>May a library member run code of its elements' or keys' types (their Equals, their CompareTo) that changes something?</summary>
+        public bool ElementsRun(IMethodSymbol m) => m.ContainingType.TypeArguments.Concat(m.TypeArguments).Any(HandsOver);
+
         /// <summary>
         /// At this call, may the library method change the program's fields or model state? As
         /// <see cref="WritesOf"/> says for the method, but by what is actually handed to it: an <c>object</c> parameter
@@ -462,6 +545,10 @@ namespace CsVerify.Verifier
                     }
                     continue;
                 }
+                if (MadeHere(a.Value))
+                {
+                    continue;
+                }
                 if (a.ArgumentKind != ArgumentKind.Explicit ? HandsOver(a.Parameter.Type) : HandsOver(Handed(a.Value)))
                 {
                     return true;
@@ -494,6 +581,14 @@ namespace CsVerify.Verifier
                 case IArrayTypeSymbol a: return HandsOver(a.ElementType);
                 case ITypeParameterSymbol _: return true;
             }
+            // (a list interface: a library's collection, trusted to run nothing of the program's but its elements'
+            // code; or an object of a class of the program's that implements it)
+            if (t is INamedTypeSymbol { TypeKind: TypeKind.Interface, Arity: 1 } list && list.ContainingNamespace?.ToDisplayString() == "System.Collections.Generic" &&
+                list.Name is "IList" or "IReadOnlyList" or "ICollection" or "IReadOnlyCollection" or "IReadOnlySet" or "ISet")
+            {
+                return HandsOver(list.TypeArguments[0]) ||
+                       _engine.SourceTypes.Any(s => s.AllInterfaces.Any(i => SymbolEqualityComparer.Default.Equals(i.OriginalDefinition, list.OriginalDefinition)) && RunsUserCode(s));
+            }
             if (t.TypeKind == TypeKind.Delegate || t.TypeKind == TypeKind.Interface || t.SpecialType == SpecialType.System_Object)
             {
                 return true;
@@ -505,10 +600,74 @@ namespace CsVerify.Verifier
             return _engine.SourceTypes.Any(s => DataTypes.Derives(s, t) && RunsUserCode(s)) || ((INamedTypeSymbol)t).TypeArguments.Any(HandsOver);
         }
 
-        /// <summary>Code a library could run on an object of this source class: an override, or an interface it implements.</summary>
-        private static bool RunsUserCode(INamedTypeSymbol s) =>
-            s.AllInterfaces.Length > 0 || s.GetMembers().Any(m => m.IsOverride) || s.IsRecord ||
-            s.BaseType != null && s.BaseType.SpecialType != SpecialType.System_Object && s.BaseType.DeclaringSyntaxReferences.Length == 0;
+        /// <summary>
+        /// Code a library could run on an object of this source class, that may change something: an override, or an
+        /// interface it implements.
+        /// </summary>
+        private bool RunsUserCode(INamedTypeSymbol s) =>
+            (s.AllInterfaces.Length > 0 || s.GetMembers().Any(m => m.IsOverride) || s.IsRecord ||
+             s.BaseType != null && s.BaseType.SpecialType != SpecialType.System_Object && s.BaseType.DeclaringSyntaxReferences.Length == 0) && !ChangesNothing(s);
+
+        private readonly Dictionary<INamedTypeSymbol, bool> _changesNothing = new Dictionary<INamedTypeSymbol, bool>(SymbolEqualityComparer.Default);
+
+        /// <summary>
+        /// Does the code a library could run on an object of this source class change nothing? Its overrides and its
+        /// interfaces' implementations write no field, model or array cell and read no cell, by these analyses; a
+        /// record's own members compare, hash and print its fields, so those hand nothing over either.
+        /// </summary>
+        private bool ChangesNothing(INamedTypeSymbol s)
+        {
+            if (_changesNothing.TryGetValue(s, out var known))
+            {
+                return known;
+            }
+            // (while it is judged, a class that reaches itself isn't known to)
+            _changesNothing[s] = false;
+            return _changesNothing[s] = Judge();
+
+            bool Judge()
+            {
+                var run = new HashSet<ISymbol>(SymbolEqualityComparer.Default);
+                for (var b = s; b != null && b.SpecialType != SpecialType.System_Object; b = b.BaseType)
+                {
+                    // (a library's class: its own code calls what the program overrides)
+                    if (b.DeclaringSyntaxReferences.Length == 0 ||
+                        b.IsRecord && b.GetMembers().OfType<IFieldSymbol>().Any(f => !f.IsStatic && HandsOver(f.Type)))
+                    {
+                        return false;
+                    }
+                    run.UnionWith(b.GetMembers().Where(m => m.IsOverride));
+                }
+                run.UnionWith(s.AllInterfaces.SelectMany(i => i.GetMembers()).Select(s.FindImplementationForInterfaceMember));
+                foreach (var member in run)
+                {
+                    foreach (var m in member switch
+                    {
+                        IMethodSymbol method => new[] { method },
+                        IPropertySymbol { SetMethod: null } p => new[] { p.GetMethod },
+                        // (a setter writes; an event's accessors, or an implementation not found: not known)
+                        _ => new IMethodSymbol[] { null },
+                    })
+                    {
+                        if (m == null || m.MethodKind == MethodKind.PropertySet)
+                        {
+                            return false;
+                        }
+                        // (a record's own: its fields', above)
+                        if (m.IsImplicitlyDeclared)
+                        {
+                            continue;
+                        }
+                        var (fields, all) = WritesOf(m);
+                        if (all || fields.Count > 0 || _engine.MayWriteHeap(m) || _engine.MayTouchArrays(m))
+                        {
+                            return false;
+                        }
+                    }
+                }
+                return true;
+            }
+        }
 
         private void AddCallee(Direct d, IMethodSymbol callee)
         {

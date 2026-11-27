@@ -106,15 +106,31 @@ namespace CsVerify.Verifier.Boogie
         /// <summary>The scalars of the nullable values it names (int?: Int32).</summary>
         private readonly HashSet<string> _nullables = new HashSet<string>();
 
-        /// <summary>The static readonly fields' values never null (made by new, of a non-nullable type), once each.</summary>
+        /// <summary>
+        /// The static readonly fields' values, once each: never null (made by new, of a non-nullable type); of their
+        /// types, within the type's range, each part within its, a data value one of its type's cases.
+        /// </summary>
         public void StaticReadonlyFacts()
         {
             foreach (var k in (KernelTypes.StaticReadonlyNonNull ?? new HashSet<int>()).OrderBy(x => x).Where(_staticFacts.Add))
             {
                 Line($"axiom $sfRef({k}) != null;");
             }
+            foreach (var (k, type) in (KernelTypes.StaticReadonlyTypes ?? new Dictionary<int, ITypeSymbol>()).OrderBy(x => x.Key).Where(x => _staticTyped.Add(x.Key)).Select(x => (x.Key, x.Value)))
+            {
+                var value = new MOp("$sf" + (TypeOf(type) == "Ref" ? "Ref" : TypeOf(type) == "int" ? "Int" : "Bool"), new MLit(k.ToString()));
+                foreach (var fact in Ranges(value, type, InProcedure))
+                {
+                    Line($"axiom {fact};");
+                }
+                if (IsData(type) && !type.IsValueType && _caseTags != null && KernelTypes.Data.Cases(DataTypes.Def(type)) is { } cases && cases.All(c => _caseTags.ContainsKey("$is." + CaseName(c).Substring(3))))
+                {
+                    Line($"axiom {E(value, InProcedure)} == null || {ByTag(MathTypes.IsCase(value, type), InProcedure)};");
+                }
+            }
         }
         private readonly HashSet<int> _staticFacts = new HashSet<int>();
+        private readonly HashSet<int> _staticTyped = new HashSet<int>();
 
         public void Tuples()
         {
@@ -137,18 +153,17 @@ namespace CsVerify.Verifier.Boogie
             // (a nullable value: null, or the one reference of its value)
             foreach (var u in _nullables.OrderBy(x => x, System.StringComparer.Ordinal))
             {
-                // (an opaque value's, DateTime's or Guid's: an int of no range)
-                var scalar = System.Enum.TryParse<SpecialType>("System_" + u, out var st) && (st == SpecialType.System_Boolean || KernelTypes.Widths.ContainsKey(st));
-                var ty = scalar && st == SpecialType.System_Boolean ? "bool" : "int";
-                var ranged = scalar && st != SpecialType.System_Boolean;
-                var range = ranged ? $"{Range(st).lo} <= v && v <= {Range(st).hi}" : "true";
+                // (its value: a struct's, a reference; any other's, of its type, and within the type's range where it has one)
+                var of = u.StartsWith(KernelTypes.StructNullable) ? null : KernelTypes.Compilation.GetTypeByMetadataName("System." + u);
+                var ty = of == null ? "Ref" : TypeOf(of);
+                string Typed(MExpr v) => of != null && MathTypes.Within(v, of) is MExpr typed ? E(typed, InProcedure) : null;
                 Line($"function $nv.{u}(x: Ref): {ty};");
                 Line($"function $nmk.{u}(v: {ty}): Ref;");
-                Line($"axiom (forall v: {ty} :: {{ $nmk.{u}(v) }} {range} ==> $nmk.{u}(v) != null && $nv.{u}($nmk.{u}(v)) == v);");
+                Line($"axiom (forall v: {ty} :: {{ $nmk.{u}(v) }} {Typed(new MVar("v")) ?? "true"} ==> $nmk.{u}(v) != null && $nv.{u}($nmk.{u}(v)) == v);");
                 Line($"axiom (forall x: Ref :: {{ $nv.{u}(x) }} x != null ==> $nmk.{u}($nv.{u}(x)) == x);");
-                if (ranged)
+                if (Typed(new MOp("$nv." + u, new MVar("x"))) is string within)
                 {
-                    Line($"axiom (forall x: Ref :: {{ $nv.{u}(x) }} {Range(st).lo} <= $nv.{u}(x) && $nv.{u}(x) <= {Range(st).hi});");
+                    Line($"axiom (forall x: Ref :: {{ $nv.{u}(x) }} {within});");
                 }
             }
             foreach (var f in _tuples.OrderBy(x => x, System.StringComparer.Ordinal))
@@ -269,11 +284,15 @@ namespace CsVerify.Verifier.Boogie
             Optional("$bag", "axiom (forall ly: LayerType, r: [int]int, i: int, v: int, n: int :: { $bag(ly, r[i := v], n) } 0 <= i && i < n ==> $bag(ly, r[i := v], n) == $badd($bremove($bag(ly, r, n), r[i]), v));");
             Optional("$bag", "axiom (forall ly: LayerType, r: [int]int, i: int, v: int, n: int :: { $bag(ly, r[i := v], n) } (i < 0 || n <= i) ==> $bag(ly, r[i := v], n) == $bag(ly, r, n));");
             Optional("$dround(|$dq(", "// decimals: an int each, its value in units of 10^-28. $drep: representable, m / 10^e with |m| < 2^96, 0 <= e <= 28;");
-            Optional("$dround(|$dq(", "// $dround: an exact result rounded as decimal arithmetic rounds it, itself where representable, of its sign; $dq(n, d): n / d so rounded");
+            Optional("$dround(|$dq(", "// $dround: an exact result rounded as decimal arithmetic rounds it, itself where representable, of its sign (not zero, of one that isn't: a whole number of units under 2^96 is representable); $dq(n, d): n / d so rounded");
             Optional("$dround(|$dq(", "function $drep(u: int): bool { (u mod 10000000000000000000000000000 == 0 && -792281625142643375935439503360000000000000000000000000000 < u && u < 792281625142643375935439503360000000000000000000000000000) || (u mod 1000000000000000000000000000 == 0 && -79228162514264337593543950336000000000000000000000000000 < u && u < 79228162514264337593543950336000000000000000000000000000) || (u mod 100000000000000000000000000 == 0 && -7922816251426433759354395033600000000000000000000000000 < u && u < 7922816251426433759354395033600000000000000000000000000) || (u mod 10000000000000000000000000 == 0 && -792281625142643375935439503360000000000000000000000000 < u && u < 792281625142643375935439503360000000000000000000000000) || (u mod 1000000000000000000000000 == 0 && -79228162514264337593543950336000000000000000000000000 < u && u < 79228162514264337593543950336000000000000000000000000) || (u mod 100000000000000000000000 == 0 && -7922816251426433759354395033600000000000000000000000 < u && u < 7922816251426433759354395033600000000000000000000000) || (u mod 10000000000000000000000 == 0 && -792281625142643375935439503360000000000000000000000 < u && u < 792281625142643375935439503360000000000000000000000) || (u mod 1000000000000000000000 == 0 && -79228162514264337593543950336000000000000000000000 < u && u < 79228162514264337593543950336000000000000000000000) || (u mod 100000000000000000000 == 0 && -7922816251426433759354395033600000000000000000000 < u && u < 7922816251426433759354395033600000000000000000000) || (u mod 10000000000000000000 == 0 && -792281625142643375935439503360000000000000000000 < u && u < 792281625142643375935439503360000000000000000000) || (u mod 1000000000000000000 == 0 && -79228162514264337593543950336000000000000000000 < u && u < 79228162514264337593543950336000000000000000000) || (u mod 100000000000000000 == 0 && -7922816251426433759354395033600000000000000000 < u && u < 7922816251426433759354395033600000000000000000) || (u mod 10000000000000000 == 0 && -792281625142643375935439503360000000000000000 < u && u < 792281625142643375935439503360000000000000000) || (u mod 1000000000000000 == 0 && -79228162514264337593543950336000000000000000 < u && u < 79228162514264337593543950336000000000000000) || (u mod 100000000000000 == 0 && -7922816251426433759354395033600000000000000 < u && u < 7922816251426433759354395033600000000000000) || (u mod 10000000000000 == 0 && -792281625142643375935439503360000000000000 < u && u < 792281625142643375935439503360000000000000) || (u mod 1000000000000 == 0 && -79228162514264337593543950336000000000000 < u && u < 79228162514264337593543950336000000000000) || (u mod 100000000000 == 0 && -7922816251426433759354395033600000000000 < u && u < 7922816251426433759354395033600000000000) || (u mod 10000000000 == 0 && -792281625142643375935439503360000000000 < u && u < 792281625142643375935439503360000000000) || (u mod 1000000000 == 0 && -79228162514264337593543950336000000000 < u && u < 79228162514264337593543950336000000000) || (u mod 100000000 == 0 && -7922816251426433759354395033600000000 < u && u < 7922816251426433759354395033600000000) || (u mod 10000000 == 0 && -792281625142643375935439503360000000 < u && u < 792281625142643375935439503360000000) || (u mod 1000000 == 0 && -79228162514264337593543950336000000 < u && u < 79228162514264337593543950336000000) || (u mod 100000 == 0 && -7922816251426433759354395033600000 < u && u < 7922816251426433759354395033600000) || (u mod 10000 == 0 && -792281625142643375935439503360000 < u && u < 792281625142643375935439503360000) || (u mod 1000 == 0 && -79228162514264337593543950336000 < u && u < 79228162514264337593543950336000) || (u mod 100 == 0 && -7922816251426433759354395033600 < u && u < 7922816251426433759354395033600) || (u mod 10 == 0 && -792281625142643375935439503360 < u && u < 792281625142643375935439503360) || (-79228162514264337593543950336 < u && u < 79228162514264337593543950336) }");
             Optional("$dround(|$dq(", "function $dround(u: int): int;");
-            Optional("$dround(|$dq(", "axiom (forall u: int :: { $dround(u) } ($drep(u) ==> $dround(u) == u) && (u >= 0 ==> $dround(u) >= 0) && (u <= 0 ==> $dround(u) <= 0));");
+            Optional("$dround(|$dq(", "axiom (forall u: int :: { $dround(u) } ($drep(u) ==> $dround(u) == u) && (u > 0 ==> $dround(u) > 0) && (u < 0 ==> $dround(u) < 0));");
+            // (within MaxValue where the exact result is, to half a unit of 1: past that the operation throws)
+            var (dmax, dbound) = (Lowering.DecimalMax, Lowering.DecimalMax + Lowering.DecimalOne / 2);
+            Optional("$dround(|$dq(", $"axiom (forall u: int :: {{ $dround(u) }} (-{dbound}) < u && u < {dbound} ==> (-{dmax}) <= $dround(u) && $dround(u) <= {dmax});");
             Optional("$dround(|$dq(", "function $dq(n: int, d: int): int;");
+            Optional("$dround(|$dq(", $"axiom (forall n: int, d: int :: {{ $dq(n, d) }} (d > 0 && (-{dbound}) * d < n && n < {dbound} * d) || (d < 0 && {dbound} * d < n && n < (-{dbound}) * d) ==> (-{dmax}) <= $dq(n, d) && $dq(n, d) <= {dmax});");
             Optional("$dround(|$dq(", "axiom (forall n: int, d: int :: { $dq(n, d) } (d != 0 && n mod d == 0 && $drep(n div d) ==> $dq(n, d) == n div d) && ((n >= 0 && d > 0) || (n <= 0 && d < 0) ==> $dq(n, d) >= 0) && ((n <= 0 && d > 0) || (n >= 0 && d < 0) ==> $dq(n, d) <= 0));");
             Line("// arrays: references, the allocated ones, each one's length, and a map of elements per element type");
             Line("type Ref;");
@@ -477,7 +496,45 @@ namespace CsVerify.Verifier.Boogie
 
         private static string Maps(Context cx) => string.Join(", ", ElementTypes.Select(t => Map(ElementMap(t), cx)));
 
+        /// <summary>
+        /// The state where an expression reads it more than once, named once: (var $stNow := $st(maps); e). $st takes
+        /// every map of the program, and a contract that reads a collection through an interface names it at each read
+        /// and again in what guards each later read, so written out it is most of the program's text. Not in old(...),
+        /// whose maps are the entry's, nor in a trigger.
+        /// </summary>
+        private const string StateNow = "$stNow";
+
+        /// <summary>How deep E is in the expression it prints; how many old(...) and triggers are around; the state's reads so far.</summary>
+        private int _depth, _stateElsewhere, _stateReads;
+
         private string E(MExpr e, Context cx)
+        {
+            if (_depth > 0 || e is MOp { Op: "$pattern" })
+            {
+                _depth++;
+                try
+                {
+                    return Term(e, cx);
+                }
+                finally
+                {
+                    _depth--;
+                }
+            }
+            _depth++;
+            _stateReads = 0;
+            try
+            {
+                var s = Term(e, cx);
+                return _stateReads == 0 ? s : _stateReads == 1 ? s.Replace(StateNow, State) : $"(var {StateNow} := {State}; {s})";
+            }
+            finally
+            {
+                _depth--;
+            }
+        }
+
+        private string Term(MExpr e, Context cx)
         {
             switch (e)
             {
@@ -485,7 +542,15 @@ namespace CsVerify.Verifier.Boogie
                 case MVar v when cx.AtEntry && cx.Ins.Contains(v.Name): return v.Name + "$in";
                 case MVar v: return v.Name == "result" ? cx.Result : Map(v.Name, cx);
                 case MOp { Op: "old" } old when cx.Ins.Count > 0 && !cx.AtEntry:
-                    return $"old({E(old.Args[0], cx.AsAtEntry())})";
+                    _stateElsewhere++;
+                    try
+                    {
+                        return $"old({E(old.Args[0], cx.AsAtEntry())})";
+                    }
+                    finally
+                    {
+                        _stateElsewhere--;
+                    }
                 case MFnApp f when f.Plain:
                     return $"{f.Function}({string.Join(", ", f.Args.Select(a => E(a, cx)))})";
                 case MFnApp f when f.Snap != null:
@@ -530,7 +595,16 @@ namespace CsVerify.Verifier.Boogie
                     _binders.Add(name);
                     try
                     {
-                        var trigger = q.Trigger == null ? "" : string.Concat(q.Trigger.Select(t => $"{{ {E(t, cx)} }} "));
+                        string trigger;
+                        _stateElsewhere++;
+                        try
+                        {
+                            trigger = q.Trigger == null ? "" : string.Concat(q.Trigger.Select(t => $"{{ {E(t, cx)} }} "));
+                        }
+                        finally
+                        {
+                            _stateElsewhere--;
+                        }
                         if (q.Range == null)
                         {
                             return $"({(q.Forall ? "forall" : "exists")} {name}: {q.Type} :: {trigger}{E(q.Body, cx)})";
@@ -546,7 +620,16 @@ namespace CsVerify.Verifier.Boogie
                 }
                 case MOp op:
                 {
-                    var a = op.Args.Select(x => E(x, cx)).ToArray();
+                    string[] a;
+                    _stateElsewhere += op.Op == "old" ? 1 : 0;
+                    try
+                    {
+                        a = op.Args.Select(x => E(x, cx)).ToArray();
+                    }
+                    finally
+                    {
+                        _stateElsewhere -= op.Op == "old" ? 1 : 0;
+                    }
                     if (_tags != null && op.Args.Length == 1 && _tags.TryGetValue(op.Op, out var tag))
                     {
                         return $"($tag({a[0]}) == {tag})";
@@ -579,7 +662,13 @@ namespace CsVerify.Verifier.Boogie
                         case "$tree": return $"(lambda r$: Ref :: $root[r$] == $root[{a[0]}])";
                         case "set.subset": return $"(forall r$: Ref :: {a[0]}[r$] ==> {a[1]}[r$])";
                         case "set.disjoint": return $"(forall r$: Ref :: !({a[0]}[r$] && {a[1]}[r$]))";
-                        case "$state": return State;
+                        case "$state":
+                            if (_stateElsewhere > 0)
+                            {
+                                return State;
+                            }
+                            _stateReads++;
+                            return StateNow;
                         case "slen": return $"slen({a[0]})";
                         case "sl": return $"sl({a[0]})";
                         case "sat": return $"sat({a[0]}, {a[1]})";
@@ -809,10 +898,10 @@ namespace CsVerify.Verifier.Boogie
                 // (a collection through its interface, neither an array nor a modeled collection: values of the state)
                 Line("function $ocount(r: Ref, s: St): int;");
                 Line("axiom (forall r: Ref, s: St :: { $ocount(r, s) } 0 <= $ocount(r, s) && $ocount(r, s) <= 2147483647);");
-                foreach (var k in ElementTypes.Where(t => !(t is SpecialType.System_Single or SpecialType.System_Double)).Select(t => t == SpecialType.System_Object ? "Ref" : t.ToString().Substring("System_".Length)))
+                foreach (var k in ElementTypes.Where(t => !(t is SpecialType.System_Single or SpecialType.System_Double)).Select(t => t == SpecialType.System_Object ? "Ref" : t.ToString().Substring("System_".Length)).Append(OpaqueKind))
                 {
                     Line($"function $oitem.{k}(r: Ref, i: int, s: St): {BoogieOf(k)};");
-                    if (k is not ("Ref" or "Boolean"))
+                    if (k is not ("Ref" or "Boolean" or OpaqueKind))
                     {
                         var (lo, hi) = Range((SpecialType)System.Enum.Parse(typeof(SpecialType), "System_" + k));
                         Line($"axiom (forall r: Ref, i: int, s: St :: {{ $oitem.{k}(r, i, s) }} {(lo < 0 ? $"({lo})" : lo.ToString())} <= $oitem.{k}(r, i, s) && $oitem.{k}(r, i, s) <= {hi});");
@@ -864,10 +953,11 @@ namespace CsVerify.Verifier.Boogie
                 }
                 Line($"  free ensures {InRangeOfMemory};");
                 Line($"  free ensures $postS.{key}(d, old({State}){use}{(res == "void" ? "" : ", res")});");
-                // (only what's in its frame changes, of what was allocated)
+                // (only what's in its frame changes, of what was allocated: said of an object where the map is read
+                // of it after the call, not of every object known to be allocated, of every map)
                 foreach (var m in _stateMaps.Where(m => modifies.Contains(m.name)))
                 {
-                    Line($"  free ensures (forall o: Ref :: old($Alloc[o]) && !$frame.{key}(d{use})[o] ==> {m.name}[o] == old({m.name}[o]));");
+                    Line($"  free ensures (forall o: Ref :: {{ {m.name}[o] }} old($Alloc[o]) && !$frame.{key}(d{use})[o] ==> {m.name}[o] == old({m.name}[o]));");
                 }
                 if (res != "void" && res != "Ref" && res != "Boolean")
                 {
@@ -1144,7 +1234,8 @@ namespace CsVerify.Verifier.Boogie
                 string where = "";
                 if (m.Name == SizeMap || m.Name == "$F.$M.Length")
                 {
-                    where = $" where (forall o: Ref :: {m.Name}[o] >= 0)";
+                    // (a Count, an int: read through an interface it is this map's value, with no getter's result to bound it)
+                    where = $" where (forall o: Ref :: 0 <= {m.Name}[o] && {m.Name}[o] <= 2147483647)";
                 }
                 else if (m.Range != null && RangeOfKind(m.Range, "x") != null)
                 {
@@ -1153,6 +1244,7 @@ namespace CsVerify.Verifier.Boogie
                 }
                 Line($"var {m.Name}: {m.Type}{where};");
                 _stateMaps.Add((m.Name, m.Type));
+                _modelTypes[m.Name] = m.Type;
             }
             foreach (var k in pairs.Select(p => p.key).Distinct().OrderBy(x => x, System.StringComparer.Ordinal))
             {
@@ -1174,7 +1266,7 @@ namespace CsVerify.Verifier.Boogie
 
         private string RangeOfKind(string kind, string at)
         {
-            if (kind == null || kind is "Ref" or "Boolean")
+            if (kind == null || kind is "Ref" or "Boolean" or OpaqueKind)
             {
                 return null;
             }
@@ -1215,10 +1307,16 @@ namespace CsVerify.Verifier.Boogie
             {
                 var map = FieldMap(f);
                 var t = FieldType(f);
-                // (a field holds a value of its type: an integer in its range, a decimal in its, a DateTime's and a
-                // TimeSpan's ticks in theirs)
-                var of = IsGhost(t) || IsData(t) ? null : MathTypes.OfType(Sel(map, new MVar("o")), t);
-                var where = of != null ? $" where (forall o: Ref :: {E(of, InProcedure)})" : "";
+                // (a field holds a value of its type: within its range, and each of its parts within its; a data value
+                // one of its type's cases, by its tag, or null)
+                var of = IsGhost(t) ? new List<string>() : Ranges(Sel(map, new MVar("o")), t, InProcedure).ToList();
+                if (IsData(t) && !t.IsValueType && !KernelTypes.Data.IsOpen(DataTypes.Def(t)))
+                {
+                    _tags = KernelTypes.Data.Cases(DataTypes.Def(t)).ToDictionary(c => "$is." + CaseName(c).Substring(3), c => KernelTypes.Data.TagOf(c));
+                    of.Add($"({map}[o] == null || {E(MathTypes.IsCase(Sel(map, new MVar("o")), t), InProcedure)})");
+                    _tags = null;
+                }
+                var where = of.Count > 0 ? $" where (forall o: Ref :: {{ {map}[o] }} {string.Join(" && ", of)})" : "";
                 Line($"var {map}: [Ref]{TypeOf(t)}{where};");
             }
             // (each object's ownership tree's root)
@@ -1228,8 +1326,14 @@ namespace CsVerify.Verifier.Boogie
             }
         }
 
-        private static string FieldParams(IEnumerable<string> fields, IEnumerable<ISymbol> symbols) =>
-            string.Join("", fields.Select(x => $", h{x}: [Ref]{TypeOf(FieldType(symbols.First(s => FieldMap(s) == x)))}"));
+        private string FieldParams(IEnumerable<string> fields, IEnumerable<ISymbol> symbols) =>
+            string.Join("", fields.Select(x => $", h{x}: {MapType(x, symbols)}"));
+
+        /// <summary>A field's map's type, or a collection model's.</summary>
+        private string MapType(string map, IEnumerable<ISymbol> symbols) =>
+            _modelTypes.TryGetValue(map, out var model) ? model : "[Ref]" + TypeOf(FieldType(symbols.First(s => FieldMap(s) == map)));
+
+        private readonly Dictionary<string, string> _modelTypes = new Dictionary<string, string>();
 
         /// <summary>An array's elements, as an argument: a parameter's own, or read from the map.</summary>
         private string Elements(string map, MExpr array, Context cx) =>
@@ -1268,9 +1372,11 @@ namespace CsVerify.Verifier.Boogie
             // its postconditions, of every snapshot, where its precondition's facts hold (those that read no memory: an
             // axiom is about every state)
             var cx = new Context { Result = app };
-            var pre = p.Requires.Where(r => !ReadsMemory(r.Expr)).Select(r => E(r.Expr, cx)).DefaultIfEmpty("true");
+            // (one that may throw: within its domain; where that reads memory, no state's fact, and none is stated)
+            var domain = p.Ensures.Where(e => e.Domain).Select(e => e.Expr).ToList();
+            var pre = p.Requires.Select(r => r.Expr).Where(r => !ReadsMemory(r)).Concat(domain).Select(r => E(r, cx)).DefaultIfEmpty("true");
             // (conjunct by conjunct: those of them that read no memory)
-            foreach (var e in p.Ensures.SelectMany(e => e.Expr.Conjuncts()).Where(e => !ReadsMemory(e)))
+            foreach (var e in p.Ensures.Where(e => !e.Domain && !domain.Any(ReadsMemory)).SelectMany(e => e.Expr.Conjuncts()).Where(e => !ReadsMemory(e)))
             {
                 Line($"axiom (forall s: int{ps} :: {{ {app} }} {string.Join(" && ", pre)} ==> {E(e, cx)});");
             }
@@ -1384,9 +1490,11 @@ namespace CsVerify.Verifier.Boogie
             {
                 return;
             }
-            foreach (var e in p.Ensures)
+            // (one that may throw promises them where it doesn't, its domain: where it returns)
+            var within = string.Join(" && ", new[] { guard }.Concat(p.Ensures.Where(e => e.Domain).Select(e => E(e.Expr, cx))));
+            foreach (var e in p.Ensures.Where(e => !e.Domain))
             {
-                Line($"axiom (forall {bound} :: {{ {FunctionAt("ly", name, memoryArgs, args)} }} {guard} ==> {E(e.Expr, cx)});");
+                Line($"axiom (forall {bound} :: {{ {FunctionAt("ly", name, memoryArgs, args)} }} {within} ==> {E(e.Expr, cx)});");
             }
             // (a value of data type, of arguments of their types, is of its type: as its body is checked to give)
             if (IsData(m.ReturnType))
@@ -1404,7 +1512,7 @@ namespace CsVerify.Verifier.Boogie
         private string FunctionApp(string pre, string name, List<string> fields, IMethodSymbol m) => $"{name}(ly, {string.Join(", ", ElementTypes.Select(t => pre + ElementMap(t)))}{string.Join("", fields.Select(x => ", " + pre + x))}{(m.IsStatic ? "" : ", this")}{string.Join("", m.Parameters.Select(x => ", " + Local(x)))})";
 
         private string MemoryParams(string pre, List<string> fields, IEnumerable<ISymbol> symbols) => string.Join(", ", ElementTypes.Select(t => $"{pre}{ElementMap(t)}: [Ref][int]{ElementValue(t)}"))
-                                + string.Join("", fields.Select(x => $", {pre}{x}: [Ref]{TypeOf(FieldType(symbols.First(f => FieldMap(f) == x)))}"));
+                                + string.Join("", fields.Select(x => $", {pre}{x}: {MapType(x, symbols)}"));
 
         private string FunctionAt(string layer, string name, string memoryArgs, string args) => $"{name}({layer}{Sep(memoryArgs)}{args})";
 
@@ -1519,16 +1627,9 @@ namespace CsVerify.Verifier.Boogie
             }
             foreach (var x in m.Parameters.Where(x => x.RefKind is RefKind.Ref or RefKind.Out))
             {
-                if (IsIntegral(x.Type))
+                foreach (var fact in Ranges(new MVar(Local(x)), x.Type, cx))
                 {
-                    Line($"  free ensures {E(MathTypes.InRange(new MVar(Local(x)), x.Type), cx)};");
-                }
-                if (IsStruct(x.Type))
-                {
-                    foreach (var fact in ValueFacts(Local(x), x.Type, null, cx))
-                    {
-                        Line($"  free ensures {fact};");
-                    }
+                    Line($"  free ensures {fact};");
                 }
                 if (IsRef(x.Type))
                 {
@@ -1571,14 +1672,14 @@ namespace CsVerify.Verifier.Boogie
             {
                 Line($"  free ensures {(Snapshots(e.Expr) || MentionsAny(e.Expr, p.Source.AssignedParams.Keys) ? "true" : E(e.Expr, cx))};");
             }
-            if (Returns(m) != null && IsIntegral(Returns(m)) && !p.Source.Ghost)
+            if (Returns(m) != null && !p.Source.Ghost && MathTypes.Within(new MVar("result"), Returns(m)) is MExpr within)
             {
-                Line($"  free ensures {E(MathTypes.InRange(new MVar("result"), Returns(m)), cx)};");
+                Line($"  free ensures {E(within, cx)};");
             }
-            // (a struct's or a tuple's parts: each of its type, an integer in its range, a data value one of its cases)
-            if (Returns(m) is ITypeSymbol rt && (IsStruct(rt) || IsTuple(rt)) && !p.Source.Ghost)
+            // (a struct's or a tuple's parts: each of its type, within its range, a data value one of its cases)
+            if (Returns(m) is ITypeSymbol rt && (IsStruct(rt) || IsTuple(rt) || IsNullableStruct(rt)) && !p.Source.Ghost)
             {
-                foreach (var (part, pt) in MathTypes.Parts(new MVar("result"), rt).Where(x => IsIntegral(x.type) || IsData(x.type)))
+                foreach (var (part, pt) in MathTypes.Parts(new MVar("result"), rt).Where(x => IsData(x.type) || MathTypes.Within(x.part, x.type) != null))
                 {
                     Line($"  free ensures {ByTag(MathTypes.OfType(part, pt), cx)};");
                 }
@@ -1649,13 +1750,14 @@ namespace CsVerify.Verifier.Boogie
                     Line("  var cowner: [Ref][int]Inst;");
                 }
             }
-            // (an integer variable is always in its type's range: where Boogie havocs it, at a loop head, too. A variable of
+            // (a variable of a type with a range is always within it, as a struct's parts are within theirs: where Boogie
+            // havocs it, at a loop head, too. A variable of
             // the program's of a non-nullable reference type is never null: each write to it is checked, and it's read only
             // once written; one of data type holds a value of its type)
             foreach (var l in p.Source.Locals)
             {
                 Line(l.Raw != null ? $"  var {l.Name}: {l.Raw};" :
-                     IsIntegral(l.Type) ? $"  var {l.Name}: int where {E(MathTypes.InRange(new MVar(l.Name), l.Type), cx)};" :
+                     l.Type != null && Ranges(new MVar(l.Name), l.Type, cx).ToList() is { Count: > 0 } ranges ? $"  var {l.Name}: {TypeOf(l.Type)} where {string.Join(" && ", ranges)};" :
                      l.Name.StartsWith("l$") && (IsData(l.Type) || IsGhost(l.Type) && IsData(GhostOf(l.Type))) && _caseTags != null ? $"  var {l.Name}: Ref where {ByTag(MathTypes.OfType(new MVar(l.Name), l.Type), cx)};" :
                      l.Name.StartsWith("l$") && IsNullable(l.Type) && NotNullable(l.Type) && TypeOf(l.Type) == "Ref" ? $"  var {l.Name}: Ref where {l.Name} != null;" :
                      $"  var {l.Name}: {TypeOf(l.Type)};");
@@ -1832,26 +1934,29 @@ namespace CsVerify.Verifier.Boogie
             }
         }
 
+        /// <summary>
+        /// A value of a type is within the type's range (an integer, a decimal, a DateTime's or a TimeSpan's ticks), and
+        /// so is each of its parts (MathTypes.PartsWithin).
+        /// </summary>
+        private IEnumerable<string> Ranges(MExpr v, ITypeSymbol type, Context cx)
+        {
+            if (MathTypes.Within(v, type) is MExpr within)
+            {
+                yield return E(within, cx);
+            }
+            foreach (var part in MathTypes.PartsWithin(v, type))
+            {
+                yield return E(part, cx);
+            }
+        }
+
         /// <summary>What a value from elsewhere is, of its type: a parameter's, a variable a lambda captures.</summary>
         private IEnumerable<string> ValueFacts(string local, ITypeSymbol type, IParameterSymbol x, Context cx)
         {
             var name = E(new MVar(local), cx);
-            if (IsIntegral(type))
+            foreach (var range in Ranges(new MVar(local), type, cx))
             {
-                yield return E(MathTypes.InRange(new MVar(local), type), cx);
-            }
-            // (a DateTime's or a TimeSpan's ticks: within its range)
-            if (IsOpaqueTicks(type) && MathTypes.OfType(new MVar(local), type) is MExpr ticks)
-            {
-                yield return E(ticks, cx);
-            }
-            // (a struct's integer fields, at any depth: each in its type's range)
-            if (IsStruct(type))
-            {
-                foreach (var (part, pt) in MathTypes.Parts(new MVar(local), type).Where(x => IsIntegral(x.type)))
-                {
-                    yield return E(MathTypes.InRange(part, pt), cx);
-                }
+                yield return range;
             }
             // (a span from elsewhere: its cells some array's, within its length)
             if (IsSpan(type))

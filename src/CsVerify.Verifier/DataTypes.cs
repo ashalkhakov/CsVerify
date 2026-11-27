@@ -8,7 +8,8 @@ namespace CsVerify.Verifier
 {
     /// <summary>
     /// Positional records as algebraic data types. A data record is a record class whose whole state is
-    /// its positional properties: a value is its constructor applied to them. A hierarchy is closed (its cases are
+    /// its positional properties (and, of an abstract base, the properties its constructor stores its parameters in):
+    /// a value is its constructor applied to its arguments. A hierarchy is closed (its cases are
     /// known) when the abstract root cannot be derived from outside this compilation: every constructor is private,
     /// or the type is not visible outside the assembly. Each case gets a tag, so type tests and <c>switch</c> are
     /// case analysis. A generic record is one data type for all its instantiations: tags, constructors and fields
@@ -75,10 +76,16 @@ namespace CsVerify.Verifier
                 }
                 switch (m)
                 {
-                    // every field is the backing field of a positional property, or of a case's init property
-                    case IFieldSymbol fd when !(fd.AssociatedSymbol is IPropertySymbol p && (IsPositional(p) || t.IsSealed && IsInitField(p))): return false;
-                    // an explicit constructor may only be an abstract root's empty, parameterless one
+                    // every field is the backing field of a positional property, of a case's init property, or of a
+                    // property an abstract base's constructor stores a parameter in
+                    case IFieldSymbol fd when !(fd.AssociatedSymbol is IPropertySymbol p && (IsPositional(p) || t.IsSealed && IsInitField(p) || IsStored(p))): return false;
+                    // an explicit constructor may only be an abstract record's: an empty, parameterless one, or one that
+                    // only stores its parameters
                     case IMethodSymbol c when c.MethodKind == MethodKind.Constructor && !IsPrimary(c):
+                        if (Stored(t) != null)
+                        {
+                            break;
+                        }
                         if (!t.IsAbstract || c.Parameters.Length > 0 ||
                             c.DeclaringSyntaxReferences.Any(r => r.GetSyntax() is ConstructorDeclarationSyntax cd &&
                                 ((cd.Body?.Statements.Count ?? 0) > 0 || cd.ExpressionBody != null || cd.Initializer != null)))
@@ -102,8 +109,87 @@ namespace CsVerify.Verifier
             !p.IsStatic && !IsPositional(p) && p.GetMethod != null && p.SetMethod is { IsInitOnly: true } && p.DeclaringSyntaxReferences.Length > 0 &&
             p.DeclaringSyntaxReferences.All(r => r.GetSyntax() is PropertyDeclarationSyntax { AccessorList: { } al } && al.Accessors.All(a => a.Body == null && a.ExpressionBody == null));
 
-        /// <summary>A data value's field: a positional property, or a case's init property.</summary>
-        public static bool IsDataField(IPropertySymbol p) => IsPositional(p) || IsInitField(p) && p.ContainingType.IsSealed;
+        /// <summary>A data value's field: a positional property, a case's init property, or one an abstract base's constructor stores a parameter in.</summary>
+        public static bool IsDataField(IPropertySymbol p) => IsPositional(p) || IsInitField(p) && p.ContainingType.IsSealed || IsStored(p);
+
+        private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<INamedTypeSymbol, StoredOf> _stored =
+            new System.Runtime.CompilerServices.ConditionalWeakTable<INamedTypeSymbol, StoredOf>();
+
+        private sealed class StoredOf
+        {
+            public Dictionary<IPropertySymbol, IParameterSymbol> Parameters;
+        }
+
+        /// <summary>
+        /// An abstract record's constructor that only stores its parameters, each in a get-only property
+        /// (private protected Command(DateTime now) => Now = now;): the parameter each property holds, as a primary
+        /// constructor's positional properties hold theirs; null where the record has no such constructor.
+        /// </summary>
+        public static IReadOnlyDictionary<IPropertySymbol, IParameterSymbol> Stored(INamedTypeSymbol t) =>
+            Def(t) is INamedTypeSymbol d ? _stored.GetValue(d, x => new StoredOf { Parameters = SpecSymbols.StoredParameters(x) }).Parameters : null;
+
+        /// <summary>A property an abstract record's constructor stores a parameter in (Stored).</summary>
+        public static bool IsStored(IPropertySymbol p) => Stored(p.ContainingType)?.ContainsKey(p.OriginalDefinition) == true;
+
+        /// <summary>
+        /// The constructor a record's values are built by: its primary one (the implicit parameterless one, of a record
+        /// without a parameter list), or the one that stores its parameters.
+        /// </summary>
+        public static IMethodSymbol Constructor(INamedTypeSymbol t) =>
+            Stored(t) != null ? Def(t).InstanceConstructors.First(c => !c.IsImplicitlyDeclared) : PrimaryConstructor(t);
+
+        /// <summary>
+        /// The parameter of the record's constructor that a field holds as it is given: its own positional or stored
+        /// property's, or a base's field's where the record's header hands the base that parameter and nothing more;
+        /// null where the field's value is computed.
+        /// </summary>
+        public static IParameterSymbol Held(INamedTypeSymbol c, IPropertySymbol field)
+        {
+            c = Def(c);
+            field = field.OriginalDefinition;
+            if (!(Constructor(c) is IMethodSymbol ctor))
+            {
+                return null;
+            }
+            if (SymbolEqualityComparer.Default.Equals(field.ContainingType, c))
+            {
+                return Stored(c) is { } stored && stored.TryGetValue(field, out var from) ? from
+                    : IsPositional(field) ? ctor.Parameters.FirstOrDefault(p => p.Name == field.Name) : null;
+            }
+            return Def(c.BaseType) is INamedTypeSymbol b && Held(b, field) is IParameterSymbol handed && BaseArgument(c, handed) is IdentifierNameSyntax id
+                ? ctor.Parameters.FirstOrDefault(p => p.Name == id.Identifier.ValueText)
+                : null;
+        }
+
+        /// <summary>The argument a record's header gives a parameter of its base's constructor (Ind(Fact Prev) : Fact(Prev.N + 1)); null if none.</summary>
+        public static ExpressionSyntax BaseArgument(INamedTypeSymbol c, IParameterSymbol parameter)
+        {
+            var call = Def(c).DeclaringSyntaxReferences.Select(r => r.GetSyntax()).OfType<RecordDeclarationSyntax>()
+                .Select(d => d.BaseList?.Types.OfType<PrimaryConstructorBaseTypeSyntax>().FirstOrDefault()).FirstOrDefault(x => x != null);
+            if (call == null)
+            {
+                return null;
+            }
+            var args = call.ArgumentList.Arguments;
+            if (args.FirstOrDefault(a => a.NameColon?.Name.Identifier.ValueText == parameter.Name) is ArgumentSyntax named)
+            {
+                return named.Expression;
+            }
+            return parameter.Ordinal < args.Count && args[parameter.Ordinal].NameColon == null ? args[parameter.Ordinal].Expression : null;
+        }
+
+        /// <summary>
+        /// The property a constructor's parameter is read back from: the one of its name where that holds it (Held), else
+        /// any field that holds it; null where the parameter is kept nowhere as it is given (D(int N) : A(N + 1)).
+        /// </summary>
+        public IPropertySymbol Holder(INamedTypeSymbol c, IParameterSymbol parameter)
+        {
+            if (PositionalProperty(c, parameter.Ordinal) is IPropertySymbol named && SymbolEqualityComparer.Default.Equals(Held(c, named), parameter))
+            {
+                return named;
+            }
+            return Fields(c).FirstOrDefault(f => !IsInitField(f) && SymbolEqualityComparer.Default.Equals(Held(c, f), parameter));
+        }
 
         /// <summary>A case's init properties, as declared.</summary>
         public static IEnumerable<IPropertySymbol> InitFields(INamedTypeSymbol t) =>
@@ -142,14 +228,14 @@ namespace CsVerify.Verifier
             Def(t).InstanceConstructors.FirstOrDefault(c => c.IsImplicitlyDeclared && c.Parameters.Length == 0);
 
         /// <summary>
-        /// The positional properties (of the definition), its bases' first, then a case's init properties: the arguments
-        /// of its value constructor.
+        /// A value's fields: the positional properties (of the definition) and those a base's constructor stores, its
+        /// bases' first, then a case's init properties.
         /// </summary>
         public IReadOnlyList<IPropertySymbol> Fields(INamedTypeSymbol t)
         {
             t = Def(t);
             var result = IsData(t.BaseType) ? Fields(Def(t.BaseType)).ToList() : new List<IPropertySymbol>();
-            result.AddRange(t.GetMembers().OfType<IPropertySymbol>().Where(p => !p.IsStatic && IsPositional(p)));
+            result.AddRange(t.GetMembers().OfType<IPropertySymbol>().Where(p => !p.IsStatic && (IsPositional(p) || IsStored(p))));
             if (t.IsSealed)
             {
                 result.AddRange(InitFields(t));
@@ -161,7 +247,12 @@ namespace CsVerify.Verifier
         public static IPropertySymbol PositionalProperty(INamedTypeSymbol t, int ordinal)
         {
             t = Def(t);
-            var name = PrimaryConstructor(t)?.Parameters[ordinal].Name;
+            // (a record with no primary constructor has no positional property)
+            if (!(PrimaryConstructor(t) is { } primary) || ordinal >= primary.Parameters.Length)
+            {
+                return null;
+            }
+            var name = primary.Parameters[ordinal].Name;
             for (var s = t; s != null; s = Def(s.BaseType))
             {
                 if (s.GetMembers(name).OfType<IPropertySymbol>().FirstOrDefault() is IPropertySymbol p)
@@ -283,6 +374,8 @@ namespace CsVerify.Verifier
         private bool ComparesAsModeled(ITypeSymbol ft, HashSet<string> seen) =>
             ft.SpecialType == SpecialType.System_Boolean || ft.TypeKind == TypeKind.Enum || ft is IArrayTypeSymbol ||
             ft.SpecialType >= SpecialType.System_Char && ft.SpecialType <= SpecialType.System_UInt64 ||
+            // (a DateTime's or a TimeSpan's ticks, a Guid: the int the kernel keeps for each is what its Equals compares)
+            Boogie.KernelTypes.IsOpaqueTicks(ft) || Boogie.KernelTypes.IsOpaqueId(ft) ||
             ft is INamedTypeSymbol n && IsData(n) && HasValueEquality(n, seen);
 
         /// <summary>Type parameter to type argument, for a type and the generic types it is nested in.</summary>

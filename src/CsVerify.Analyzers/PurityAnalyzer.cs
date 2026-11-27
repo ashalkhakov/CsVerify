@@ -116,8 +116,9 @@ namespace CsVerify.Analyzers
             {
                 return;
             }
+            // (or a method of one expression with no effects: a function without saying so)
             if (!SpecSymbols.IsPureCallee(op.TargetMethod) && SpecSymbols.GenericLaw(op, out _) == null && !ContractStubs.For(op.SemanticModel.Compilation).IsPureMember(op.TargetMethod) &&
-                !EntryRead(op.TargetMethod))
+                !EntryRead(op.TargetMethod) && !ExpressionFunctions.Inferred(op.TargetMethod, op.SemanticModel.Compilation))
             {
                 Report(context, op, $"call to '{op.TargetMethod.Name}', which is not a lemma or [Pure]");
             }
@@ -139,6 +140,19 @@ namespace CsVerify.Analyzers
             if (op is IObjectCreationOperation oc && oc.Initializer == null && SpecSymbols.IsValueRecord(oc.Type))
             {
                 return;
+            }
+            // an exception made to be thrown: where a [Pure] member throws it has no value, so nothing sees the object
+            for (var parent = op.Parent; parent != null; parent = parent.Parent)
+            {
+                if (parent is IThrowOperation)
+                {
+                    return;
+                }
+                if (!(parent is IConversionOperation || parent is IParenthesizedOperation || parent is IArgumentOperation || parent is IObjectCreationOperation ||
+                      parent is IInterpolatedStringOperation || parent is IInterpolationOperation))
+                {
+                    break;
+                }
             }
             Report(context, op, $"allocation '{op.Syntax}'");
         }

@@ -35,8 +35,12 @@ public sealed class Other { public int X; public void Bump() { X++; } }
             // a dictionary holding Counters can run none of their code: their fields stay as they were
             const string dict = "System.Collections.Generic.Dictionary<string, Counter>";
             Assert.Empty(Errors("M", "static void M(" + dict + " d, Counter c) { int old = c.Count; d[\"k\"] = c; d.Remove(\"j\"); Spec.Assert(c.Count == old); }"));
-            // a key whose Equals is user code: anything it writes may have changed
+            // a key whose Equals is user code that writes: anything may have changed
             Assert.Equal(new[] { "CSV1004" }, Harness.Verify(Classes +
+                "public sealed class Key { public static bool Asked; public override bool Equals(object o) { Asked = true; return false; } public override int GetHashCode() => 0; } " +
+                "public static class C { static void M(System.Collections.Generic.Dictionary<Key, int> d, Key k, Counter c) { int old = c.Count; d[k] = 1; Spec.Assert(c.Count == old); } }").Errors("M"));
+            // one whose Equals and GetHashCode write nothing: nothing has
+            Assert.Empty(Harness.Verify(Classes +
                 "public sealed class Key { public override bool Equals(object o) { return false; } public override int GetHashCode() => 0; } " +
                 "public static class C { static void M(System.Collections.Generic.Dictionary<Key, int> d, Key k, Counter c) { int old = c.Count; d[k] = 1; Spec.Assert(c.Count == old); } }").Errors("M"));
             // a delegate may do anything

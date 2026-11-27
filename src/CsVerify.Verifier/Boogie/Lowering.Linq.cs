@@ -1009,7 +1009,6 @@ namespace CsVerify.Verifier.Boogie
                 var d = Expr(args[1].Value);
                 var key = FuncKey(args[1].Parameter.Type);
                 _p.AddDelegateKey(key);
-                _p.CallsDelegates = true;
                 var (lambda, quiet, free) = Handed(args[1]);
                 if (!free)
                 {
@@ -1022,6 +1021,7 @@ namespace CsVerify.Verifier.Boogie
                 if (!quiet)
                 {
                     _p.HavocsAll = true;
+                    _p.CallsDelegates = true;
                     Emit(new KHavocAll { Unless = new KOp("$nochange", d) });
                 }
                 ForgetCaptured();
@@ -2157,6 +2157,16 @@ namespace CsVerify.Verifier.Boogie
             }
         }
 
+        /// <summary>A collection's model by name, declared with the collection's others.</summary>
+        private string Model(string model, ITypeSymbol collection)
+        {
+            foreach (var m in ModelsOf((INamedTypeSymbol)collection))
+            {
+                _p.Models[m.Name] = m;
+            }
+            return ModelOf(model, (INamedTypeSymbol)collection).Name;
+        }
+
         private KExpr LinqCore(IInvocationOperation call, string name, ITypeSymbol resultType)
         {
             var m = call.TargetMethod;
@@ -2173,10 +2183,7 @@ namespace CsVerify.Verifier.Boogie
                     DistinctRows(args[0].Value, s, at);
                     DistinctKeys(args[0].Value, s, at);
                     var t = Declare("t$" + _temps++, callType);
-                    Emit(KNew.Of(t, callType, s.Length));
-                    Emit(KRow.Of(
-                        Elements(callType),
-                        new KVar(t),
+                    Emit(KNew.Of(t, callType, s.Length, cells:
                         MapLambda("j$", "int", Ite(Between(KLit.Zero, new KVar("j$"), s.Length), s.Elem.At(new KVar("j$")), new KLit(Default(s.Type) is KLit d ? d.Text : "0")))));
                     return new KVar(t);
                 }
@@ -2185,13 +2192,28 @@ namespace CsVerify.Verifier.Boogie
                     var s = Sequence(args[0].Value);
                     DistinctRows(args[0].Value, s, at);
                     DistinctKeys(args[0].Value, s, at);
-                    var ctor = ((INamedTypeSymbol)callType).Constructors.FirstOrDefault(c => c.Parameters.Length == 0) ?? throw new NotTranslated("a List without its constructor");
-                    var list = Invoke(ctor, null, new IArgumentOperation[0], at, null);
                     var t = Declare("t$" + _temps++, callType);
-                    Emit(KAssign.Of(t, list));
-                    var items = ModelOf("Items", (INamedTypeSymbol)callType);
-                    Emit(KRow.Of(items.Name, new KVar(t), MapLambda("j$", "int", s.Elem.At(new KVar("j$")))));
-                    Emit(KRow.Of(SizeMap, new KVar(t), s.Length));
+                    Emit(KNewCollection.Of(t, (Model("Items", callType), MapLambda("j$", "int", s.Elem.At(new KVar("j$")))), (SizeMap, s.Length)));
+                    return new KVar(t);
+                }
+                // (a new set: its members are what some element is; as many as the elements where no two are the
+                // same, else fewer, and some where there are any)
+                case "ToHashSet" when args.Count == 1 && _inDatabase == 0 && CollectionKind(callType) == "HashSet" && IsCollection(callType):
+                {
+                    var s = Sequence(args[0].Value);
+                    var elem = ((INamedTypeSymbol)callType).TypeArguments[0];
+                    var n = new KVar(LinqMap("int"));
+                    ShapeFact(AndAlso(Le(KLit.Zero, n), Le(n, s.Length)), at);
+                    ShapeFact(Implies(Gt(s.Length, KLit.Zero), Gt(n, KLit.Zero)), at);
+                    var i2 = Atom();
+                    var j = Atom();
+                    ShapeFact(Implies(Over(KLit.Zero, s.Length, i2, Over(KLit.Zero, i2, j, Ne(Keyed(s.Elem.At(j), elem), Keyed(s.Elem.At(i2), elem)))), Eq(n, s.Length)), at);
+                    var t = Declare("t$" + _temps++, callType);
+                    var i = Atom();
+                    Emit(KNewCollection.Of(
+                        t,
+                        (Model("Members", callType), MapLambda("k$", BoogieOf(Kind(elem)), Over(KLit.Zero, s.Length, i, Eq(Keyed(s.Elem.At(i), elem), new KVar("k$")), forall: false))),
+                        (SizeMap, n)));
                     return new KVar(t);
                 }
                 case "Count" or "LongCount" when args.Count <= 2:
@@ -2338,6 +2360,21 @@ namespace CsVerify.Verifier.Boogie
                     var (lo, hi) = Range(callType.SpecialType);
                     var j = Atom();
                     CheckPrecondition(Over(KLit.Zero, Plus(s.Length, KLit.One), j, AndAlso(Le(Number(lo), Sel(acc, j)), Le(Sel(acc, j), Number(hi)))), "every partial sum in range", at, name);
+                    return LinqValue(Sel(acc, s.Length), callType, at);
+                }
+                // (decimals: added in order from 0, each sum rounded where it isn't representable, as decimal + is;
+                // what it gives is a decimal, so one past MaxValue, which throws, isn't given)
+                case "Sum" when args.Count <= 2 && IsDecimal(callType):
+                {
+                    var s = MappedSequence(args, call, callType);
+                    if (!IsDecimal(s.Type))
+                    {
+                        throw new NotTranslated("LINQ's Sum of " + s.Type);
+                    }
+                    var acc = new KVar(LinqMap("[int]int"));
+                    LinqFact(Eq(Sel(acc, KLit.Zero), KLit.Zero), at);
+                    var j = Atom();
+                    LinqFact(Over(KLit.Zero, s.Length, j, Eq(Sel(acc, Plus(j, KLit.One)), new KOp("$dround", Plus(Sel(acc, j), s.Elem.At(j))))), at);
                     return LinqValue(Sel(acc, s.Length), callType, at);
                 }
                 // (floating point: IEEE, added in order from 0.0, rounded at each step, as .NET adds them)

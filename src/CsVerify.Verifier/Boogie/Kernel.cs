@@ -631,13 +631,32 @@ namespace CsVerify.Verifier.Boogie
         public ITypeSymbol ArrayType;
         public KExpr Size;
         public KExpr[] Elements;
+        /// <summary>Every cell, as a map from its index (a query's copy, ToArray's); null: the initializer's, the rest the default.</summary>
+        public KExpr Cells;
 
-        public static KNew Of(string var, ITypeSymbol arrayType, KExpr size, KExpr[] elements = null) => new KNew
+        public static KNew Of(string var, ITypeSymbol arrayType, KExpr size, KExpr[] elements = null, KExpr cells = null) => new KNew
         {
             Var = var,
             ArrayType = arrayType,
             Size = size,
             Elements = elements,
+            Cells = cells,
+        };
+    }
+
+    /// <summary>
+    /// A new collection made with what it holds (a query's copy, ToList's or ToHashSet's): an object not allocated
+    /// before, each of its models' rows a specification.
+    /// </summary>
+    internal sealed class KNewCollection : KStmt
+    {
+        public string Var;
+        public (string map, KExpr value)[] Rows;
+
+        public static KNewCollection Of(string var, params (string map, KExpr value)[] rows) => new KNewCollection
+        {
+            Var = var,
+            Rows = rows,
         };
     }
 
@@ -756,6 +775,16 @@ namespace CsVerify.Verifier.Boogie
         };
     }
 
+    /// <summary>
+    /// this, handed over in its constructor (an argument, a receiver, a value stored): it must be built already, and is
+    /// an object like any other from here on (Checks.Built).
+    /// </summary>
+    internal sealed class KBuilt : KStmt
+    {
+        public ITypeSymbol Type;
+        public SyntaxNode At;
+    }
+
     /// <summary>A call of code whose contract isn't known (IDisposable.Dispose, as using calls it): it may change anything.</summary>
     internal sealed class KHavocAll : KStmt
     {
@@ -808,6 +837,8 @@ namespace CsVerify.Verifier.Boogie
     {
         public KExpr Value, Test;
         public SyntaxNode At;
+        /// <summary>A throw expression's (its test false): where a function's body reaches it is outside the function's domain.</summary>
+        public bool Domain;
     }
 
     internal sealed class KAssert : KStmt
@@ -1018,6 +1049,8 @@ namespace CsVerify.Verifier.Boogie
         /// <summary>An instance method or constructor: its receiver is the parameter this.</summary>
         public bool HasThis;
         public bool IsCtor;
+        /// <summary>A constructor that hands this over (KBuilt): Checks.BuiltFlag says whether it has, at each point.</summary>
+        public bool ThisEscapes;
         /// <summary>A list's constructor, from its stub: a procedure that returns the new list.</summary>
         public bool ListCtor;
         /// <summary>A struct's constructor: it gives the value it makes (this, a value it writes, its default to begin with).</summary>
@@ -1061,6 +1094,11 @@ namespace CsVerify.Verifier.Boogie
         public KExpr ReadsFrame;
         /// <summary>A [Pure] or [GhostFunction] method of one expression: a function too, of this body.</summary>
         public KExpr FunctionBody;
+        /// <summary>
+        /// A function whose body may throw: defined where it doesn't (its domain, "$domain" of its body). A specification
+        /// that reads it must be there (CSV1012); its procedure, where it returns, was.
+        /// </summary>
+        public bool Partial;
         /// <summary>An override that states its own precondition: it, and each base's, which must imply it (CSV1018).</summary>
         public List<KExpr> OwnRequires = new List<KExpr>();
         public List<(IMethodSymbol method, List<KExpr> requires)> BaseRequires = new List<(IMethodSymbol, List<KExpr>)>();

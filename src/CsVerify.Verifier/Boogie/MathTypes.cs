@@ -24,6 +24,15 @@ namespace CsVerify.Verifier.Boogie
         /// <summary>A struct's or a tuple's parts, at any depth (a struct's struct's fields too), each with its type.</summary>
         public static IEnumerable<(MExpr part, ITypeSymbol type)> Parts(MExpr v, ITypeSymbol t, int depth = 0)
         {
+            // (a nullable struct's: its value's, whatever it is where it has none)
+            if (depth <= 8 && IsNullableStruct(t))
+            {
+                foreach (var inner in Parts(new MOp("$nv." + NullableKey(t), v), Underlying(t), depth + 1))
+                {
+                    yield return inner;
+                }
+                yield break;
+            }
             if (depth > 8 || !(IsStruct(t) || IsTuple(t)))
             {
                 yield break;
@@ -114,6 +123,47 @@ namespace CsVerify.Verifier.Boogie
             : t?.ToDisplayString() == "System.DateTime" ? AndAlso(Le(MLit.Zero, v), Le(v, Number(Lowering.MaxTicks)))
             : t?.ToDisplayString() == "System.TimeSpan" ? AndAlso(Le(Number(long.MinValue), v), Le(v, Number(long.MaxValue))) : null;
 
+        /// <summary>v is within its type's range: an integer's, a decimal's, a DateTime's or a TimeSpan's ticks'; null where t has none.</summary>
+        public static MExpr Within(MExpr v, ITypeSymbol t) => IsGhost(t) || IsData(t) ? null : OfType(v, t);
+
+        /// <summary>
+        /// Each part of v, a value of t, within its type's range, at any depth: a struct's fields, a tuple's items; a
+        /// nullable struct's value's, where it has one.
+        /// </summary>
+        public static IEnumerable<MExpr> PartsWithin(MExpr v, ITypeSymbol t, int depth = 0)
+        {
+            if (depth > 8)
+            {
+                yield break;
+            }
+            if (IsNullableStruct(t))
+            {
+                var inner = PartsWithin(new MOp("$nv." + NullableKey(t), v), Underlying(t), depth + 1).ToList();
+                if (inner.Count > 0)
+                {
+                    yield return Implies(NotNull(v), AndAll(inner));
+                }
+                yield break;
+            }
+            if (!(IsStruct(t) || IsTuple(t)))
+            {
+                yield break;
+            }
+            var parts = IsTuple(t) ? PartsOf(t) : StructFields(t).Select(f => f.Type).ToList();
+            for (int k = 0; k < parts.Count; k++)
+            {
+                var item = TupleItem(v, t, k);
+                if (Within(item, parts[k]) is MExpr within)
+                {
+                    yield return within;
+                }
+                foreach (var inner in PartsWithin(item, parts[k], depth + 1))
+                {
+                    yield return inner;
+                }
+            }
+        }
+
         /// <summary>A value as a box (where generic code takes it), and back.</summary>
         public static MExpr Box(MExpr v, ITypeSymbol def, ITypeSymbol actual) =>
             IsTypeParameter(def) && !IsTypeParameter(actual) && actual != null ? new MOp("$box." + BoxKind(actual), v) : v;
@@ -129,9 +179,9 @@ namespace CsVerify.Verifier.Boogie
             {
                 return Ite(new MOp("$arr", x), Length(x), Ite(new MOp("$coll", x), Sel(SizeMap, x), new MOp("$ocount", x, new MOp("$state"))));
             }
-            var array = (IArrayTypeSymbol)KernelTypes.Compilation.CreateArrayTypeSymbol(element);
-            return Ite(new MOp("$arr", x), Sel(Elements(array), x, index),
-                Ite(new MOp("$coll", x), Sel(ModelOf("Items", list).Name, x, index), new MOp("$oitem." + kind, x, index, new MOp("$state"))));
+            var other = Ite(new MOp("$coll", x), Sel(ModelOf("Items", list).Name, x, index), new MOp("$oitem." + kind, x, index, new MOp("$state")));
+            // (an array of Guids has no element map: what it holds is the state's, as any other object's)
+            return kind == OpaqueKind ? other : Ite(new MOp("$arr", x), Sel(Elements((IArrayTypeSymbol)KernelTypes.Compilation.CreateArrayTypeSymbol(element)), x, index), other);
         }
     }
 }

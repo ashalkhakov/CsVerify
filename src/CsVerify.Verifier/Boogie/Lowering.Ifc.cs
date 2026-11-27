@@ -80,7 +80,9 @@ namespace CsVerify.Verifier.Boogie
         private (bool, KExpr) IfcCall(IInvocationOperation call)
         {
             var m = call.TargetMethod;
-            if (call.Instance == null || !IsListInterface(m.ContainingType) || !(m.Name is "Add" or "Insert" or "Remove" or "RemoveAt" or "Clear"))
+            // (a set's Contains through its interface: a HashSet's where it is one)
+            bool set = IsSetInterface(m.ContainingType) && m.Name == "Contains" && m.Parameters.Length == 1;
+            if (call.Instance == null || !(set || IsListInterface(m.ContainingType) && m.Name is "Add" or "Insert" or "Remove" or "RemoveAt" or "Clear"))
             {
                 return (false, null);
             }
@@ -91,11 +93,15 @@ namespace CsVerify.Verifier.Boogie
                 return (false, null);
             }
             // (the program's own implementations: a call through the interface runs its code)
-            if (new[] { "IList", "ICollection" }.Any(n => KernelTypes.Compilation.GetTypeByMetadataName($"System.Collections.Generic.{n}`1") is INamedTypeSymbol d && ImplementedHere(d)))
+            if ((set ? new[] { "ISet", "IReadOnlySet" } : new[] { "IList", "ICollection" }).Any(n => KernelTypes.Compilation.GetTypeByMetadataName($"System.Collections.Generic.{n}`1") is INamedTypeSymbol d && ImplementedHere(d)))
             {
                 return (false, null);
             }
-            var list = KernelTypes.Compilation.GetTypeByMetadataName("System.Collections.Generic.List`1").Construct(element);
+            var list = KernelTypes.Compilation.GetTypeByMetadataName(set ? "System.Collections.Generic.HashSet`1" : "System.Collections.Generic.List`1").Construct(element);
+            if (!IsCollection(list))
+            {
+                return (false, null);
+            }
             var target = list.GetMembers(m.Name).OfType<IMethodSymbol>().FirstOrDefault(x => x.Parameters.Length == m.Parameters.Length &&
                 x.Parameters.Zip(m.Parameters, (a, b) => SymbolEqualityComparer.Default.Equals(a.Type, b.Type)).All(s => s));
             if (target == null)
@@ -106,8 +112,8 @@ namespace CsVerify.Verifier.Boogie
             Emit(KCheck.Of(NotNull(receiver), "CSV1013", call.Instance.Syntax, $"'{call.Instance.Syntax}' might be null in '{call.Syntax}'"));
             KExpr value = null;
             string result = m.ReturnsVoid ? null : Declare("t$" + _temps++, m.ReturnType);
-            // (an array: its size is fixed)
-            var isArray = If(new KOp("$arr", receiver));
+            // (an array: its size is fixed; no array is a set)
+            var isArray = If(set ? KLit.False : new KOp("$arr", receiver));
             FixedSize();
             Else(isArray);
             // (a List: its own member)
@@ -169,19 +175,22 @@ namespace CsVerify.Verifier.Boogie
             var v = Declare("t$" + _temps++, element);
             Emit(KAssign.Of(v, value));
             Emit(KCheck.Of(NotNull(receiver), "CSV1013", pr.Instance.Syntax, $"'{pr.Instance.Syntax}' might be null in '{pr.Syntax}'"));
-            var array = KernelTypes.Compilation.CreateArrayTypeSymbol(element);
-            // (an array: its element)
-            var isArray = If(new KOp("$arr", receiver));
-            HeldCell(receiver, pr.Syntax, write: true);
-            Emit(new KStore
+            // (an array: its element; one of Guids has no element map, and is as any other collection)
+            bool cells = Kind(element) != OpaqueKind;
+            var isArray = If(cells ? new KOp("$arr", receiver) : KLit.False);
+            if (cells)
             {
-                Array = receiver,
-                Index = index,
-                Value = new KVar(v),
-                ArrayType = array,
-                At = pr.Syntax,
-                ArrayAt = pr.Instance.Syntax,
-            });
+                HeldCell(receiver, pr.Syntax, write: true);
+                Emit(new KStore
+                {
+                    Array = receiver,
+                    Index = index,
+                    Value = new KVar(v),
+                    ArrayType = KernelTypes.Compilation.CreateArrayTypeSymbol(element),
+                    At = pr.Syntax,
+                    ArrayAt = pr.Instance.Syntax,
+                });
+            }
             Else(isArray);
             // (a List: its setter)
             var isList = If(new KOp("$coll", receiver));

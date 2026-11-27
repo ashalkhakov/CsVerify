@@ -255,8 +255,13 @@ namespace CsVerify.Tests
             "static class C { " + LemmaAttrs + "static void L(int[] a) { a[0] = 1; } }"));
 
         [Fact]
-        public void PureCallingImpureCode_IsReported() => Assert.Equal(new[] { "CSV0013" }, Harness.Analyze(
-            "static class C { static int G() => 1; [Pure] static int F() => G(); }"));
+        public void PureCallingImpureCode_IsReported()
+        {
+            Assert.Equal(new[] { "CSV0013" }, Harness.Analyze("static class C { static int n; static int G() => n++; [Pure] static int F() => G(); }"));
+            Assert.Equal(new[] { "CSV0013" }, Harness.Analyze("static class C { static int G() { int one = 1; return one; } [Pure] static int F() => G(); }"));
+            // (a method of one expression with no effects is a function without saying so)
+            Assert.Empty(Harness.Analyze("static class C { static int G() => 1; [Pure] static int F() => G(); }"));
+        }
 
         [Fact]
         public void PureAllocating_IsReported() => Assert.Equal(new[] { "CSV0013" }, Harness.Analyze(

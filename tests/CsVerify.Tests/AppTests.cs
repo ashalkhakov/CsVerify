@@ -24,12 +24,21 @@ public sealed class Fine
     public string D = string.Empty;
     public string? E;
     public required string F { get; set; }
+    public Mode G { get; private set; } = Mode.Off;
+    public Mode H = Modes.Idle;
 }
+public sealed record Mode(int Level) { public static readonly Mode Off = new(0); public static readonly Mode Unset = null!; }
+public static class Modes { public static readonly Mode Idle = new Mode(1); public static Mode Last = new Mode(2); }
+public sealed class Unsure { public Mode A = Mode.Unset; }
+public sealed class Mutable { public Mode A = Modes.Last; }
 public sealed class Primary(string name) { public string Name = name; }
 public static class P { public static int Read() => new Implicit().Name.Length; }");
             Assert.Equal(new[] { "CSV1014" }, r.Errors("Implicit..ctor"));
             Assert.Equal(new[] { "CSV1014" }, r.Errors("Field..ctor"));
             Assert.Equal(new[] { "CSV1014" }, r.Errors("Missing..ctor"));
+            // (a static readonly field made by new is that object; one that isn't, or that may be assigned again, is not known)
+            Assert.Equal(new[] { "CSV1014" }, r.Errors("Unsure..ctor"));
+            Assert.Equal(new[] { "CSV1014" }, r.Errors("Mutable..ctor"));
             Assert.Null(r["Fine..ctor"]);
             Assert.Null(r["Primary..ctor"]);
         }

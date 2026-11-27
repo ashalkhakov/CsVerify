@@ -225,8 +225,14 @@ captures too, but specification arguments never run: what they lower to is left 
 choice of either way, which meet again at the `Spec` call. The specification itself is read whole, from the operation
 the source has.
 
-**Integers.** Every C# integer type is a Boogie `int` kept in its range: a parameter by a `free requires`, a result by a
-`free ensures`, a local by a `where` clause (which Boogie assumes after a loop havocs it too). A float cast to an integer in a specification must fit (CSV1012), as a divisor mustn't be zero. As
+**Integers.** Every C# integer type is a Boogie `int` kept in its range: a parameter by a `free requires`, a result
+and an `out` or `ref` parameter by a `free ensures`, a local by a `where` clause (which Boogie assumes after a loop
+havocs it too). The same holds of every type with a range (a `decimal`, a `DateTime`'s or a `TimeSpan`'s ticks), and
+of each part of a struct or a tuple at any depth: one definition (`MathTypes.Within`) says what the range is, and
+each of those places states it, as a record's member's function does of its value and its parts, and an axiom of
+each static readonly field's constant (a nullable struct's parts are its value's, where it has one). A record's
+constructor function is defined on values of its members' types, so a record made of a value whose range weren't
+known wouldn't be known to exist (CSV1014 where it is returned). A float cast to an integer in a specification must fit (CSV1012), as a divisor mustn't be zero. As
 [the semantics](semantics.md#bounded-integers) says, `+ - *`, `++`, compound assignments, unary minus and explicit
 narrowing conversions are:
 - in the default context, an `assert` that the value is in range (CSV1010);
@@ -253,7 +259,10 @@ complement bits, which Boogie's Euclidean `div` and `mod` by a power of two read
 
 **Arrays.** Dafny's encoding: an array is a `Ref`; `a.Length` is `len(a)`; `a[i]` is `$E.T[a][i]`. A read or a write
 asserts `a != null` (CSV1013) and `0 <= i && i < len(a)` (CSV1003). `new T[n]` is a reference not allocated before (`havoc`, then
-`assume !$Alloc[t]`), now allocated, of length `n`, its elements the default (or the initializer's). A non-nullable
+`assume !$Alloc[t]`), now allocated, of length `n`, its elements the default (or the initializer's): assumed of its
+row, not written, as nothing was known of the cells of an object not allocated, so making an array changes no element
+map (a `params` array made for a call leaves what a collection behind an interface holds, a value of the state, as it
+was). A non-nullable
 array parameter is asserted not null at each call's argument (CSV1014), and assumed in the callee; a non-nullable
 result is asserted where it's returned.
 
@@ -278,8 +287,9 @@ checks its sizes aren't negative (CSV1003) and fills its initializer's cells.
 which for a library's is none), and none of CsVerify's attributes: not `[Owned]`, no `[Invariant]`,
 no locks or atomics) is a `Ref`, as an array is. Each of its fields and auto-properties is a map `$F.C.f: [Ref]T`
 (Dafny's heap encoding); a static field is the map's value at `null`, the one object no reference aliases. The map
-of a field whose type has a range (an integer; a decimal; a `DateTime`'s or a `TimeSpan`'s ticks) has a `where`
-clause keeping every value in it.
+of a field whose type has a range (an integer; a decimal; a `DateTime`'s or a `TimeSpan`'s ticks), or is a struct
+with such a part (a nullable struct's value's too), has a `where` clause keeping every value in it; one of a data
+type's says each value is null or one of the type's cases, by its tag.
 - `o.f` reads `$F.C.f[o]`, and `o.f = v` writes it, each asserting `o != null` first (CSV1013; `this` needs none).
 - A field of non-nullable type is never null once its object is built: each write asserts it (CSV1014), each read
   assumes it (but `this`'s, in its constructor; and but an EF entity's reference navigation, which EF sets, to the
@@ -294,8 +304,15 @@ clause keeping every value in it.
   then its body. `new C(args)` allocates the object, sets its fields to their defaults and calls the constructor. An
   implicit constructor's initialized fields are unknown values at the call. A constructor that
   chains to `this(...)` skips the initializers and calls the other constructor on `this`, as `base(...)` is called
-  (its arguments evaluated first, branching or not). `this` may escape (`a[0] = this`, a call with it): where the
-  class has invariants or non-nullable fields, that's CSV1015, as the object isn't built yet. An object
+  (its arguments evaluated first, branching or not). `this` may be handed over (`a[0] = this`, a call with it or on it, a
+  property's accessor): whoever gets it takes it for an object of its class, so it must be built there, each
+  non-nullable field set and its invariant holding (CSV1015, naming the field). A flag, `built$`, says whether it
+  has been: from there on it is an object like any other, so a non-nullable field a call may have written is not
+  null, where it is read and where the constructor returns, and a field of an immutable class with an invariant may
+  not be written again (CSV1015), as the invariant is relied on already. An object of a derived class isn't built
+  while its base's constructor runs, where its own constructor is yet to set a non-nullable field (one with no
+  initializer, which would run first) or to establish an invariant: `this` may not leave the base's constructor
+  then (CSV1015, naming the derived class). An object
   initializer's assignments are field stores on the new object (the control-flow graph spells them out).
 - A method that runs alongside other code (`[RunsConcurrently]`, or started as a task or thread), or reads a field a
   lock guards, is checked for races (CSV1027, and warnings: `Lowering.Races`).
@@ -485,10 +502,14 @@ class of equals is an integer's or a bool's box is that box (`$eqk`), so a value
 and from integers are the integers'. A switch expression no arm of which matches throws
 `SwitchExpressionException`: CSV1022.
 
-**Nullable values.** An `int?` (a `Nullable<T>` of an integer type, `bool`, `DateTime`, `TimeSpan` or `Guid`) is a reference: `null` where it has no
+**Nullable values.** An `int?` (a `Nullable<T>` of an integer type, `bool`, `decimal`, `DateTime`, `TimeSpan`, `DateOnly` or `Guid`) is a reference: `null` where it has no
 value, `$nmk.Int32(v)` where it has `v`, one reference per value (`$nmk` and `$nv`, its value, are each other's
-inverse, `$nv` in the type's range), so the lifted `==` is the references' (a `DateTime?`'s too, which C# lifts
-from `DateTime`'s own operator). Conversions wrap (`null` and `default` are
+inverse; where the type has a range, an integer's, a `decimal`'s, a `DateTime`'s or a `TimeSpan`'s, `$nmk` is
+defined on it and `$nv` is within it), so the lifted `==` is the references' (a `DateTime?`'s too, which C# lifts
+from `DateTime`'s own operator). A nullable struct of the subset (`AccountKey?` of a `readonly record struct
+AccountKey(Guid Value)`) is one too, `$nmk.S$AccountKey(v)` of the struct's value `v`; a record struct's lifted `==`
+is both null, or neither and the two values equal as the struct's `==` has them (with the literal `null`, whether it
+has a value). Conversions wrap (`null` and `default` are
 `null`), `(int)x` and `x.Value` unwrap (CSV1013 where it may be null), `HasValue` is `!= null`, `GetValueOrDefault` an
 `if`, the lifted comparisons false where either is null, and patterns (`x is int k`, `x is null`, `x is > 0`) test the
 value where there is one. Lifted arithmetic (`x + 1`) is `null` where an operand is, else the operation on the values.
@@ -517,8 +538,14 @@ element whose integer key is least, or greatest) and `SequenceEqual` read it, th
 CSV1001 (an empty sequence has no `First`); a List's `Find`, `FindIndex`, `Exists` and `TrueForAll` of a pure lambda
 are its first match (or the default), the first match's index (or -1), `Any` and `All`; `Index` pairs each element with its
 index; `ToDictionary` is a dictionary of the library's (what's in it unknown), its definition's precondition checked
-(no key null or an earlier one's, CSV1001); `ToArray` and `ToList` copy it into a new object. A double
-`Sum` adds in order from 0.0, rounding at each step. A `foreach` over a query, or over a list interface of any
+(no key null or an earlier one's, CSV1001); `ToArray` and `ToList` copy it into a new object, and `ToHashSet` makes a
+new set whose members are what some element is (as many as the elements where no two are the same, else fewer, and
+some where there are any). Each is a reference not allocated before whose cells or models are assumed to be what it is
+made with (`KNew`'s cells, `KNewCollection`), as a new array's are: no map is written, so a copy changes nothing a
+list behind an interface holds. A sequence of unknown origin (an `IEnumerable<T>` parameter, a field's, a call's result) is read as a value of the
+state, nothing written: a static check (CSV1037, `StaticChecks.Sequences`) has every sequence that would write as it
+is enumerated enumerated where it is made. A double `Sum` adds in order from 0.0, rounding at each step; a `decimal` one from 0,
+each sum as decimal `+` gives it (`$dround`). A `foreach` over a query, or over a list interface of any
 expression (a parameter, a property, a call's result), reads it into a map where the loop starts; `GroupBy` (with a result selector of the key and the group too) gives each key's first element's index, a
 selector reading its `Key` and `Count()` (exact: a running count of the source's elements of that key; a database's
 are bounds); over a `GroupBy`, each group is its key's first element's index, its `Key` that element's key, and a `foreach`
@@ -529,6 +556,15 @@ time round. Query syntax (`from s in xs let b = ... where ... select b`) is the 
 (`from c in cs join o in os on k(c) equals k'(o) into g select new { c, g }`) is a row for each outer element, its
 index, both sequences read where the loop starts; `row.c` is the outer element, and a loop over `row.g` runs over the
 inner elements whose key is the row's. The members not named here are not translated (CSV1902).
+
+A member of one expression that makes a list (`public IReadOnlyList<Guid> Items => lines.Select(l => l.Item).ToList();`)
+is no function, as each call makes a new list, and can state no contract. Of each collection its expression names (a
+field of its object, a parameter), that its result has as many elements is a candidate postcondition: checked where it
+returns, as a loop's inferred fact is at its back edge (Houdini), and assumed after a call of it while it holds
+(`Items.Count == lines.Count`, at that moment); where it doesn't (a `Where` keeps fewer), nothing is said, and no one
+is the worse. So is what a returned list interface is: where each expression a member returns is a list by its type (or
+each an array), `public IReadOnlyList<Part> Parts => parts;`, that its result is a modeled collection (an array) is
+such a candidate, and a caller's `Parts[0]` and `Parts.Count` read the list.
 
 **Entity Framework.** EF Core is read with a model of it (`EfModel`: entities, keys, unique indexes,
 query filters, navigations, tokens; Lowering.Ef, Lowering.EfTracker):
@@ -588,8 +624,14 @@ EF concurrency token is compared by it. That int is its `Ticks` (0 to `DateTime.
 `long`'s range), so `==`, `!=`, `<` and the rest of two `DateTime`s, or two `TimeSpan`s, compare it, as .NET's do,
 and `.Ticks` is it. `DateTime ± TimeSpan`, `DateTime - DateTime` and `TimeSpan ± TimeSpan` are the ticks' sum or
 difference: past `DateTime`'s range they throw an `ArgumentOutOfRangeException`, past `TimeSpan`'s an
-`OverflowException`. `MinValue`, `MaxValue` and `TimeSpan.Zero` are their ticks; their other operators and members are
-not translated (CSV1902). A `Guid` is an `int` too, of which `==` and `!=` are
+`OverflowException`. The methods those operators are do the same: `d.Add(t)`, `d.Subtract(t)` (of a `TimeSpan` or a
+`DateTime`), `d.AddTicks(n)`, `t.Add(u)`, `t.Subtract(u)`; an expression function may call them. `MinValue`,
+`MaxValue` and `TimeSpan.Zero` are their ticks. Any other property of such a value (`d.Year`, `d.DayOfWeek`,
+`t.Days`, a `DateOnly`'s `Month`) is a function of it, `$vp.System.DateTime.Year(d)`, within its type's range, of
+which nothing more is known: the value is all there is to it, so `d.Year == d.Year`. A `DateTime`'s `Kind` isn't
+one, as its ticks don't say it: it is unknown at each read (CSV1900). Their other operators and methods are
+not translated (CSV1902). A `DateOnly` and a `TimeOnly` are kept so too (a day's number, a time's ticks, within
+`DateTime`'s range): held, handed on and compared, nothing more. A `Guid` is an `int` too, of which `==` and `!=` are
 all there is: `Guid.Empty` is 0, and `Guid.NewGuid()` gives one nothing is known of (0 too, maybe). `x.CompareTo(y)`
 of integers, decimals, `DateTime`s and `TimeSpan`s is the sign of `x - y`, and `char`'s ASCII tests
 (`char.IsAsciiDigit`, `IsAsciiLetter`, `IsAsciiLetterUpper`, ...) are ranges of the code.
@@ -598,7 +640,11 @@ of integers, decimals, `DateTime`s and `TimeSpan`s is the sign of `x - y`, and `
 0 <= *e* <= 28), so comparisons are exact. `+` and `-` are `$dround` of the exact result, and `*` and `/` are
 `$dq(n, d)` of the exact result *n* / *d* (in units, *a* · *b* / 10^28 and *a* · 10^28 / *b*): the result itself where
 it is representable (`$drep`, *m* / 10^*e* for some *e*), else a rounded value of its sign, as .NET's, whose rounding
-depends on the exact result alone. Past `MaxValue` they throw an `OverflowException`. `%` is exact (`cs#remI` of the
+depends on the exact result alone, and within `decimal`'s range where the exact result is within half a unit of it
+(past that the operation throws). A `decimal` parameter, result, local and struct's part is within that range, as an
+integer is within its type's. A sum or a difference that isn't zero doesn't round to zero (a whole number of
+units under 2^96 is representable), so `total - fee > 0m` where `total > fee`; `(total - fee) + fee == total` isn't
+known, as either may round. Past `MaxValue` they throw an `OverflowException`. `%` is exact (`cs#remI` of the
 units), and `/` or `%` by zero is CSV1009, as for integers. An integer converts exactly.
 
 **Record structs.** A positional `record struct` of the subset (`readonly record struct OrderId(Guid Value)`) is a
@@ -611,10 +657,13 @@ reference type is not null where code reads it, as C#'s nullable analysis has it
 the program's, and `a + b` a call of it, of its contract: a precondition there (`Spec.Requires(a.Currency ==
 b.Currency)`) is checked at each `a + b` (CSV1001).
 
-**Value objects.** A sealed record class that isn't data (its state not positional: a private constructor that
+**Value objects.** A sealed record class that isn't data (its state not its constructor's parameters: a private constructor that
 validates, get-only properties) is a class of the program's. Its `==` is C#'s: the same reference, or neither null
-and each field equal (integers and enums, strings by content, data, other value objects), unless the record
-declares its own `Equals`.
+and each field equal (integers and enums, strings by content, decimals, dates, record structs, data, other value
+objects). Where the record declares its own `Equals`, its `==` is the same reference or that `Equals`: its function,
+where it is one (an expression with no effects), else a value not known; with `null`, whether it is null (nothing
+equals null: `Equals`' law). `[Sensitive]` on it, or on a member, is the taint analysis's to follow, and changes nothing
+here. `string.Empty` is the empty string.
 
 **Library nullness.** A library member's non-nullable result is not null, an out
 parameter `[MaybeNullWhen(b)]` is not null where the member returns `!b` (in a collection stub's procedure too), a
@@ -710,7 +759,20 @@ override only of the program's members, an abstract member's contract from its c
   method of the program is: a call of it, its contract of the task's result, other code running meanwhile (what the
   method doesn't hold is forgotten, its confined objects kept);
 - a property with code (or an abstract or an interface one) is its accessors: a read calls its getter, a write its
-  setter; a `[Pure]` one is a function; an abstract or virtual `[Pure]` member is a function of its contract alone (an
+  setter; a `[Pure]` one is a function;
+- **expression functions** (SPARK's): a getter, a method or an operator whose body is one expression with no effects
+  (not virtual, nor an override) is a function without saying so, `[Pure]` by its body (`ExpressionFunctions`). The
+  expression: fields and such members read, operators, conditionals, patterns, `[Pure]` calls, throw expressions.
+  Such a member can state no contract (a contract is a statement, and a struct's lambda can't read `this`), so its
+  expression is what is known of it: code that reads `fee.IsZero` knows `fee.Amount == 0m`, `a <= b` of
+  `operator <=(Weight l, Weight r) => l.CompareTo(r) <= 0` is what `CompareTo` says, and a specification may read
+  one or call it (CSV0013 doesn't ask it to say `[Pure]`). What a throw is handed isn't its value: it
+  must write nothing, and may call a helper of the program that builds the exception and writes nothing either
+  (`Stored ?? throw Missing("phase")`). Left as code, known by its contract (none): one that reads itself; one whose
+  arithmetic throws where it overflows (a `checked` operation, an integer's `/` or `%` by what may be zero or -1,
+  `Math.Abs`), which in code ends the path; one that reads a collection through an interface (a value of the whole
+  state); one whose expression isn't a specification's. A computed property that is none of these, in a contract,
+  is CSV1902, saying so; an abstract or virtual `[Pure]` member is a function of its contract alone (an
   override may answer the call), of every field the program names, with no definition;
 - on `this`, a member whose override in this class (or a base) is sealed, or whose class is, is that override;
   a contract class's member is the member it specifies;
@@ -759,12 +821,14 @@ sub(dtype(o), T#C)`; `new C(...)` is exactly a C (`dtype(o) == T#C`); in code, a
 of it where it's tested (a fact assumed there; in a specification none is needed). `sub` is C#'s derivation, base
 types and interfaces; unrelated classes have no instance in common, nor have a sealed type and one not above it, and a
 sealed type's instances are of it exactly. Type tests (`is C`, `is C x`, `is not C`, `switch` on them), `as` (`o`
-where it's an instance, else null) and casts (`(C)o`: in code it throws unless `o` is null or an instance;
+where it's an instance, else null; a data value where it's of the case, by its tag, else null) and casts (`(C)o`: in code it throws unless `o` is null or an instance;
 an upcast written as a cast, `(object)o`, is `o`). A `[Pure]` virtual or abstract member
 called on another object is its function, which each `[Pure]` override defines for objects of exactly its class
 (`dtype(this) == T#D ==> f$B(..) == f$D(..)`).
 
-**Patterns.** Besides the null patterns: a class's property pattern (`p is { Age: >= 18 }`: not null, each field
+**Patterns.** Besides the null patterns: `x is { } v` of a nullable value (an `int?`, an enum's, a `DateOnly?`: where
+it has one, `v` is it); a list's, an array's or a string's count (`xs is { Count: > 0 }`, `s is { Length: 3 }`: not
+null, and its count as the pattern says); a class's property pattern (`p is { Age: >= 18 }`: not null, each field
 read unchecked; a computed property's getter, in code, called only where what is before it matched, and in a contract
 a `[Pure]` one's function); an array's list pattern (`a is [1, .., 9]`, `[_, 0]`, `[>= 9, ..]`: not null, of the length,
 each element as its pattern says, those after a slice counted from the end; in code, a slice with a pattern of its own
@@ -811,7 +875,18 @@ a new object is none of them.
 its contract alone for its callers (as an abstract member is), so they are Boogie's still; it may write what the
 effects analysis (`FieldEffects`) says it and its callees write (any field, where that says so), and every array
 unless it writes none (`MayWriteHeap`); a constructor, the fields of the new object it sets too, at that object only.
-Its own body is not verified (CSV1902, saying why). So is a method `--only` leaves out, for its callers.
+A `[Pure]` one is a function of the state as any `[Pure]` member is: it writes no array and makes no object a caller
+sees (a field only where the analysis finds a write), so two reads of it with nothing it reads written between them
+give one value, and what a precondition says of it holds where the body reads it.
+Its own body is not verified (CSV1902, saying why). So is a method `--only` leaves out, for its callers. The
+analysis judges a library member no class overrides by what each call hands it: the lambdas and the methods it is
+handed it runs, so what they write, it writes; a LINQ query made where it is handed on (`xs.Where(f)` in
+`xs.Where(f).ToList()`) runs what its own call was handed; an object runs its class's overrides and interface
+implementations, which hand nothing over where they write no field, model or array cell and read no cell (a record's
+own compare, hash and print its fields, so those must hand nothing over either); a list interface is a library
+collection, or an object of a class of the program's that implements it. Anything else of an interface type, an
+`object` or a delegate may run anything. A translated body's frame is what it writes: a library call handed a lambda
+that writes nothing, and a collection comparing elements whose `Equals` changes nothing, write nothing.
 
 **Loops and arrays.** Boogie forgets at a loop head every map the loop modifies. A loop frame keeps the rest: only the
 arrays the loop writes through a variable it doesn't change are forgotten (and all of them where it writes through
@@ -845,6 +920,22 @@ exception type, where classes have dynamic types too: see "Dynamic types").
   as `sub(dtype(ex$), T#E) ==> cond`, with `Spec.Old` of the entry state (CSV1002).
 - Where nothing sees an exception (no enclosing `catch`, no `EnsuresOnThrow`), a throw ends the path;
   proofs (lemmas, `[Pure]` and ghost code) never throw.
+- A function may throw where its body is its definition: `public State Current => Stored ?? throw new
+  InvalidOperationException(...)`, a `c ? a : throw ...`, a switch arm's `_ => throw ...`, an `if (...) throw ...;`
+  before its `return`. It is a partial function (JML's exceptional behaviour, Spec#'s `otherwise`), defined where
+  its body reaches no throw, its domain: `"$domain"` of its body, each throw's guards false, and each function it
+  reads in its own domain. In code a read of it is a call that may throw: the path ends, or goes to the caller's
+  handlers, and where it returns the function was in its domain (a postcondition of its procedure). A specification
+  may read it only in its domain: that is part of what makes the specification well-defined (CSV1012), as a
+  function's precondition is. Its other postconditions are axioms of the function within its domain, and its value
+  outside it is its type's default, of which nothing is said. A postcondition that holds is well-defined (each
+  return checks it, under the postconditions before it), and a procedure promises that with it: after a call whose
+  postcondition reads the function, the caller's own may read it too, with no read of its own on the way. So with a
+  filter that code evaluated: a LINQ lambda after a `Where` has the filter as its precondition, in its domain
+  (`parcels.Where(p => p.Current == Phase.Ready).OrderBy(p => p.Weight)`: where the filter held, it returned). A lemma,
+  ghost code and a `[Pure]` member whose body
+  isn't its definition may not read one (CSV1902): they may not throw. A throw in a `try` of the function's own
+  stays CSV1011.
 
 - A `finally` runs on every way out of its `try`: each edge that leaves it (a fall-through, a `return`, a `break`, a
   jump out of a loop) sets the finally's continuation `fin$`*n* to a number of its own and goes to the finally; the
@@ -887,10 +978,17 @@ dictionary is; a query's, or an interface's list's, elements are read where the 
 is an enumerator whose elements aren't known (see Iterators).
 
 **Collections.** A `List<T>`, `Dictionary<K, V>`, `HashSet<T>`, `Stack<T>` or `Queue<T>` of the subset's values is an object whose contents
-are CsVerify.Bcl's models: maps as fields are, `$F.$M.Size: [Ref]int` (never negative), `$F.$M.Version: [Ref]int`, and
+are CsVerify.Bcl's models: maps as fields are, `$F.$M.Size: [Ref]int` (an `int`'s, never negative), `$F.$M.Version: [Ref]int`, and
 per kind of value `$F.$M.Items.`*T*`: [Ref][int]`*T* (a list's, stack's or queue's), `$F.$M.Members.`*T*`: [Ref][T]bool`
 (a set's), `$F.$M.Domain.`*K*`: [Ref][K]bool` and `$F.$M.Entries.`*K*`.`*V*`: [Ref][K]V` (a dictionary's), an integer
-type's values in its range, so frames, modifies clauses and delegates' states take them in as they do fields. In
+type's values in its range, so frames, modifies clauses and delegates' states take them in as they do fields, and a
+function that may read a collection takes its models as it takes the fields it reads (`public int Count =>
+items.Count` is a function of `items` and of `$F.$M.Size`). A
+`Guid`, a `DateTime`, a `TimeSpan`, a `DateOnly` or a `TimeOnly` in a collection is the integer the kernel keeps for
+it (an id, its ticks, its day's number), of kind `Value`, an `int` of no range: `$F.$M.Items.Value`, a dictionary's
+keys compared as the integers are. A struct is an element as a data value is (a list's, a dictionary's value), and a
+record struct whose equality is its value's (a typed id, `ItemId(Guid Value)`) is a key or a set's member too: a
+struct's value is one reference, which the collection compares. In
 specifications the models read them, `Count` is `Size`, `l[i]` is `Items[l][i]` (well-defined where `0 <= i < Size`,
 CSV1012), `d[k]` is `Entries[d][k]` (where `Domain[d][k]`), `d.ContainsKey(k)` is `Domain[d][k]`, and `s.Contains(x)`
 is `Members[s][x]`. A `StringBuilder` is a collection of one model, its length (`Size`), and a `TextWriter` one of
@@ -910,13 +1008,18 @@ A `foreach` over a dictionary's `Keys` or `Values` enumerates the dictionary (it
 CSV1001): a key is one it has, never null; a value isn't known. `Keys.Count` and
 `Values.Count` are its `Count`.
 
-Through their interfaces (`IList<T>`, `IReadOnlyList<T>`, `ICollection<T>`, `IReadOnlyCollection<T>`), a collection is
+Through their interfaces (`IList<T>`, `IReadOnlyList<T>`, `ICollection<T>`, `IReadOnlyCollection<T>`, and a set's,
+`IReadOnlySet<T>` and `ISet<T>`, whose `Contains` is the `HashSet`'s where it is one), a collection is
 a reference of one of three kinds: an array (`$arr`), a modeled collection (`$coll`: a `List`'s, or another's whose
 `Count` is `Size`), or anything else; a conversion from an array or a collection says which, and an array (one made,
 or a parameter or result of an array type) is `$arr`. `Count` is
 `if $arr(x) then len(x) else if $coll(x) then Size[x] else $ocount(x, $st(...))`, and `x[i]` the array's cell, the
 list's `Items`, or `$oitem(x, i, $st(...))`: a value of the whole state, so the same until something changes (an
-`l.Clear()` of a list that `x` may be changes `x.Count`). Where the program implements one of
+`l.Clear()` of a list that `x` may be changes `x.Count`). An array of `Guid`s has no element map (it is outside the
+subset), so behind an interface it is "anything else": its elements the state's, a write to one a library call. `$st` takes every map of the program, so an expression
+that reads the state more than once names it once, `(var $stNow := $st(...); ...)`: a contract's well-definedness
+repeats each read in what guards the later ones, and written out the state would be most of the program's text
+(not inside `old(...)`, whose maps are the entry's, nor in a trigger). Where the program implements one of
 these interfaces itself, each read through them is a new unknown. `x[i]` checks `0 <= i < Count` (CSV1003). Writes
 through `IList`/`ICollection` (`Add`, `Insert`, `Remove`, `RemoveAt`, `Clear`, `x[i] = v`) branch on the three kinds: an
 array's throw `NotSupportedException` (its indexer writes its cell), a `List`'s are its stub's, anything else's are
@@ -972,7 +1075,9 @@ functions of it and the arguments, per signature (`Int32.Int32` for `Func<int, i
   state it's made in, and ensures `$postS` of the state before it.
 - `Spec.ReadsOf(f, x)` is `$readsS.K(f, now, x)`; `Spec.Reads(f, x => S)` is `forall x :: $readsS.K(f, now, x) ⊆ S`,
   and `Spec.Changes(f, x => S)` is `forall x :: $frame.K(f, x) ⊆ S`: a call keeps every field and cell of an object
-  allocated before and not in `$frame.K(f, x)`, and `$nochange(f)` makes the frame empty. `ObjSet`'s `IsSubsetOf`
+  allocated before and not in `$frame.K(f, x)` (said of an object where a map is read of it after the call: each map's
+  condition has that read as its trigger, or a failed proof in a program of many fields instantiates them all without
+  end), and `$nochange(f)` makes the frame empty. `ObjSet`'s `IsSubsetOf`
   and `IsDisjointFrom` are the set relations.
 - A lambda whose precondition reads fields or cells says so with its own `Spec.Reads(R)`: its `$preS` in the state it's
   made in is its precondition, it reads within `R`, and each object its precondition reads must be in `R` (CSV1029).
@@ -1008,15 +1113,29 @@ lambda that writes nothing, a `[Pure]` method's group), CSV1016 otherwise; a lam
 share or a package (it would hold their permissions twice), nor a method group be an `[Owned]` object's.
 
 **Data types.** A data record (a closed hierarchy of positional records) is Dafny's
-datatype. A value is a reference (null too) made by its case's constructor function `mk.`*C*`(fields)`: not null, its
-tag (`$tag`, tested by `$is.`*C*) the case's, each field (a function `$d.`*R.f*, a base's field the argument the
-record header gives it, as `Ind(Fact Prev) : Fact(Prev.N + 1, ...)`) what was given, and its rank (`$rank`, never
-negative) above its data parts'. A value of a case is that case's constructor of its fields (triggered on `$is.`*C*),
-so equal fields mean equal values, and a record's `==` (where its fields compare as values) is the references' `==`.
+datatype. A value is a reference (null too) made by its case's constructor function `mk.`*C*`(arguments)`: not null, its
+tag (`$tag`, tested by `$is.`*C*) the case's, each field (a function `$d.`*R.f*) what the construction gives it, and
+its rank (`$rank`, never negative) above its data parts'. A field of the case's own is its parameter's. A base's is
+what the base makes of the argument the record header gives it, at each level in turn (`Ind(Fact Prev) :
+Fact(Prev.N + 1, ...)`; `C(int X) : B(X + 1)` under `B(int N) : A(N * 2)` has `N == (X + 1) * 2`). An abstract base
+may keep its state without a parameter list: its one constructor, where all it does is store its parameters, each in
+a get-only auto-property (`private protected Command(DateTime now) => Now = now;`), is a primary constructor
+written out, and `sealed record Start(int Amount, DateTime Now) : Command(Now)` a case whose `Now` is its
+parameter's. Such a constructor has nothing to verify. A case under a record base may have one too, and its may
+check its arguments first: `if (c) throw ...;`, `P = c ? p : throw ...`, `P = p ?? throw ...`, each of its parameters
+alone (`public Filled(IReadOnlyList<Fill> fills) => Fills = fills is { Count: > 0 } ? fills : throw ...;`). Its value
+is built where no check throws: in code `new Filled(xs)` throws where one does (to the handlers, or the path ends), and
+what follows knows they held (`xs.Count > 0`); in a specification it is defined there. One that computes what it
+stores leaves the record outside the subset. A value of a case is that case's constructor of its arguments read back (triggered on
+`$is.`*C*): each parameter from the field that holds it as given, and one no field holds (`D(int N) : A(N + 1)`)
+from a function of its own (`$arg.`*C.p*, some argument the value was built of). So equal fields mean equal values,
+and a record's `==` (where its fields compare as values: integers, booleans, enums, `DateTime`s, `TimeSpan`s,
+`Guid`s, arrays by reference, such records) is the references' `==`.
   Where they don't (a string's), a record's synthesized `==` is C#'s: the same reference, or neither null, of one case
   (its `EqualityContract`), each field equal as `EqualityComparer<T>.Default` compares it (a string's contents, a
   record's own `==`); two values of cases not known, of an open data type, are `$dataEq`, a relation not known. A
-  record's own `Equals(R)` makes its `==` not known.
+  record's own `Equals(R)`, or a field the kernel doesn't compare (a list's), makes its `==` not known of two
+  references; one reference is equal to itself, as the synthesized operator says before it asks `Equals`.
 - A field of a data type is one of its cases (said by its tag, `$tag(f) == 3`: a test `$is.`*C*`(f)` would trigger
   the case's constructor of `f`'s fields, whose fields' cases would trigger more without end, a matching loop that a
   failing proof never saturates), and not null where its type says so (each construction checks its arguments,
@@ -1026,11 +1145,15 @@ so equal fields mean equal values, and a record's `==` (where its fields compare
   reference that generic code passes on and stores, and reads only the `Count` of (its elements' map is its type
   argument's); where the type argument is known, it is read as that type's collection. A static method that makes a case (`Grant(params T[] xs) => new Granted(xs)`) tells its
   callers which case it gives only if it is `[Pure]` (its body is then its function) or says so in a postcondition.
-  `Array.Empty<T>()` is `$aempty()`, an array of none.
+  `Array.Empty<T>()` is `$aempty()`, an array of none: the same each time, so its contract is `[Pure]` (a call that
+  reaches it runs nothing of `T`'s, and writes no field).
 - A case's init property besides its positional ones (`public IReadOnlyList<T> Undone { get; init; } = ...`) is a
   field after them: `new Refused(why)` has its initializer's value, `new Refused(why) { Undone = xs }` has `xs`. A
-  `with` expression (`t with { Seen = t.Seen + 1 }`) is the case's constructor of the fields, those it sets replaced
-  (of null it throws, CSV1013); `P = P with { ... }` of a field or an auto-property reads it, and writes the copy.
+  `with` expression (`t with { Seen = t.Seen + 1 }`) is the case's constructor of its arguments, each read back from
+  the field that holds it, those it sets replaced (of null it throws, CSV1013); a case one of whose fields is no
+  parameter as given (a base's, computed) has copies that no construction gives, and its `with` is not translated
+  (CSV1902). `P = P with { ... }` of a field or an auto-property reads it, and writes the copy. A deconstruction
+  (`var (amount, now) = c`) reads the property of each of the primary constructor's parameters, in their order.
 - A data type's plain getter (`public bool IsGranted => this is Granted;`, not virtual) is a method of it; `[Pure]`,
   its callers know its body.
 - Type tests (`is`, `switch` statements and expressions) and patterns (declaration, type, constant, relational,
@@ -1262,8 +1385,8 @@ nullable one).
 either is, else the operation of their values, checked as code's arithmetic is (the values 0 where either is null,
 which can't overflow). Static properties' getters and setters are methods, as instance ones are.
 
-**Constructors' `this` as a value** (passed, stored) escapes before the object is built: where its class has an
-object invariant or non-nullable fields, CSV1015; the object goes on as it is.
+**Constructors' `this` as a value** (passed, stored, a call's receiver) is handed over: the object must be built
+there, its non-nullable fields set and its invariant holding (CSV1015), and is an object like any other after.
 **Deconstruction** into array cells, fields and variables, `(a[i], a[j]) = (a[j], a[i])`, reads every value first,
 then writes each target. In `Spec.Old`, a parameter the body assigns is the parameter as it came in.
 

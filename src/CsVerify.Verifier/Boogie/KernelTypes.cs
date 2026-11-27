@@ -43,6 +43,8 @@ namespace CsVerify.Verifier.Boogie
         [System.ThreadStatic] public static Dictionary<string, int> StaticReadonlyIds;
         /// <summary>Of those, the ones never null (made by new, of a non-nullable type): an axiom each.</summary>
         [System.ThreadStatic] public static HashSet<int> StaticReadonlyNonNull;
+        /// <summary>Each one's type: its value is a value of it.</summary>
+        [System.ThreadStatic] public static Dictionary<int, ITypeSymbol> StaticReadonlyTypes;
 
         /// <summary>The scalar types the user's code has arrays, spans or memory of: of any type an expression or a declaration of it has.</summary>
         public static HashSet<SpecialType> NamesScalarArrays(Compilation c, IEnumerable<SyntaxTree> userTrees)
@@ -152,15 +154,23 @@ namespace CsVerify.Verifier.Boogie
         public static bool Scalar(ITypeSymbol t) => IsIntegral(t) || t?.SpecialType == SpecialType.System_Boolean;
 
         /// <summary>
-        /// A nullable value of a scalar (int?, bool?): a reference, null where it has no value, $nmk.U(v) where it has v,
-        /// one reference per value (so == is the lifted operator's); $nv.U reads the value.
+        /// A nullable value of a scalar (int?, bool?) or of a struct of the subset (AccountKey?): a reference, null where
+        /// it has no value, $nmk.U(v) where it has v, one reference per value; $nv.U reads the value. Two of a scalar are
+        /// equal as references (the lifted ==); two of a struct as their values are (IsNullableStruct).
         /// </summary>
         public static bool IsNullableValue(ITypeSymbol t) => t is INamedTypeSymbol { OriginalDefinition.SpecialType: SpecialType.System_Nullable_T } n &&
-            (Scalar(n.TypeArguments[0]) || IsOpaqueTicks(n.TypeArguments[0]) || IsOpaqueId(n.TypeArguments[0]));
+            (Scalar(n.TypeArguments[0]) || IsDecimal(n.TypeArguments[0]) || IsOpaqueTicks(n.TypeArguments[0]) || IsOpaqueId(n.TypeArguments[0]) || IsStruct(n.TypeArguments[0]));
 
-        /// <summary>A nullable value's functions' suffix: its scalar's (Int32), or the opaque value's name (DateTime, Guid).</summary>
-        private static string NullableKey(ITypeSymbol nullable) =>
-            Scalar(Underlying(nullable)) ? Sp(Underlying(nullable)).ToString().Substring("System_".Length) : Underlying(nullable).Name;
+        /// <summary>A nullable struct (IsNullableValue's): its value a struct's, which == compares as the struct's does.</summary>
+        public static bool IsNullableStruct(ITypeSymbol t) => IsNullableValue(t) && IsStruct(Underlying(t));
+
+        /// <summary>A nullable value's functions' suffix: its scalar's (Int32), the opaque value's name (DateTime, Guid), or S$ and the struct's.</summary>
+        public static string NullableKey(ITypeSymbol nullable) =>
+            Scalar(Underlying(nullable)) ? Sp(Underlying(nullable)).ToString().Substring("System_".Length)
+            : IsStruct(Underlying(nullable)) ? StructNullable + Ident(Underlying(nullable).ToDisplayString()) : Underlying(nullable).Name;
+
+        /// <summary>What a nullable struct's functions' suffix starts with: their values are references (a struct's), not ints.</summary>
+        public const string StructNullable = "S$";
 
         public static ITypeSymbol Underlying(ITypeSymbol nullable) => ((INamedTypeSymbol)nullable).TypeArguments[0];
 
@@ -589,7 +599,9 @@ namespace CsVerify.Verifier.Boogie
         /// <summary>A Func or an Action of the subset's values: a reference, which Spec.Pre and Spec.Post speak of.</summary>
         public static bool IsFunc(ITypeSymbol t) =>
             t is INamedTypeSymbol { TypeKind: TypeKind.Delegate } d && d.ContainingNamespace?.ToDisplayString() == "System" && d.Name is "Func" or "Action" or "Predicate" or "Comparison" or "Converter" &&
-            d.DelegateInvokeMethod is IMethodSymbol inv && inv.Parameters.All(p => p.RefKind == RefKind.None && FuncValue(p.Type)) && (inv.ReturnsVoid || FuncValue(inv.ReturnType));
+            // (a data value of a generic record too: a reference, whatever its type arguments)
+            d.DelegateInvokeMethod is IMethodSymbol inv && inv.Parameters.All(p => p.RefKind == RefKind.None && (FuncValue(p.Type) || IsData(p.Type))) &&
+            (inv.ReturnsVoid || FuncValue(inv.ReturnType) || IsData(inv.ReturnType));
 
         // (a data value, a record's, is a reference as an object is)
         private static bool FuncValue(ITypeSymbol t) =>
@@ -718,7 +730,8 @@ namespace CsVerify.Verifier.Boogie
         /// bits' stand-in, which a field holds, a parameter takes, a call gives, and an EF concurrency token is compared by;
         /// its operators and members are the library's (not translated yet, but what calls give it, and a Guid's ==).
         /// </summary>
-        public static bool IsOpaqueValue(ITypeSymbol t) => t?.ToDisplayString() is "System.DateTime" or "System.TimeSpan" or "System.Threading.Tasks.ValueTask" or "System.Guid";
+        public static bool IsOpaqueValue(ITypeSymbol t) =>
+            t?.ToDisplayString() is "System.DateTime" or "System.TimeSpan" or "System.DateOnly" or "System.TimeOnly" or "System.Threading.Tasks.ValueTask" or "System.Guid";
 
         /// <summary>A Guid: an id, of which == is all there is (an int each, one per value).</summary>
         public static bool IsOpaqueId(ITypeSymbol t) => t?.ToDisplayString() == "System.Guid";
@@ -733,7 +746,7 @@ namespace CsVerify.Verifier.Boogie
             StructFields(n).All(f => Scalar(f.Type) || IsOpaqueTicks(f.Type) || IsOpaqueId(f.Type) || IsData(f.Type) && Data.HasValueEquality((INamedTypeSymbol)f.Type));
 
         /// <summary>A DateTime or a TimeSpan: the int the kernel keeps is its Ticks, which its ==, &lt; and the rest compare.</summary>
-        public static bool IsOpaqueTicks(ITypeSymbol t) => t?.ToDisplayString() is "System.DateTime" or "System.TimeSpan";
+        public static bool IsOpaqueTicks(ITypeSymbol t) => t?.ToDisplayString() is "System.DateTime" or "System.TimeSpan" or "System.DateOnly" or "System.TimeOnly";
 
         /// <summary>An EF context factory (IDbContextFactory&lt;C&gt;, of a context of the program's): a reference, whose CreateDbContext Lowering.EfTracker reads.</summary>
         public static bool IsEfFactory(ITypeSymbol t) =>
@@ -795,7 +808,9 @@ namespace CsVerify.Verifier.Boogie
         /// query read where it's made (Lowering.Linq), so that what a lambda gives a SelectMany, or a group, can be one.
         /// </summary>
         public static bool IsSequence(ITypeSymbol t) =>
-            t is INamedTypeSymbol { TypeKind: TypeKind.Interface, Arity: 1, Name: "IEnumerable" } n && n.ContainingNamespace?.ToDisplayString() == "System.Collections.Generic" && (FuncValue(n.TypeArguments[0]) || IsData(n.TypeArguments[0]));
+            t is INamedTypeSymbol { TypeKind: TypeKind.Interface, Arity: 1, Name: "IEnumerable" } n && n.ContainingNamespace?.ToDisplayString() == "System.Collections.Generic" &&
+            // (a reference, of whatever values of the subset: nothing is read of them but by a query, which reads each as its type's)
+            (FuncValue(n.TypeArguments[0]) || IsData(n.TypeArguments[0]) || IsOpaqueElement(n.TypeArguments[0]) || IsDecimal(n.TypeArguments[0]) || IsStruct(n.TypeArguments[0]) || IsTuple(n.TypeArguments[0]));
 
         /// <summary>
         /// A collection's interface (IList, IReadOnlyList, ICollection, IReadOnlyCollection) of the subset's values, or of
@@ -803,7 +818,24 @@ namespace CsVerify.Verifier.Boogie
         /// </summary>
         public static bool IsCollectionInterface(ITypeSymbol t) =>
             t is INamedTypeSymbol { TypeKind: TypeKind.Interface, Arity: 1 } n && n.ContainingNamespace?.ToDisplayString() == "System.Collections.Generic" &&
-            n.Name is "IList" or "IReadOnlyList" or "ICollection" or "IReadOnlyCollection" && (FuncValue(n.TypeArguments[0]) || IsData(n.TypeArguments[0]));
+            n.Name is "IList" or "IReadOnlyList" or "ICollection" or "IReadOnlyCollection" or "IReadOnlySet" or "ISet" &&
+            (FuncValue(n.TypeArguments[0]) || IsData(n.TypeArguments[0]) || IsOpaqueElement(n.TypeArguments[0]) || IsStruct(n.TypeArguments[0]) || IsTuple(n.TypeArguments[0]));
+
+        /// <summary>
+        /// A Guid, a DateTime or a TimeSpan in a collection: the integer the kernel keeps for it (an id, its ticks), which
+        /// the collection compares as it is. Its kind is Value: an integer of no C# integer type's range.
+        /// </summary>
+        public static bool IsOpaqueElement(ITypeSymbol t) => IsOpaqueId(t) || IsOpaqueTicks(t);
+
+        /// <summary>
+        /// A record struct a collection may compare (a dictionary's key, a set's member, a typed id): its synthesized
+        /// equality is its value's, and a struct's value is one reference, so the collection compares it as it is.
+        /// </summary>
+        public static bool IsComparedStruct(ITypeSymbol t) => IsStruct(t) && HasStructEquality(t);
+
+        /// <summary>A set through its interface (IReadOnlySet&lt;T&gt;, ISet&lt;T&gt;): a HashSet's model where it is one, else the state's.</summary>
+        public static bool IsSetInterface(ITypeSymbol t) =>
+            t is INamedTypeSymbol { TypeKind: TypeKind.Interface, Arity: 1, Name: "IReadOnlySet" or "ISet" } n && n.ContainingNamespace?.ToDisplayString() == "System.Collections.Generic";
 
         /// <summary>The program's own classes or structs that implement a collection interface: then a read through it is unknown at each read.</summary>
         public static bool ImplementedHere(INamedTypeSymbol ifc)
@@ -850,9 +882,9 @@ namespace CsVerify.Verifier.Boogie
             {
                 return Ite(new KOp("$arr", x), Length(x), Ite(new KOp("$coll", x), Sel(SizeMap, x), new KOp("$ocount", x, new KOp("$state"))));
             }
-            var array = (IArrayTypeSymbol)Compilation.CreateArrayTypeSymbol(element);
-            return Ite(new KOp("$arr", x), Sel(Elements(array), x, index),
-                Ite(new KOp("$coll", x), Sel(ModelOf("Items", list).Name, x, index), new KOp("$oitem." + kind, x, index, new KOp("$state"))));
+            var other = Ite(new KOp("$coll", x), Sel(ModelOf("Items", list).Name, x, index), new KOp("$oitem." + kind, x, index, new KOp("$state")));
+            // (an array of Guids has no element map: what it holds is the state's, as any other object's)
+            return kind == OpaqueKind ? other : Ite(new KOp("$arr", x), Sel(Elements((IArrayTypeSymbol)Compilation.CreateArrayTypeSymbol(element)), x, index), other);
         }
 
         /// <summary>The BCL collections whose contents CsVerify.Bcl's models are (their stub contracts speak of them).</summary>
@@ -873,10 +905,10 @@ namespace CsVerify.Verifier.Boogie
         /// members of a set are compared as the verifier compares them: as values, by reference, strings by content.
         /// </summary>
         public static bool IsCollection(ITypeSymbol t) =>
-            CollectionKind(t) is string kind && ((INamedTypeSymbol)t).TypeArguments.Select((a, i) => FuncValue(a) ||
+            CollectionKind(t) is string kind && ((INamedTypeSymbol)t).TypeArguments.Select((a, i) => FuncValue(a) || IsOpaqueElement(a) || IsComparedStruct(a) ||
                 // (a dictionary's values may be data, which it never compares; a list's elements too, where it doesn't
                 // compare them: Lowering refuses Contains, IndexOf and Remove of them)
-                kind == "Dictionary" && i == 1 && IsData(a) || kind == "List" && (IsData(a) || IsTuple(a))).All(x => x);
+                kind == "Dictionary" && i == 1 && (IsData(a) || IsStruct(a)) || kind == "List" && (IsData(a) || IsTuple(a) || IsStruct(a))).All(x => x);
 
         /// <summary>A collection's key (a dictionary's key, a set's member) as its models index it: a string marked as a key ($keyed), so that two of one content are one.</summary>
         public static KExpr Keyed(KExpr k, ITypeSymbol t) => IsString(t) ? new KOp("$keyed", k) : CustomEquality(t) ? new KOp("$eqc", k) : k;
@@ -914,8 +946,10 @@ namespace CsVerify.Verifier.Boogie
             t is INamedTypeSymbol { Arity: 2 } n && n.OriginalDefinition.ToDisplayString() == "System.Collections.Generic.KeyValuePair<TKey, TValue>" &&
             n.TypeArguments.All(FuncValue);
 
-        /// <summary>A value's kind, as Boogie keeps it: an integer type's name, Boolean, or Ref.</summary>
-        public static string Kind(ITypeSymbol t) => Scalar(t) ? Sp(t).ToString().Substring("System_".Length) : "Ref";
+        /// <summary>A value's kind, as Boogie keeps it: an integer type's name, Boolean, Value (a Guid's or a DateTime's integer), or Ref.</summary>
+        public static string Kind(ITypeSymbol t) => Scalar(t) ? Sp(t).ToString().Substring("System_".Length) : IsOpaqueElement(t) ? OpaqueKind : "Ref";
+
+        public const string OpaqueKind = "Value";
 
         /// <summary>A kind's Boogie type.</summary>
         public static string BoogieOf(string kind) => kind == "Ref" ? "Ref" : kind == "Boolean" ? "bool" : "int";
@@ -1145,7 +1179,7 @@ namespace CsVerify.Verifier.Boogie
 
         /// <summary>One of CsVerify's attributes on the class but [Owned], [RunsConcurrently] and the lock order's.</summary>
         private static bool HasSpecAttributes(INamedTypeSymbol n) =>
-            n.GetAttributes().Any(a => a.AttributeClass?.ContainingNamespace?.ToDisplayString() == SpecSymbols.Namespace && a.AttributeClass.Name is not ("OwnedAttribute" or "RunsConcurrentlyAttribute" or "LockLevelAttribute" or "TakesNoLocksAttribute"));
+            n.GetAttributes().Any(a => a.AttributeClass?.ContainingNamespace?.ToDisplayString() == SpecSymbols.Namespace && a.AttributeClass.Name is not ("OwnedAttribute" or "RunsConcurrentlyAttribute" or "LockLevelAttribute" or "TakesNoLocksAttribute" or "SensitiveAttribute"));
 
         /// <summary>
         /// A member a class of the subset may have: no virtual one but overrides a call can see; a field with none of
@@ -1153,8 +1187,12 @@ namespace CsVerify.Verifier.Boogie
         /// </summary>
         private static bool MemberOfTheSubset(INamedTypeSymbol n, ISymbol m) =>
             (m is IMethodSymbol mm ? MethodOfTheSubset(n, mm) : m is IPropertySymbol pp ? !pp.IsOverride || pp.OverriddenProperty?.DeclaringSyntaxReferences.Length > 0 : !m.IsVirtual && !m.IsAbstract && !m.IsOverride) &&
-            !(m is IFieldSymbol && CsVerifyAttributes(m) && !OnlyGuardedBy(m)) &&
-            !(m is IPropertySymbol && m.GetAttributes().Any(a => a.AttributeClass?.ContainingNamespace?.ToDisplayString() == SpecSymbols.Namespace && a.AttributeClass.Name is not ("PureAttribute" or "GuardedByAttribute" or "RunsConcurrentlyAttribute")));
+            // ([Sensitive] is the taint analysis's to follow: no state of the kernel's)
+            !(m is IFieldSymbol && CsVerifyAttributes(m) && !OnlyGuardedBy(m) && !OnlySensitive(m)) &&
+            !(m is IPropertySymbol && m.GetAttributes().Any(a => a.AttributeClass?.ContainingNamespace?.ToDisplayString() == SpecSymbols.Namespace && a.AttributeClass.Name is not ("PureAttribute" or "GuardedByAttribute" or "RunsConcurrentlyAttribute" or "SensitiveAttribute")));
+
+        private static bool OnlySensitive(ISymbol s) =>
+            s.GetAttributes().Where(a => a.AttributeClass?.ContainingNamespace?.ToDisplayString() == SpecSymbols.Namespace).All(a => a.AttributeClass.Name == "SensitiveAttribute");
 
         /// <summary>
         /// A method of a class of the subset: not an override, or one of a member of the program's (whose contract it
@@ -1179,6 +1217,55 @@ namespace CsVerify.Verifier.Boogie
         /// </summary>
         public static bool HasObjectInvariant(ITypeSymbol t) =>
             t is INamedTypeSymbol n && IsClass(n) && !SpecSymbols.IsOwned(n) && HasInvariantMethods(n) && Immutable(n);
+
+        /// <summary>
+        /// A class of the program that derives from t and whose objects aren't built while t's constructor runs: its own
+        /// constructor is yet to set a non-nullable field (one with no initializer, which would run first) or to
+        /// establish an invariant of its own. Null where there is none.
+        /// </summary>
+        public static INamedTypeSymbol BuiltLater(INamedTypeSymbol t)
+        {
+            if (t.IsSealed || t.TypeKind != TypeKind.Class || Compilation == null)
+            {
+                return null;
+            }
+            bool Later(INamedTypeSymbol d)
+            {
+                var b = d.BaseType;
+                while (b != null && !SymbolEqualityComparer.Default.Equals(b.OriginalDefinition, t.OriginalDefinition))
+                {
+                    b = b.BaseType;
+                }
+                return b != null && (HasInvariantMethods(d) ||
+                    d.GetMembers().Any(m => !m.IsStatic && IsField(m) && IsNullable(FieldType(m)) && NotNullable(FieldType(m)) && !HasInitializer(m)));
+            }
+            INamedTypeSymbol Find(INamespaceOrTypeSymbol scope)
+            {
+                foreach (var m in scope.GetMembers())
+                {
+                    if (m is INamespaceSymbol || m is INamedTypeSymbol { DeclaringSyntaxReferences.Length: > 0 })
+                    {
+                        if (m is INamedTypeSymbol d && Later(d))
+                        {
+                            return d;
+                        }
+                        if (Find((INamespaceOrTypeSymbol)m) is INamedTypeSymbol inner)
+                        {
+                            return inner;
+                        }
+                    }
+                }
+                return null;
+            }
+            return Find(Compilation.Assembly.GlobalNamespace);
+        }
+
+        /// <summary>A field or auto-property with an initializer, or a primary constructor's parameter's: set before any constructor's body runs.</summary>
+        private static bool HasInitializer(ISymbol field) =>
+            field.DeclaringSyntaxReferences.Select(r => r.GetSyntax()).Any(s =>
+                s is Microsoft.CodeAnalysis.CSharp.Syntax.ParameterSyntax ||
+                s is Microsoft.CodeAnalysis.CSharp.Syntax.VariableDeclaratorSyntax { Initializer: not null } ||
+                s is Microsoft.CodeAnalysis.CSharp.Syntax.PropertyDeclarationSyntax { Initializer: not null });
 
         /// <summary>Guarded by a lock, and nothing else of CsVerify's.</summary>
         private static bool OnlyGuardedBy(ISymbol s) =>

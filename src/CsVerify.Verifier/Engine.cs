@@ -775,6 +775,7 @@ namespace CsVerify.Verifier
                 {
                     c.Aliases.Add(filter);
                     c.Requires.Add(body);
+                    c.Evaluated.Add(body);
                 }
             }
             return c;
@@ -1060,6 +1061,7 @@ namespace CsVerify.Verifier
             Boogie.KernelTypes.ScalarArrays = Boogie.KernelTypes.NamesScalarArrays(compilation, engine.UserTrees);
             Boogie.KernelTypes.StaticReadonlyIds = new Dictionary<string, int>();
             Boogie.KernelTypes.StaticReadonlyNonNull = new HashSet<int>();
+            Boogie.KernelTypes.StaticReadonlyTypes = new Dictionary<int, ITypeSymbol>();
             Boogie.KernelTypes.Locks = engine.Locks;
             Boogie.KernelTypes.SteppedBy = m => engine.Atomics.SteppedBy(m).Where(f => Atomics.StepOf(f) != null);
             Boogie.KernelTypes.Started = engine.StartedDelegates;

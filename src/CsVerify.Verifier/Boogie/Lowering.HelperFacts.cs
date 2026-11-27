@@ -109,6 +109,163 @@ namespace CsVerify.Verifier.Boogie
             }
         }
 
+        // ------------------------------------------------------------------ a computed list's count
+
+        /// <summary>A list, an array or a list through an interface, of the subset's elements.</summary>
+        private static bool Listed(ITypeSymbol t) => t != null && ElementOf(t) is ITypeSymbol e && InSubset(e) && (IsArray(t) || IsList(t) || IsCollectionInterface(t));
+
+        private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<IMethodSymbol, List<ISymbol>> _countSources =
+            new System.Runtime.CompilerServices.ConditionalWeakTable<IMethodSymbol, List<ISymbol>>();
+
+        /// <summary>
+        /// A member of one expression that returns a list (public IReadOnlyList&lt;Guid&gt; Items => lines.Select(l => l.Item).ToList()):
+        /// it can state no contract, and where it makes the list it is no function. The collections its expression
+        /// names, a field of its object or a parameter: of each, a candidate postcondition, that the result has as many
+        /// elements, proved in its body as a loop's inferred fact is and assumed where it is called while it holds.
+        /// </summary>
+        private static List<ISymbol> CountSources(IMethodSymbol m) => _countSources.GetValue(m.OriginalDefinition, def =>
+        {
+            var none = new List<ISymbol>();
+            if (def.MethodKind is not (MethodKind.Ordinary or MethodKind.PropertyGet) || def.IsAbstract || def.IsVirtual || def.IsOverride || def.IsExtern || def.IsAsync ||
+                def.IsGenericMethod || def.ContainingType.IsGenericType || def.Parameters.Any(p => p.RefKind != RefKind.None) || !Listed(def.ReturnType) ||
+                (def.AssociatedSymbol ?? def).DeclaringSyntaxReferences.Length != 1)
+            {
+                return none;
+            }
+            var body = (def.AssociatedSymbol ?? def).DeclaringSyntaxReferences[0].GetSyntax() switch
+            {
+                PropertyDeclarationSyntax p => p.ExpressionBody?.Expression ?? p.AccessorList?.Accessors.FirstOrDefault(a => a.Keyword.Text == "get")?.ExpressionBody?.Expression,
+                MethodDeclarationSyntax d => d.ExpressionBody?.Expression,
+                _ => null,
+            };
+            if (body == null || KernelTypes.Compilation == null)
+            {
+                return none;
+            }
+            var model = CsVerify.Analyzers.Compilations.ModelOf(KernelTypes.Compilation, body.SyntaxTree);
+            return body.DescendantNodesAndSelf().OfType<SimpleNameSyntax>()
+                // (a field of this: named alone, or this.f)
+                .Where(n => !(n.Parent is MemberAccessExpressionSyntax ma && ma.Name == n && !(ma.Expression is ThisExpressionSyntax)))
+                .Select(n => model.GetSymbolInfo(n).Symbol?.OriginalDefinition)
+                .Where(s => s is IParameterSymbol p && SymbolEqualityComparer.Default.Equals(p.ContainingSymbol, def) && Listed(p.Type) ||
+                            (s is IFieldSymbol || s is IPropertySymbol) && !s.IsStatic && IsField(s) && SymbolEqualityComparer.Default.Equals(s.ContainingType, def.ContainingType) && Listed(FieldType(s)))
+                .Distinct(SymbolEqualityComparer.Default).ToList();
+        });
+
+        private static string CountKey(IMethodSymbol m, ISymbol source) => FactPrefix(m) + "count:" + source.Name;
+
+        /// <summary>The result has as many elements as the collection, where that isn't null.</summary>
+        private KExpr SameCount(KExpr result, ITypeSymbol resultType, KExpr source, ITypeSymbol sourceType) =>
+            Implies(NotNull(source), AndAlso(NotNull(result), Eq(CountOf(result, resultType), CountOf(source, sourceType))));
+
+        /// <summary>At the return of such a member: of each collection it names, the candidate that its result has as many elements.</summary>
+        private void CountCandidates(IOperation returned)
+        {
+            if (_m == null || _contract.IsPure || _contract.Ensures.Count > 0)
+            {
+                return;
+            }
+            foreach (var s in CountSources(_m))
+            {
+                KExpr source = s is IParameterSymbol p ? new KVar(Local(p)) : new KField { Field = s, Instance = new KVar("this"), OnThis = true, At = returned.Syntax };
+                var check = KCheck.Of(SameCount(new KVar("result"), _m.ReturnType, source, s is IParameterSymbol sp ? sp.Type : FieldType(s)),
+                    Checks.Candidate, returned.Syntax, "a computed list's inferred count");
+                check.Key = CountKey(_m, s);
+                Emit(check);
+            }
+        }
+
+        /// <summary>After a call of such a member: its result has as many elements as each collection whose candidate holds.</summary>
+        private void CountFacts(IMethodSymbol callee, KExpr receiver, bool onThis, KExpr[] args, string result, SyntaxNode at)
+        {
+            if (result == null || _awaiting || _contractOf?.Invoke(callee) is not Contract c || c.IsPure || c.Ensures.Count > 0)
+            {
+                return;
+            }
+            foreach (var s in CountSources(callee))
+            {
+                KExpr source = s is IParameterSymbol p ? (p.Ordinal < args.Length ? args[p.Ordinal] : null)
+                    : receiver == null ? null : new KField { Field = s, Instance = receiver, OnThis = onThis, NoNull = true, At = at };
+                if (source == null)
+                {
+                    continue;
+                }
+                Emit(new KFactUse
+                {
+                    Cond = SameCount(new KVar(result), callee.OriginalDefinition.ReturnType, source, s is IParameterSymbol sp ? sp.Type : FieldType(s)),
+                    Key = CountKey(callee, s),
+                    At = at,
+                });
+            }
+        }
+
+        // ------------------------------------------------------------------ what a returned list interface is
+
+        private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<IMethodSymbol, string> _returnedKind =
+            new System.Runtime.CompilerServices.ConditionalWeakTable<IMethodSymbol, string>();
+
+        /// <summary>
+        /// A member that returns a list through an interface (public IReadOnlyList&lt;Part&gt; Parts => parts): what each
+        /// expression it returns is by its type, an array ("$arr") or a modeled collection ("$coll"), where they are all
+        /// one; else null. What a collection behind an interface is goes with it where it is converted, in the member:
+        /// that its result is one is a candidate postcondition, as a computed list's count is, so that a caller reads
+        /// the list, not a collection it knows nothing of.
+        /// </summary>
+        private static string ReturnedKind(IMethodSymbol m) => _returnedKind.GetValue(m.OriginalDefinition, def =>
+        {
+            if (def.MethodKind is not (MethodKind.Ordinary or MethodKind.PropertyGet) || def.IsAbstract || def.IsVirtual || def.IsOverride || def.IsExtern || def.IsAsync ||
+                !IsCollectionInterface(def.ReturnType) || (def.AssociatedSymbol ?? def).DeclaringSyntaxReferences.Length != 1 || KernelTypes.Compilation == null)
+            {
+                return null;
+            }
+            var decl = (def.AssociatedSymbol ?? def).DeclaringSyntaxReferences[0].GetSyntax();
+            var getter = (decl as PropertyDeclarationSyntax)?.AccessorList?.Accessors.FirstOrDefault(a => a.Keyword.Text == "get");
+            SyntaxNode body = decl switch
+            {
+                PropertyDeclarationSyntax p => p.ExpressionBody?.Expression ?? getter?.ExpressionBody?.Expression ?? (SyntaxNode)getter?.Body,
+                MethodDeclarationSyntax d => d.ExpressionBody?.Expression ?? (SyntaxNode)d.Body,
+                _ => null,
+            };
+            if (body == null)
+            {
+                return null;
+            }
+            var returned = body is ExpressionSyntax one ? new List<ExpressionSyntax> { one }
+                : body.DescendantNodes(n => !(n is AnonymousFunctionExpressionSyntax || n is LocalFunctionStatementSyntax)).OfType<ReturnStatementSyntax>().Select(r => r.Expression).ToList();
+            var model = CsVerify.Analyzers.Compilations.ModelOf(KernelTypes.Compilation, body.SyntaxTree);
+            var kinds = returned.Select(e => e == null ? null : model.GetTypeInfo(e).Type is ITypeSymbol t ? (IsArray(t) ? "$arr" : IsCollection(t) ? "$coll" : null) : null).Distinct().ToList();
+            return kinds.Count == 1 ? kinds[0] : null;
+        });
+
+        private static string KindKey(IMethodSymbol m) => FactPrefix(m) + "is:" + ReturnedKind(m);
+
+        /// <summary>At a return of such a member: the candidate that its result is what its type said where it was converted.</summary>
+        private void KindCandidate(IOperation returned)
+        {
+            if (_m == null || ReturnedKind(_m) is not string kind)
+            {
+                return;
+            }
+            var check = KCheck.Of(OrElse(IsNull(new KVar("result")), new KOp(kind, new KVar("result"))), Checks.Candidate, returned.Syntax, "what a returned list is");
+            check.Key = KindKey(_m);
+            Emit(check);
+        }
+
+        /// <summary>After a call of such a member: its result is an array, or a modeled collection, while the candidate holds.</summary>
+        private void KindFact(IMethodSymbol callee, string result, SyntaxNode at)
+        {
+            if (result == null || _awaiting || ReturnedKind(callee) is not string kind)
+            {
+                return;
+            }
+            Emit(new KFactUse
+            {
+                Cond = OrElse(IsNull(new KVar(result)), new KOp(kind, new KVar(result))),
+                Key = KindKey(callee),
+                At = at,
+            });
+        }
+
         /// <summary>The query parameter of this method a query reads, through operators that keep, drop or map its rows one to one; else null.</summary>
         private IParameterSymbol GivenRows(IOperation op)
         {

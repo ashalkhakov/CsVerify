@@ -1,3 +1,4 @@
+using System;
 using System.IO;
 using System.Linq;
 using CsVerify.Verifier;
@@ -45,6 +46,37 @@ public static class Lonely
             var r = Engine.VerifySources(new[] { ("Test.cs", Harness.Usings + source) }, o);
             Assert.True(r.CompilationErrors.Count == 0, string.Join("\n", r.CompilationErrors));
             return r;
+        }
+
+        [Fact]
+        public void TheState_IsNamedOnce_WhereAnExpressionReadsItAgain()
+        {
+            // (a contract that reads a list through an interface several times: each read is of the whole state, which the
+            // expression names once instead of writing its every map out at each)
+            var boogie = Path.Combine(Path.GetTempPath(), "csverify-state-" + Guid.NewGuid().ToString("N") + ".bpl");
+            try
+            {
+                var r = Run(@"using System.Collections.Generic;
+public static class Lists
+{
+    public static int First(IReadOnlyList<int> xs)
+    {
+        Spec.Requires(xs.Count >= 2 && xs[0] == 1 && xs[1] == 2);
+        Spec.Ensures<int>(r => r == xs[0] && xs.Count >= 2 && xs[1] == 2);
+        return xs[0];
+    }
+}", boogie: boogie);
+                Assert.True(r.Errors("First").Length == 0, r.Explain("First"));
+                var text = File.ReadAllText(boogie);
+                Assert.Contains("(var $stNow := $st(", text);
+                // (its maps written out a few times in the procedure, not once a read)
+                var procedure = text.Substring(text.IndexOf("procedure Lists.First", StringComparison.Ordinal));
+                Assert.True(System.Text.RegularExpressions.Regex.Matches(procedure, @"\$stNow\b").Count > System.Text.RegularExpressions.Regex.Matches(procedure, @"\$st\(").Count);
+            }
+            finally
+            {
+                File.Delete(boogie);
+            }
         }
 
         [Fact]
@@ -127,6 +159,82 @@ public static class Make
             var r = Run(boxes, only: "Make.");
             Assert.True(r.Errors("Right").Length == 0, r.Explain("Right"));
             Assert.Equal(new[] { "CSV1004" }, r.Errors("Wrong"));
+        }
+
+        [Fact]
+        public void AMethodNotSelected_ThatReachesAnEmptyArray_ChangesNoField()
+        {
+            // (a method not selected is its contract and what the effects analysis says it writes: Array.Empty<T>(),
+            // the same array each time, runs nothing of T's, so it writes no field)
+            const string desk = @"using System.Collections.Generic;
+public abstract record Answer<T>
+{
+    private Answer() { }
+    public static Answer<T> Nothing() { Spec.Ensures<Answer<T>>(r => r is Listed l && l.Items.Count == 0); return new Listed(Array.Empty<T>()); }
+    public sealed record Listed(IReadOnlyList<T> Items) : Answer<T>;
+}
+public sealed record Note(string Text);
+public sealed record Ticket(string Value);
+public sealed class Desk
+{
+    public int Served { get; private set; }
+    public Ticket? Held { get; private set; }
+    public void Reset() { Served = 0; Held = null; }
+    public Answer<Note> Idle() { Spec.Ensures<Answer<Note>>(r => r is Answer<Note>.Listed l && l.Items.Count == 0); return Answer<Note>.Nothing(); }
+}
+public static class Use
+{
+    public static Answer<Note> Ask(Desk d) { Spec.Ensures<Answer<Note>>(r => d.Served == Spec.Old(d.Served) && d.Held == Spec.Old(d.Held)); return d.Idle(); }
+    public static bool Same(Desk d, Ticket asked)
+    {
+        Spec.Ensures<bool>(r => !r || d.Held == asked);
+        if (d.Held is not { } known) { return false; }
+        if (known != asked) { return false; }
+        var none = d.Idle();
+        return true;
+    }
+    public static void Wrong(Desk d) { Spec.Ensures(d.Served == Spec.Old(d.Served)); d.Reset(); }
+}";
+            var r = Run(desk, only: "Use.");
+            Assert.True(r.Errors("Ask").Length == 0, r.Explain("Ask"));
+            Assert.True(r.Errors("Same").Length == 0, r.Explain("Same"));
+            Assert.Equal(new[] { "CSV1002" }, r.Errors("Wrong"));
+        }
+
+        [Fact]
+        public void AMethodNotSelected_ThatRunsAQuery_WritesWhatItsLambdasWrite()
+        {
+            // (a library member is judged by what each call hands it: it runs the lambdas and the methods it is handed,
+            // so what they write, it writes; a query made where it is handed on, a list interface and a record that
+            // only compares its fields hand over nothing more. A sequence that came from elsewhere may run anything)
+            const string routes = @"using System.Collections.Generic; using System.Linq;
+public sealed record Tag { public Tag(string v) { Value = v; } public string Value { get; } public override string ToString() => Value; }
+public sealed record Leg(Tag Carrier, int Miles);
+public enum Mark { Late, Lost }
+public sealed class Route
+{
+    private readonly List<Leg> legs = new();
+    private string? marks;
+    public int State { get; private set; }
+    public int Seen { get; private set; }
+    public IReadOnlyCollection<Mark> Marks => (marks ?? string.Empty).Split(',').Select(Enum.Parse<Mark>).ToHashSet();
+    private int Unknown(IReadOnlyList<Leg> offered) { var known = legs.Select(l => l.Carrier).ToHashSet(); return offered.Where(l => !known.Contains(l.Carrier)).DistinctBy(l => l.Carrier).ToList().Count; }
+    private bool Marked(Mark m) { return Marks.Contains(m); }
+    private int Counting(List<int> xs) { return xs.Where(x => { Seen = x; return x > 1; }).ToList().Count; }
+    private int Lazy(IEnumerable<int> xs) { return xs.Where(x => x > 1).ToList().Count; }
+    public int Offer(IReadOnlyList<Leg> offered) { Spec.Ensures<int>(r => State == Spec.Old(State) && Seen == Spec.Old(Seen)); return Unknown(offered); }
+    public bool Check(Mark m) { Spec.Ensures<bool>(r => State == Spec.Old(State)); return Marked(m); }
+    public int Tally(List<int> xs) { Spec.Ensures<int>(r => State == Spec.Old(State)); return Counting(xs); }
+    public int Overlooked(List<int> xs) { Spec.Ensures<int>(r => Seen == Spec.Old(Seen)); return Counting(xs); }
+    public int Trusted(IEnumerable<int> xs) { Spec.Ensures<int>(r => Seen == Spec.Old(Seen)); return Lazy(xs); }
+}";
+            var r = Run(routes, only: new[] { "Route.Offer", "Route.Check", "Route.Tally", "Route.Overlooked", "Route.Trusted" });
+            foreach (var ok in new[] { "Offer", "Check", "Tally" })
+            {
+                Assert.True(r.Errors(ok).Length == 0, r.Explain(ok));
+            }
+            Assert.Equal(new[] { "CSV1002" }, r.Errors("Overlooked"));
+            Assert.Equal(new[] { "CSV1002" }, r.Errors("Trusted"));
         }
 
         [Fact]

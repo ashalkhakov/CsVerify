@@ -180,7 +180,6 @@ namespace CsVerify.Verifier.Boogie
             var type = (INamedTypeSymbol)da.Parameter.Type;
             var key = FuncKey(type);
             _p.AddDelegateKey(key);
-            _p.CallsDelegates = true;
             Assumed(m);
             var srcArg = kind == "index" || call.Instance != null ? null : call.Arguments.First(a => a.Parameter.Ordinal == 0);
             var srcOp = kind == "index" ? null : call.Instance ?? Unconverted(srcArg.Value);
@@ -259,11 +258,13 @@ namespace CsVerify.Verifier.Boogie
             else if (kind == "write")
             {
                 _p.HavocsAll = true;
+                _p.CallsDelegates = true;
                 Emit(new KHavocAll());
             }
             else if (!quiet)
             {
                 _p.HavocsAll = true;
+                _p.CallsDelegates = true;
                 Emit(new KHavocAll { Unless = new KOp("$nochange", d) });
             }
             ForgetCaptured();
@@ -657,7 +658,6 @@ namespace CsVerify.Verifier.Boogie
             {
                 var key = FuncKey(da.Parameter.Type);
                 _p.AddDelegateKey(key);
-                _p.CallsDelegates = true;
                 var (lambda, quiet, free) = Handed(da);
                 if (!free)
                 {
@@ -680,6 +680,7 @@ namespace CsVerify.Verifier.Boogie
                 {
                     delegatesQuiet = false;
                     _p.HavocsAll = true;
+                    _p.CallsDelegates = true;
                     Emit(new KHavocAll { Unless = new KOp("$nochange", dv) });
                 }
             }
@@ -1371,8 +1372,10 @@ namespace CsVerify.Verifier.Boogie
                     }
                     throw new NotTranslated("a call of List's " + callee.Name + ", which has no stub contract");
                 }
-                // (a list of data values: its stubs compare elements as references, which data values aren't)
-                if (((INamedTypeSymbol)callee.ContainingType).TypeArguments.Any(IsData) && callee.Name is "Contains" or "IndexOf" or "LastIndexOf" or "Remove" or "BinarySearch")
+                // (a list of data values: its stubs compare elements as references, which data values aren't; nor are
+                // structs, but those whose equality is their value's, a typed id)
+                if (((INamedTypeSymbol)callee.ContainingType).TypeArguments.Any(a => IsData(a) || IsStruct(a) && !IsComparedStruct(a)) &&
+                    callee.Name is "Contains" or "IndexOf" or "LastIndexOf" or "Remove" or "BinarySearch")
                 {
                     throw new NotTranslated("a list of data values' " + callee.Name);
                 }
@@ -1535,7 +1538,13 @@ namespace CsVerify.Verifier.Boogie
             var gives = Returns(constructed);
             var result = listCtor ? Declare("t$" + _temps++, callee.ContainingType) : gives == null ? null : Declare("t$" + _temps++, !list && Returns(callee.OriginalDefinition) is ITypeParameterSymbol tp ? tp : gives);
             // (where exceptions are seen, a call of what may throw (not a proof) throws, or returns)
-            var throwsTo = _cfgBlock == null || _contractOf?.Invoke(callee) is Contract cc && (cc.IsPure || cc.IsLemma) ? null : ThrowTarget(_cfgBlock.EnclosingRegion);
+            // (a function that may throw does, outside its domain: a proof may not, unless it is such a function too)
+            bool partial = Partial(callee);
+            if (partial && (_p.Ghost || _contract.IsPure || _contract.IsLemma) && !(_p.Partial && !_p.Ghost))
+            {
+                throw new NotTranslated($"a read of '{callee.AssociatedSymbol?.Name ?? callee.Name}', which may throw, where nothing may (a lemma, ghost code, a [Pure] member that isn't its expression)");
+            }
+            var throwsTo = _cfgBlock == null || !partial && _contractOf?.Invoke(callee) is Contract cc && (cc.IsPure || cc.IsLemma) ? null : ThrowTarget(_cfgBlock.EnclosingRegion);
             SteadyArguments(callee, args, call.Syntax);
             // (an async callee's awaits let other code run, which can't reach this method's confined objects)
             var keepers = IsTaskMethod(constructed) && !list ? Confined().Select(l => Declare(Local(l), l.Type)).ToList() : new List<string>();
@@ -1590,8 +1599,8 @@ namespace CsVerify.Verifier.Boogie
                 RefOuts = refOuts,
             });
             // (a collection that compares its elements with an Equals of the program's, or hashes them: that code runs, and
-            // may change anything)
-            if (list && RunsEquals(callee))
+            // may change anything, unless the effects analysis finds it changes nothing)
+            if (list && RunsEquals(callee) && KernelTypes.RunsUserCode?.Invoke(callee) != false)
             {
                 _p.HavocsAll = true;
                 _p.CallsDelegates = true;
@@ -1616,6 +1625,12 @@ namespace CsVerify.Verifier.Boogie
             if (!(_contractOf?.Invoke(callee) is Contract pc && (pc.IsPure || pc.IsLemma)))
             {
                 ForgetCaptured();
+            }
+            // (a member that computes a list: what is inferred of its result's count, Lowering.HelperFacts)
+            if (!list && _phase == 0)
+            {
+                CountFacts(callee, receiver, onThis, args, result, call.Syntax);
+                KindFact(callee, result, call.Syntax);
             }
             foreach (var (_, rv) in refOuts)
             {

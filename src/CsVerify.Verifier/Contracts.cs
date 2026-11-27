@@ -51,6 +51,8 @@ namespace CsVerify.Verifier
         public readonly List<(Contract Base, IOperation Frame)> BaseModifies = new List<(Contract, IOperation)>();
         /// <summary>Methods whose parameters stand for this one's in the specifications (a contract class's method, bases).</summary>
         public readonly List<IMethodSymbol> Aliases = new List<IMethodSymbol>();
+        /// <summary>The preconditions that code evaluated before (a filter a LINQ lambda comes after): where one held, it was defined.</summary>
+        public readonly HashSet<IOperation> Evaluated = new HashSet<IOperation>();
         /// <summary>The termination measure's components, compared lexicographically; null without Spec.Decreases.</summary>
         public IReadOnlyList<IOperation> Decreases;
         /// <summary>Spec.Modifies: the objects whose fields the method may write (besides those it allocates); null if none given.</summary>
@@ -71,6 +73,8 @@ namespace CsVerify.Verifier
         /// </summary>
         public bool OfDelegate;
         public bool IsTrusted, IsLemma, IsPure;
+        /// <summary>IsPure, of a member nothing says is [Pure]: its body is an expression with no effects (ExpressionFunctions).</summary>
+        public bool InferredPure;
         /// <summary>
         /// For an external member with a [ContractsFor] stub: the stub method, whose contract this is (trusted: assumed
         /// at calls, never proved). Its parameters are an alias of the member's, after <c>@this</c> if it has one.
@@ -178,6 +182,11 @@ namespace CsVerify.Verifier
                 IsLemma = SpecSymbols.IsLemma(method),
                 IsPure = SpecSymbols.IsPure(method),
             };
+            // (or a member whose body is an expression with no effects: ExpressionFunctions)
+            if (!c.IsPure && !isStub && ExpressionFunctions.Inferred(method, compilation))
+            {
+                c.IsPure = c.InferredPure = true;
+            }
             var syntax = method.DeclaringSyntaxReferences.Select(r => r.GetSyntax()).FirstOrDefault();
             BlockSyntax block;
             ExpressionSyntax exprBody;

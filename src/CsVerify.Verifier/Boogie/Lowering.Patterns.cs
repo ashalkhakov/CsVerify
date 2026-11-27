@@ -134,6 +134,31 @@ namespace CsVerify.Verifier.Boogie
                 case INegatedPatternOperation np: return Not(Pattern(np.Pattern, v, type, mode));
                 case IBinaryPatternOperation bp:
                     return new KOp(bp.OperatorKind == BinaryOperatorKind.And ? "&&" : "||", Pattern(bp.LeftPattern, v, type, mode), Pattern(bp.RightPattern, v, type, mode));
+                // (x is { } y of a value that isn't a struct of parts, an int's or a date's (of an int?, where it has one): it is one)
+                case IRecursivePatternOperation vp when type.IsValueType && !IsStruct(type) && !IsTuple(type) && vp.DeconstructionSubpatterns.Length == 0 && vp.PropertySubpatterns.Length == 0 &&
+                                                        (vp.MatchedType == null || SymbolEqualityComparer.Default.Equals(vp.MatchedType, type)):
+                    if (vp.DeclaredSymbol is ILocalSymbol vl)
+                    {
+                        Bind(vl, v, mode);
+                    }
+                    return KLit.True;
+                // (a list's, an array's or a string's, xs is { Count: > 0 }: not null, and its count as the pattern says)
+                case IRecursivePatternOperation np when (Listed(type) || IsString(type)) && np.DeconstructionSubpatterns.Length == 0 && np.PropertySubpatterns.Length > 0 &&
+                                                        (np.MatchedType == null || SymbolEqualityComparer.Default.Equals(np.MatchedType.WithNullableAnnotation(NullableAnnotation.None), type.WithNullableAnnotation(NullableAnnotation.None))) &&
+                                                        np.PropertySubpatterns.All(sp => sp.Member is IPropertyReferenceOperation { Property: { Name: "Count" or "Length", Type.SpecialType: SpecialType.System_Int32 } }):
+                {
+                    if (np.DeclaredSymbol is ILocalSymbol nl)
+                    {
+                        Bind(nl, v, mode);
+                    }
+                    KExpr cond = NotNull(v);
+                    foreach (var sp in np.PropertySubpatterns)
+                    {
+                        var count = IsString(type) ? new KOp("slen", v) : CountOf(v, type);
+                        cond = AndAlso(cond, Pattern(sp.Pattern, count, ((IPropertyReferenceOperation)sp.Member).Property.Type, mode));
+                    }
+                    return cond;
+                }
                 // (x is { } y of a reference: not null)
                 case IRecursivePatternOperation rn when !IsData(type) && NullPattern(rn):
                     if (rn.DeclaredSymbol is ILocalSymbol rl)

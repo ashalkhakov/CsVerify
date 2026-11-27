@@ -82,6 +82,7 @@ namespace CsVerify.Verifier.Boogie
                 {
                     if (!IsRequired(field) || m.GetAttributes().Any(a => a.AttributeClass?.Name == "SetsRequiredMembersAttribute"))
                     {
+                        AssumeBuilt(field);
                         Assert(NotNull(Sel(FieldMap(field), new MVar("this"))),
                             At("CSV1014", ret.At, $"field '{field.Name}' is not nullable, but might be null when the constructor of {m.ContainingType.Name} returns"));
                     }
@@ -108,6 +109,11 @@ namespace CsVerify.Verifier.Boogie
                         Assert(NotNull(value), At("CSV1014", a.NotNullAt, $"'{a.NotNullAt}' might store null, but '{a.NotNullName}' is not nullable"));
                     }
                     Emit(MAssign.Of(a.Var, value));
+                    return;
+                }
+                case KBuilt b:
+                {
+                    Built(b);
                     return;
                 }
                 case KFieldStore fs:
@@ -313,12 +319,20 @@ namespace CsVerify.Verifier.Boogie
                         ArrayType = n.ArrayType,
                         Size = Code(n.Size),
                         Elements = n.Elements?.Select(Code).ToArray(),
+                        Cells = n.Cells == null ? null : Spec(n.Cells, out _),
                     });
                     // (a new array's cells are all in hand)
                     if (_p.UsesCells)
                     {
                         Emit(MAssign.Of("cells", Store("cells", new MVar(n.Var), new MLit("(lambda i$: int :: 1.0)"))));
                     }
+                    return;
+                case KNewCollection n:
+                    Emit(new MNewCollection
+                    {
+                        Var = n.Var,
+                        Rows = n.Rows.Select(r => (r.map, Spec(r.value, out _))).ToArray(),
+                    });
                     return;
                 case KCall c:
                     Call(c, decreases);
@@ -397,8 +411,47 @@ namespace CsVerify.Verifier.Boogie
             {
                 Assert(NotNull(value), At("CSV1014", fs.At, $"'{fs.At}' might store null, but field '{fs.Field.Name}' is not nullable"));
             }
+            // (an immutable object's invariant is relied on once it is handed over: its fields are as they were then)
+            if (_p.ThisEscapes && fs.OnThis && HasObjectInvariant(_p.Method.ContainingType))
+            {
+                Assert(Not(new MVar(BuiltFlag)), At("CSV1015", fs.At, $"'{fs.At}' changes a {_p.Method.ContainingType.Name} that has escaped its constructor, where its invariant is relied on already"));
+            }
             Emit(MFieldStore.Of(fs, o, value));
             return;
+        }
+
+        /// <summary>In a constructor that hands this over: has it yet? (A built object's non-nullable fields are set, as any object's.)</summary>
+        private const string BuiltFlag = "built$";
+
+        /// <summary>Within the body's statements (not the contract's clauses, which no local is in scope of).</summary>
+        private bool _inBody;
+
+        /// <summary>What a built object's non-nullable field holds, where this constructor's object is one already.</summary>
+        private void AssumeBuilt(ISymbol field)
+        {
+            if (_p.ThisEscapes)
+            {
+                Emit(MAssume.Of(Implies(new MVar(BuiltFlag), NotNull(Sel(FieldMap(field), new MVar("this"))))));
+            }
+        }
+
+        /// <summary>
+        /// this is handed over in its constructor: whoever gets it takes it for an object of its class, which it must
+        /// be already (each non-nullable field set, its invariant holding). It is one from here on.
+        /// </summary>
+        private void Built(KBuilt b)
+        {
+            foreach (var field in InstanceFields(b.Type).Where(ReadNonNull))
+            {
+                AssumeBuilt(field);
+                Assert(NotNull(Sel(FieldMap(field), new MVar("this"))),
+                    At("CSV1015", b.At, $"'this' escapes the constructor of {b.Type.Name} before its field '{field.Name}', which is not nullable, is set"));
+            }
+            if (HasObjectInvariant(b.Type))
+            {
+                ProveInvariant(b.Type, new MVar("this"), b.At, $"when 'this' escapes the constructor of {b.Type.Name}");
+            }
+            Emit(MAssign.Of(BuiltFlag, MLit.True));
         }
 
         private void ViewOfNew(KOwn own)

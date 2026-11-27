@@ -145,7 +145,7 @@ public static class Dispatch
         [Fact]
         public void ADecisionsPureCases_AreSeenByItsCallers()
         {
-            // (a call knows a [Pure] member's body, and only the postconditions of any other)
+            // (a call knows a member's body where it is one expression with no effects, [Pure] or not)
             const string Source = @"using System.Collections.Generic;
 public sealed record Shipped(int Qty);
 public enum Why { NoStock }
@@ -165,12 +165,17 @@ public static class Dispatch
         return qty > 0 ? Verdict<Shipped, Why>.Grant(new Shipped(qty)) : Verdict<Shipped, Why>.Refuse(Why.NoStock);
     }
 }";
-            var pure = Harness.Verify(Source.Replace("PURE", "[Pure]"));
-            foreach (var ok in new[] { "Grant", "Refuse", "Ship" })
+            foreach (var pure in new[] { Harness.Verify(Source.Replace("PURE", "[Pure]")), Harness.Verify(Source.Replace("PURE", "")) })
             {
-                Assert.True(pure.Errors(ok).Length == 0, pure.Explain(ok));
+                foreach (var ok in new[] { "Grant", "Refuse", "Ship" })
+                {
+                    Assert.True(pure.Errors(ok).Length == 0, pure.Explain(ok));
+                }
             }
-            Assert.Equal(new[] { "CSV1002" }, Harness.Verify(Source.Replace("PURE", "")).Errors("Ship"));
+            // (a body of statements, with no contract: only its type)
+            var opaque = Source.Replace("PURE public static Verdict<TChange, TWhy> Refuse(TWhy why) => new Refused(why);",
+                "public static Verdict<TChange, TWhy> Refuse(TWhy why) { var refused = new Refused(why); return refused; }").Replace("PURE", "");
+            Assert.Equal(new[] { "CSV1002" }, Harness.Verify(opaque).Errors("Ship"));
         }
 
         [Fact]
@@ -237,6 +242,521 @@ public static class Amounts
             Assert.Equal(new[] { "CSV1002" }, r.Errors("Overflows"));
             Assert.Equal(new[] { "CSV1004" }, r.Errors("Rounds"));
             Assert.Equal(new[] { "CSV1004" }, r.Errors("MayRound"));
+        }
+
+        [Fact]
+        public void ADecimalSumOrDifference_KeepsItsSign()
+        {
+            // (a whole number of units under 2^96 is representable, so what rounds is far from zero)
+            var r = Harness.Verify(@"public static class Rests
+{
+    public static decimal Rest(decimal total, decimal fee) { Spec.Requires(total > fee); Spec.Ensures<decimal>(r => r > 0m); return total - fee; }
+    public static decimal Owed(decimal paid, decimal due) { Spec.Requires(paid < due); Spec.Ensures<decimal>(r => r < 0m); return paid - due; }
+    public static decimal Both(decimal a, decimal b) { Spec.Requires(a > 0m && b > 0m); Spec.Ensures<decimal>(r => r > 0m); return a + b; }
+    public static decimal RestOrNone(decimal total, decimal fee) { Spec.Requires(total >= fee); Spec.Ensures<decimal>(r => r > 0m); return total - fee; }
+    public static void BackAgain(decimal total, decimal fee) { Spec.Assert(total - fee + fee == total); }
+}");
+            foreach (var ok in new[] { "Rest", "Owed", "Both" })
+            {
+                Assert.True(r.Errors(ok).Length == 0, r.Explain(ok));
+            }
+            Assert.Equal(new[] { "CSV1002" }, r.Errors("RestOrNone"));
+            // (the difference may round, and the sum again)
+            Assert.Equal(new[] { "CSV1004" }, r.Errors("BackAgain"));
+        }
+
+        [Fact]
+        public void ACollectionOfGuidsOrTimes_HoldsThemAsValues()
+        {
+            // (#136, P: a Guid, a DateTime or a TimeSpan is the integer the kernel keeps for it, in a collection too)
+            var r = Harness.Verify(@"using System.Collections.Generic; using System.Linq;
+public sealed class Line
+{
+    public Line(Guid item, int count) { Item = item; Count = count; }
+    public Guid Item { get; }
+    public int Count { get; }
+}
+public sealed class Basket
+{
+    private readonly List<Line> lines = new();
+    public IReadOnlyList<Guid> Items => lines.Select(l => l.Item).ToList();
+    public int Size() { Spec.Ensures<int>(r => r >= 0); return Items.Count; }
+}
+public sealed record Named(Guid Id, string Name);
+public static class Ids
+{
+    public static bool Kept(List<Guid> ids, Guid id)
+    {
+        Spec.Requires(ids.Count < 1000);
+        Spec.Ensures<bool>(r => r && ids.Count == Spec.Old(ids.Count) + 1 && ids[ids.Count - 1] == id);
+        ids.Add(id);
+        return ids.Contains(id);
+    }
+    public static Guid First(IReadOnlyList<Guid> ids) { Spec.Requires(ids.Count > 0); Spec.Ensures<Guid>(r => r == ids[0]); return ids[0]; }
+    public static DateTime Latest(List<DateTime> at)
+    {
+        Spec.Requires(at.Count == 2);
+        Spec.Ensures<DateTime>(r => r >= at[0] && r >= at[1]);
+        return at[0] > at[1] ? at[0] : at[1];
+    }
+    public static int Stock(Dictionary<Guid, int> stock, Guid item) { Spec.Requires(stock.ContainsKey(item) && stock[item] == 3); Spec.Ensures<int>(r => r == 3); return stock[item]; }
+    public static bool Seen(HashSet<Guid> seen, Guid id) { Spec.Ensures<bool>(r => !r && seen.Contains(id)); return seen.Add(id) && !seen.Contains(id); }
+    public static IReadOnlyList<Guid> IdsOf(List<Named> named) { Spec.Ensures<IReadOnlyList<Guid>>(r => r.Count == named.Count); return named.Select(n => n.Id).ToList(); }
+    public static void Put(IList<Guid> ids, Guid id) { Spec.Requires(ids.Count > 0); ids[0] = id; }
+    public static int Waiting(Queue<TimeSpan> q) { Spec.Ensures<int>(r => r == q.Count); return q.Count; }
+    public static bool Wrong(List<Guid> ids, Guid id) { Spec.Ensures<bool>(r => r); return ids.Contains(id); }
+    public static bool WrongStock(Dictionary<Guid, int> stock, Guid a, Guid b) { Spec.Requires(stock.ContainsKey(a)); Spec.Ensures<bool>(r => r); return stock.ContainsKey(b); }
+}");
+            foreach (var ok in new[] { "get_Items", "Size", "Kept", "First", "Latest", "Stock", "Seen", "IdsOf", "Put", "Waiting" })
+            {
+                Assert.True(r.Errors(ok).Length == 0, r.Explain(ok));
+            }
+            Assert.Equal(new[] { "CSV1002" }, r.Errors("Wrong"));
+            Assert.Equal(new[] { "CSV1002" }, r.Errors("WrongStock"));
+        }
+
+        [Fact]
+        public void ACollectionOfRecordStructs_AndADateOnly()
+        {
+            // (#136, P' and S: a typed id is a value a collection may hold and compare; a DateOnly is its day's number)
+            var r = Harness.Verify(@"using System.Collections.Generic; using System.Linq;
+public readonly record struct ItemId(Guid Value);
+public readonly record struct Named(string Name, int No);
+public sealed record Part(ItemId Item, decimal Amount);
+public sealed record Slot(Guid Id, DateOnly Day);
+public sealed class Order
+{
+    private readonly List<Part> parts = new();
+    public Guid Id { get; private set; }
+    internal DateOnly Day { get; private set; }
+    public IReadOnlyList<ItemId> Items => parts.Select(p => p.Item).ToList();
+    public Slot Current => new(Id, Day);
+    public int Size() { Spec.Ensures<int>(r => r >= 0); return Items.Count; }
+    public bool Later(Order other) { Spec.Ensures<bool>(r => r == (Day > other.Day)); return Day > other.Day; }
+}
+public static class Keys
+{
+    public static int Stock(Dictionary<ItemId, int> stock, ItemId item) { Spec.Requires(stock.ContainsKey(item) && stock[item] == 3); Spec.Ensures<int>(r => r == 3); return stock[item]; }
+    public static bool Seen(HashSet<ItemId> seen, ItemId id) { Spec.Ensures<bool>(r => !r && seen.Contains(id)); return seen.Add(id) && !seen.Contains(id); }
+    public static bool Has(List<ItemId> ids, ItemId id) { Spec.Ensures<bool>(r => r == ids.Contains(id)); return ids.Contains(id); }
+    public static ItemId First(IReadOnlyList<ItemId> ids) { Spec.Requires(ids.Count > 0); Spec.Ensures<ItemId>(r => r == ids[0]); return ids[0]; }
+    public static IReadOnlyList<ItemId> Of(List<Part> parts) { Spec.Ensures<IReadOnlyList<ItemId>>(r => r.Count == parts.Count); return parts.Select(p => p.Item).ToList(); }
+    public static int Names(List<Named> names) { Spec.Ensures<int>(r => r == names.Count); return names.Count; }
+    public static bool HasName(List<Named> names, Named n) { return names.Contains(n); }
+    public static int ByName(Dictionary<Named, int> d) { return d.Count; }
+    public static bool WrongStock(Dictionary<ItemId, int> stock, ItemId a, ItemId b) { Spec.Requires(stock.ContainsKey(a)); Spec.Ensures<bool>(r => r); return stock.ContainsKey(b); }
+}");
+            foreach (var ok in new[] { "get_Items", "get_Current", "Size", "Later", "Stock", "Seen", "Has", "First", "Of", "Names" })
+            {
+                Assert.True(r.Errors(ok).Length == 0, r.Explain(ok));
+            }
+            Assert.Equal(new[] { "CSV1002" }, r.Errors("WrongStock"));
+            // (a struct with a string compares it by its characters, which a collection's model doesn't: no key, and no Contains)
+            Assert.Equal(new[] { "CSV1902" }, r.Errors("HasName"));
+            Assert.Equal(new[] { "CSV1902" }, r.Errors("ByName"));
+        }
+
+        [Fact]
+        public void AComputedListsCount_IsItsSources_WhereItIs()
+        {
+            // (#136, P'': a member of one expression that makes a list states no contract; that its result has as many
+            // elements as a collection it names is a candidate, proved in its body and assumed by its callers while it holds)
+            var r = Harness.Verify(@"using System.Collections.Generic; using System.Linq;
+public sealed class Line
+{
+    public Line(Guid item, int count) { Item = item; Count = count; }
+    public Guid Item { get; }
+    public int Count { get; }
+}
+public sealed class Basket
+{
+    private readonly List<Line> lines = new();
+    public IReadOnlyList<Guid> Items => lines.Select(l => l.Item).ToList();
+    public IReadOnlyList<Guid> Big => lines.Where(l => l.Count > 1).Select(l => l.Item).ToList();
+    public List<int> Counts() => lines.Select(l => l.Count).ToList();
+    public static IReadOnlyList<Guid> Of(List<Line> given) => given.Select(l => l.Item).ToList();
+    public int Size() { Spec.Ensures<int>(r => r == lines.Count); return Items.Count; }
+    public int Sizes() { Spec.Ensures<int>(r => r == lines.Count); return Counts().Count; }
+    public static int OfSize(List<Line> given) { Spec.Ensures<int>(r => r == given.Count); return Of(given).Count; }
+    public int Bigs() { Spec.Ensures<int>(r => r == lines.Count); return Big.Count; }
+    public int After() { Spec.Ensures<int>(r => r == lines.Count); var items = Items; lines.Add(new Line(Guid.Empty, 1)); return items.Count; }
+}");
+            foreach (var ok in new[] { "get_Items", "get_Big", "Counts", "Of", "Size", "Sizes", "OfSize" })
+            {
+                Assert.True(r.Errors(ok).Length == 0, r.Explain(ok));
+            }
+            // (a filter keeps fewer: no such fact, and the member is none the worse; a count is of the list as it was made)
+            Assert.Equal(new[] { "CSV1002" }, r.Errors("Bigs"));
+            Assert.Equal(new[] { "CSV1002" }, r.Errors("After"));
+        }
+
+        [Fact]
+        public void AListThroughAGetter_IsThatList()
+        {
+            // (what a collection behind an interface is goes with it where it is converted, in the getter: a candidate
+            // postcondition, so that its caller reads the list)
+            var r = Harness.Verify(@"using System.Collections.Generic;
+public sealed record Part(int No);
+public sealed class Order
+{
+    private readonly List<int> ids = new();
+    private readonly List<Part> parts = new();
+    private readonly int[] codes = new int[4];
+    public IReadOnlyList<int> Ids => ids;
+    public IReadOnlyList<Part> Parts => parts;
+    public IReadOnlyList<int> Codes() { return codes; }
+    public IReadOnlyList<int> Either(bool a) { if (a) { return ids; } return codes; }
+    public int First() { Spec.Requires(ids.Count > 0); Spec.Ensures<int>(r => r == ids[0]); return Ids[0]; }
+    public int Size() { Spec.Ensures<int>(r => r == ids.Count); return Ids.Count; }
+    public Part FirstPart() { Spec.Requires(parts.Count > 0); Spec.Ensures<Part>(r => r == parts[0]); return Parts[0]; }
+    public int Code() { Spec.Requires(codes.Length == 4); Spec.Ensures<int>(r => r == codes[0]); return Codes()[0]; }
+    public int After() { Spec.Requires(ids.Count == 1); Spec.Ensures<int>(r => r == 2); var seen = Ids; ids.Add(7); return seen.Count; }
+    public static int Other(Order o) { Spec.Requires(o.ids.Count > 0); Spec.Ensures<int>(r => r == o.ids[0]); return o.Ids[0]; }
+    public int Unknown(bool a) { Spec.Requires(ids.Count > 0 && codes.Length > 0); return Either(a)[0]; }
+    public static bool Has(IReadOnlyList<int> xs, int x)
+    {
+        Spec.Ensures<bool>(r => !r || xs.Count > 0);
+        for (int i = 0; i < xs.Count; i++) { if (xs[i] == x) { return true; } }
+        return false;
+    }
+}");
+            foreach (var ok in new[] { "First", "Size", "FirstPart", "Code", "After", "Other", "Has" })
+            {
+                Assert.True(r.Errors(ok).Length == 0, r.Explain(ok));
+            }
+            // (a list or an array, by the path taken: neither is said)
+            Assert.Equal(new[] { "CSV1003" }, r.Errors("Unknown"));
+        }
+
+        [Fact]
+        public void ARecordsEquality_ComparesAStructADateAndADecimalField()
+        {
+            // (a record's synthesized Equals compares each field as its type does: a typed id by its value)
+            var r = Harness.Verify(@"public readonly record struct TicketId
+{
+    public TicketId(Guid value) { if (value == Guid.Empty) { throw new ArgumentException(""empty"", nameof(value)); } Value = value; }
+    public Guid Value { get; }
+}
+public sealed record Seat
+{
+    public Seat(TicketId id, string row, DateOnly day, decimal price) { Id = id; Row = row; Day = day; Price = price; }
+    public TicketId Id { get; }
+    public string Row { get; }
+    public DateOnly Day { get; }
+    public decimal Price { get; }
+}
+public static class Seats
+{
+    public static bool Same(Seat a, Seat b) { Spec.Ensures<bool>(r => r == (a.Id == b.Id && a.Row == b.Row && a.Day == b.Day && a.Price == b.Price)); return a == b; }
+    public static bool SameId(TicketId a, TicketId b) { Spec.Ensures<bool>(r => r == (a.Value == b.Value)); return a == b; }
+    public static bool Wrong(Seat a, Seat b) { Spec.Ensures<bool>(r => r == (a.Id == b.Id)); return a == b; }
+}");
+            Assert.True(r.Errors("Same").Length == 0, r.Explain("Same"));
+            Assert.True(r.Errors("SameId").Length == 0, r.Explain("SameId"));
+            Assert.Equal(new[] { "CSV1002" }, r.Errors("Wrong"));
+        }
+
+        [Fact]
+        public void AnEmptyPropertyPattern_OfANullableValue_IsItsValue()
+        {
+            // (x is { } v of an int?, an enum?, a date?: where it has a value, v is it; xs is { Count: > 0 }: not null, and its count)
+            var r = Harness.Verify(@"using System.Collections.Generic;
+public enum Step { One, Two }
+public readonly record struct Fee(decimal Amount);
+public sealed class Flow
+{
+    public Step? Failed { get; private set; }
+    public DateTime? LockedUntil { get; private set; }
+    public DateOnly? Start { get; private set; }
+    public int? Enrolment { get; private set; }
+    public Fee? Goal { get; private set; }
+    public Guid? Owner { get; private set; }
+    public bool CanRestart => Failed is { } failed && failed == Step.Two;
+    public bool Restarts() { Spec.Ensures<bool>(r => r == (Failed == Step.Two)); return CanRestart; }
+    public bool Locked(DateTime now) { Spec.Ensures<bool>(r => r == (LockedUntil != null && now < LockedUntil.Value)); return LockedUntil is { } until && now < until; }
+    public bool Within(int cap) { Spec.Ensures<bool>(r => r == (Enrolment != null && Enrolment.Value <= cap)); return Enrolment is { } number && number <= cap; }
+    public bool Started(DateOnly today) { Spec.Ensures<bool>(r => !r || Start != null); if (Start is not { } start || start > today) { return false; } return true; }
+    public decimal GoalOr(decimal none) { Spec.Ensures<decimal>(r => Goal != null || r == none); if (Goal is not { } goal) { return none; } return goal.Amount; }
+    public bool Owned(Guid by) { Spec.Ensures<bool>(r => r == (Owner != null && Owner.Value == by)); return Owner is { } owner && owner == by; }
+    public static int Size(IReadOnlyList<int> xs) { Spec.Ensures<int>(r => r >= 0 && (r == 0 || xs != null)); return xs is { Count: > 0 } ? xs.Count : 0; }
+    public static bool Text(string s) { Spec.Ensures<bool>(r => r == (s != null && s.Length == 3)); return s is { Length: 3 }; }
+    public static bool Wrong(int? x) { Spec.Ensures<bool>(r => r); return x is { } v && v > 0; }
+}");
+            foreach (var ok in new[] { "get_CanRestart", "Restarts", "Locked", "Within", "Started", "GoalOr", "Owned", "Size", "Text" })
+            {
+                Assert.True(r.Errors(ok).Length == 0, r.Explain(ok));
+            }
+            Assert.Equal(new[] { "CSV1002" }, r.Errors("Wrong"));
+        }
+
+        [Fact]
+        public void ASensitiveValueObject_WithItsOwnEquals_IsOfTheSubset()
+        {
+            // ([Sensitive] is the taint analysis's; a record's own Equals is its ==, a function where it is one; a set
+            // through its interface is the set; string.Empty is the empty string)
+            var r = Harness.Verify(@"using System.Collections.Generic; using System.Linq;
+public enum Step { Ask, Wait, Done }
+[Sensitive]
+public sealed record Email
+{
+    private Email(string value) => Value = value;
+    public string Value { get; }
+    public static Email Parse(string value) => value.Length > 3 ? new Email(value) : throw new FormatException(""no"");
+    public bool Equals(Email? other) => other is not null && string.Equals(Value, other.Value, StringComparison.OrdinalIgnoreCase);
+    public override int GetHashCode() => StringComparer.OrdinalIgnoreCase.GetHashCode(Value);
+    public override string ToString() => Value;
+}
+public sealed record Code
+{
+    public Code(string text) { Text = text; }
+    public string Text { get; }
+    public bool Equals(Code? other) => other is not null && Text.Length == other.Text.Length;
+    public override int GetHashCode() => Text.Length;
+}
+public static class Steps
+{
+    public static readonly IReadOnlySet<Step> Waits = new HashSet<Step> { Step.Wait };
+}
+public sealed class Flow
+{
+    public string? Digits { get; private set; }
+    public Email? Contact { get; private set; }
+    public bool Waiting(Step step) { return Steps.Waits.Contains(step) && Steps.Waits.Count > 0; }
+    public static bool In(HashSet<Step> steps, Step step) { Spec.Requires(steps.Contains(step)); Spec.Ensures<bool>(r => r); IReadOnlySet<Step> seen = steps; return seen.Contains(step); }
+    public string Shown() { Spec.Ensures<string>(r => r != null && (Digits != null || r.Length == 0)); return Digits ?? string.Empty; }
+    public bool Has(Email e) { return Contact == e; }
+    public int Len() { Spec.Ensures<int>(r => r >= 0 && (Contact != null || r == 0)); return Contact == null ? 0 : Contact.Value.Length; }
+    public static bool Same(Code a, Code b) { Spec.Ensures<bool>(r => r == (a.Text.Length == b.Text.Length)); return a == b; }
+    public static bool Wrong(Code a, Code b) { Spec.Ensures<bool>(r => r == (a.Text == b.Text)); return a == b; }
+}");
+            foreach (var ok in new[] { "Parse", "Waiting", "In", "Shown", "Has", "Len", "Same" })
+            {
+                Assert.True(r.Errors(ok).Length == 0, r.Explain(ok));
+            }
+            Assert.Equal(new[] { "CSV1002" }, r.Errors("Wrong"));
+        }
+
+        [Fact]
+        public void ADecimal_IsWithinItsRange_WhereverItComesFrom()
+        {
+            // (#136, T: a record's constructor takes a decimal of decimal's range, which a parameter, a result, a
+            // struct's part and what arithmetic gives without overflowing are)
+            var r = Harness.Verify(@"public readonly record struct Fee(decimal Amount);
+public sealed record Pair(int? A, decimal B)
+{
+    public Pair Make(int a, decimal b) => new Pair(a, b);
+    public static Pair Of(int a, decimal b) { return new Pair(a, b); }
+    public static Pair Sum(decimal a, decimal b) { var s = a + b; return new Pair(1, s); }
+    public static Pair Times(decimal a, decimal b) { var s = a * b; return new Pair(1, s); }
+    public static Pair Over(decimal a, decimal b) { Spec.Requires(b != 0m); var s = a / b; return new Pair(1, s); }
+    public static Pair OfFee(Fee f) { return new Pair(2, f.Amount); }
+    public static Pair Again(Pair p) { return new Pair(p.A, Twice(p.B)); }
+    public static decimal Twice(decimal x) { return x + x; }
+}");
+            Assert.True(r.Success, string.Join("\n", r.Diagnostics.Where(d => d.IsError).Select(d => d.Id + " " + d.Message)));
+        }
+
+        [Fact]
+        public void ANewArray_ChangesNoArray_SoAListsCountStays()
+        {
+            // (a new array is an object not allocated before whose cells are what it is made with: no cell is written,
+            // so what a list read through an interface held before a params array was made, it holds after)
+            var r = Harness.Verify(@"using System.Collections.Generic; using System.Linq;
+public readonly record struct BatchId(Guid Value);
+public readonly record struct Fee(decimal Amount);
+public sealed record Member(BatchId Item, Fee Amount);
+public sealed record Terms(BatchId Id, DateOnly Day, IReadOnlyList<Member> Members, string Note, DateTime At, BatchId Other);
+public abstract record Command { private protected Command(DateTime now) => Now = now; public DateTime Now { get; } }
+public sealed record Request(Terms Terms, DateTime Now) : Command(Now);
+public abstract record Event;
+public sealed record Requested(Terms Terms, DateTime At) : Event;
+public enum Why { Nothing }
+public abstract record Decision<TEvent, TWhy>
+{
+    private Decision() { }
+    public static Decision<TEvent, TWhy> Accept(params TEvent[] events) { Spec.Ensures<Decision<TEvent, TWhy>>(r => r is Accepted a && a.Events == events); return new Accepted(events); }
+    public static Decision<TEvent, TWhy> Reject(TWhy why) { Spec.Ensures<Decision<TEvent, TWhy>>(r => r is Rejected j && j.Events.Count == 0); return new Rejected(why); }
+    public sealed record Accepted(IReadOnlyList<TEvent> Events) : Decision<TEvent, TWhy>;
+    public sealed record Rejected(TWhy Reason) : Decision<TEvent, TWhy> { public IReadOnlyList<TEvent> Events { get; init; } = Array.Empty<TEvent>(); }
+}
+public static class Batches
+{
+    public static Decision<Event, Why> DecideNew(Request command)
+    {
+        Spec.Ensures<Decision<Event, Why>>(r =>
+            r is Decision<Event, Why>.Accepted a
+                ? a.Events.Count == 1 && a.Events[0] is Requested b && b.Terms == command.Terms && command.Terms.Members.Count > 0
+                : r is Decision<Event, Why>.Rejected j && j.Events.Count == 0);
+        return command.Terms.Members.Count == 0 || command.Terms.Members.Any(m => m.Amount.Amount <= 0m)
+            ? Decision<Event, Why>.Reject(Why.Nothing)
+            : Decision<Event, Why>.Accept(new Requested(command.Terms, command.Now));
+    }
+}
+public static class Arrays
+{
+    public static int[] Three() { Spec.Ensures<int[]>(r => r.Length == 3 && r[0] == 1 && r[2] == 3); return new[] { 1, 2, 3 }; }
+    public static int[] Zeros(int n) { Spec.Requires(n > 0); Spec.Ensures<int[]>(r => r.Length == n && r[0] == 0); return new int[n]; }
+    public static int Kept(int[] a) { Spec.Requires(a.Length > 0 && a[0] == 7); Spec.Ensures<int>(r => r == 7); var b = new int[2]; b[0] = 9; return a[0]; }
+    public static bool Fresh(int[] a) { Spec.Ensures<bool>(r => r); var b = new int[1]; return !ReferenceEquals(a, b); }
+    public static int Loop(int n) { Spec.Requires(0 < n && n < 100); Spec.Ensures<int>(r => r == 5); int[] last = new[] { 5 }; for (int i = 0; i < n; i++) { Spec.Invariant(last.Length == 1 && last[0] == 5); last = new[] { 5 }; } return last[0]; }
+    public static int Count(IReadOnlyList<int> xs) { Spec.Requires(xs.Count > 0); Spec.Ensures<int>(r => r > 0); var tmp = new[] { 1, 2 }; return xs.Count; }
+    public static bool Wrong() { Spec.Ensures<bool>(r => r); var a = new[] { 1 }; var b = new[] { 2 }; return a[0] == b[0]; }
+}");
+            foreach (var ok in new[] { "DecideNew", "Three", "Zeros", "Kept", "Fresh", "Loop", "Arrays.Count" })
+            {
+                Assert.True(r.Errors(ok).Length == 0, r.Explain(ok));
+            }
+            Assert.Equal(new[] { "CSV1002" }, r.Errors("Wrong"));
+        }
+
+        [Fact]
+        public void ALambdaInARecordsMember_ANullableDecimal_ASequenceOfDates()
+        {
+            // (a data type's member may hold a lambda; a decimal? is a nullable value; an IEnumerable of dates, structs
+            // or tuples is a reference as any other's)
+            var r = Harness.Verify(@"using System.Collections.Generic; using System.Linq;
+public readonly record struct Fee(decimal Amount);
+public sealed record Prize(int Level, DateTime? PaidAt, DateTime? SeenAt);
+public sealed record Stage(int Id, int Level);
+public sealed record Standing(int? Enrolment, IReadOnlyList<Prize> Prizes, Fee Saved, decimal? Bonus)
+{
+    public bool Has(Stage s) => Prizes.Any(p => p.Level == s.Level);
+    public Prize? PrizeFor(Stage s) => Prizes.FirstOrDefault(p => p.Level == s.Level);
+    public decimal BonusOr(decimal none) { Spec.Ensures<decimal>(r => Bonus != null || r == none); return Bonus ?? none; }
+}
+public enum Step { One, Two }
+public sealed record Progress(Step? Done, Step? Failed, string? Reason);
+public sealed class Flow
+{
+    public Progress SetUp { get; private set; } = new Progress(null, null, null);
+    public int Count { get; private set; }
+    public void Done(Step step) => SetUp = SetUp.Failed == step ? SetUp with { Done = step, Failed = null, Reason = null } : SetUp with { Done = step };
+    public void Bump(bool twice) { Spec.Requires(Count < 100); Spec.Ensures(Count == Spec.Old(Count) + (twice ? 2 : 1)); Count = twice ? Count + 2 : Count + 1; }
+}
+public static class Uses
+{
+    public static decimal Half(decimal? x) { Spec.Ensures<decimal>(r => x != null || r == 0m); return x is { } v ? v : 0m; }
+    public static bool Wrong(decimal? x) { Spec.Ensures<bool>(r => r); return x is { } v && v > 0m; }
+    public static int Days(IEnumerable<DateOnly> days) { Spec.Ensures<int>(r => r >= 0); return days.Count(); }
+    public static int Fees(IEnumerable<Fee> fees) { Spec.Ensures<int>(r => r >= 0); return fees.Count(); }
+    public static int Pairs(IEnumerable<(DateTime At, decimal Amount)> xs) { Spec.Ensures<int>(r => r >= 0); return xs.Count(); }
+    public static int Listed(IReadOnlyList<(int No, string Name)> xs) { Spec.Ensures<int>(r => r == xs.Count); return xs.Count; }
+}");
+            // (and an auto-property assigned a value that branches, P = c ? a : b: its field)
+            foreach (var ok in new[] { "Has", "PrizeFor", "BonusOr", "Half", "Days", "Fees", "Pairs", "Listed", "Flow.Done", "Bump" })
+            {
+                Assert.True(r.Errors(ok).Length == 0, r.Explain(ok));
+            }
+            Assert.Equal(new[] { "CSV1002" }, r.Errors("Wrong"));
+        }
+
+        [Fact]
+        public void ASetMadeOfASequence_HoldsItsElements()
+        {
+            // (ToHashSet: a new set whose members are what some element is; as many as the elements where no two are
+            // the same, fewer otherwise)
+            var r = Harness.Verify(@"using System.Collections.Generic; using System.Linq;
+public static class Sets
+{
+    public static bool Has(int[] xs) { Spec.Requires(xs.Length > 2); Spec.Ensures<bool>(r => r); var s = xs.ToHashSet(); return s.Contains(xs[1]) && s.Count > 0 && s.Count <= xs.Length; }
+    public static bool Lacks(List<int> xs, int y) { Spec.Requires(Spec.Forall(0, xs.Count, i => xs[i] != y)); Spec.Ensures<bool>(r => !r); return xs.ToHashSet().Contains(y); }
+    public static int Three() { Spec.Ensures<int>(r => r == 3); return new[] { 1, 2, 3 }.ToHashSet().Count; }
+    public static bool Names(List<string> xs) { Spec.Requires(xs.Count > 0); Spec.Ensures<bool>(r => r); return xs.ToHashSet().Contains(xs[0]); }
+    public static int Miscounted(int[] xs) { Spec.Ensures<int>(r => r == xs.Length); return xs.ToHashSet().Count; }
+    public static bool Guessed(int[] xs, int y) { Spec.Ensures<bool>(r => r); return xs.ToHashSet().Contains(y); }
+}");
+            foreach (var ok in new[] { "Has", "Lacks", "Three", "Names" })
+            {
+                Assert.True(r.Errors(ok).Length == 0, r.Explain(ok));
+            }
+            Assert.Equal(new[] { "CSV1002" }, r.Errors("Miscounted"));
+            Assert.Equal(new[] { "CSV1002" }, r.Errors("Guessed"));
+        }
+
+        [Fact]
+        public void AQuerysCopy_ChangesNoCollection_AndAHelperThatRunsAQuery_NoField()
+        {
+            // (a list, an array or a set a query is copied to is a new object that holds what it is made with: nothing
+            // is written, so a list read through an interface holds what it held. A library member handed a lambda
+            // that writes nothing changes nothing; nor does a set that compares records whose equality is their
+            // fields'. One whose Equals writes, does)
+            var r = Harness.Verify(@"using System.Collections.Generic; using System.Linq;
+public sealed record Tag { public Tag(string v) { Value = v; } public string Value { get; } public override string ToString() => Value; }
+public sealed record Leg(Tag Carrier, int Miles);
+public sealed record Loud { public static int Seen; public Loud(string v) { Value = v; } public string Value { get; } public bool Equals(Loud? other) { Seen = 1; return other is not null && other.Value == Value; } public override int GetHashCode() => 0; }
+public sealed class Route
+{
+    private readonly List<Leg> legs = new();
+    public int State { get; private set; }
+    public Tag? Via { get; private set; }
+    public int Listed(IReadOnlyList<Leg> offered) { Spec.Ensures<int>(r => r <= offered.Count); var added = offered.Where(l => l.Miles > 0).ToList(); return added.Count; }
+    public int Arrayed(IReadOnlyList<Leg> offered) { Spec.Ensures<int>(r => r <= offered.Count); var added = offered.Where(l => l.Miles > 0).ToArray(); return added.Length; }
+    public int Fresh(IReadOnlyList<Leg> offered) { Spec.Ensures<int>(r => 0 <= r && r <= offered.Count && State == Spec.Old(State)); var known = legs.Select(l => l.Carrier).ToHashSet(); return offered.Where(l => !known.Contains(l.Carrier)).ToList().Count; }
+    private int Unknown(IReadOnlyList<Leg> offered) { var known = legs.Select(l => l.Carrier).ToHashSet(); return offered.Where(l => !known.Contains(l.Carrier)).DistinctBy(l => l.Carrier).ToList().Count; }
+    public bool Steady(IReadOnlyList<Leg> offered, Tag via) { Spec.Requires(Via == via); Spec.Ensures<bool>(r => r && State == Spec.Old(State)); Unknown(offered); return Via == via; }
+    public bool Quiet(Tag t) { Spec.Ensures<bool>(r => State == Spec.Old(State)); var known = new HashSet<Tag>(); return known.Contains(t); }
+    public bool Heard(Loud t) { Spec.Requires(Loud.Seen == 0); Spec.Ensures<bool>(r => Loud.Seen == 0); var known = new HashSet<Loud>(); return known.Contains(t); }
+}
+public sealed class Person { public string Name = """"; public string Email = """"; }
+public static class Pairs
+{
+    public static void Joined(List<Person> xs, List<Person> ys) { var r = xs.Join(ys, a => a.Name, b => b.Email, (a, b) => new { a.Name, b.Email }).ToList(); Spec.Assert(Spec.Forall(0, r.Count, i => r[i].Name == r[i].Email)); }
+}");
+            foreach (var ok in new[] { "Listed", "Arrayed", "Fresh", "Route.Unknown", "Steady", "Quiet", "Joined" })
+            {
+                Assert.True(r.Errors(ok).Length == 0, r.Explain(ok));
+            }
+            Assert.Equal(new[] { "CSV1002" }, r.Errors("Heard"));
+        }
+
+        [Fact]
+        public void ASumOfDecimals_IsAddedInOrder()
+        {
+            // (Sum of decimals: from 0, each sum as decimal + gives it; what needs induction over its elements, their
+            // sign say, isn't known of it)
+            var r = Harness.Verify(@"using System.Collections.Generic; using System.Linq;
+public readonly record struct Fee(decimal Amount);
+public sealed record Line(int Kind, Fee Fee);
+public sealed class Bill
+{
+    private readonly List<Line> lines = new();
+    public decimal Total() { return lines.Sum(x => x.Fee.Amount); }
+    public decimal Due(Func<Line, bool> include) { Spec.Requires(Spec.Total(include)); return lines.Where(x => x.Kind == 1 && include(x)).Sum(x => x.Fee.Amount); }
+    public static decimal None(List<Line> ls) { Spec.Requires(ls.Count == 0); Spec.Ensures<decimal>(r => r == 0m); return ls.Sum(x => x.Fee.Amount); }
+    public static decimal Half(List<Line> ls) { Spec.Requires(ls.Count == 1 && ls[0] != null && ls[0].Fee.Amount == 0.5m); Spec.Ensures<decimal>(r => r == 0.5m); return ls.Sum(x => x.Fee.Amount); }
+    public static decimal Hoped(List<Line> ls) { Spec.Ensures<decimal>(r => r >= 0m); return ls.Sum(x => x.Fee.Amount); }
+    public static decimal Feared(List<Line> ls) { Spec.Requires(ls.Count == 1 && ls[0] != null && ls[0].Fee.Amount == 0.5m); Spec.Ensures<decimal>(r => r == 1m); return ls.Sum(x => x.Fee.Amount); }
+}");
+            foreach (var ok in new[] { "Bill.Total", "Due", "None", "Half" })
+            {
+                Assert.True(r.Errors(ok).Length == 0, r.Explain(ok));
+            }
+            foreach (var wrong in new[] { "Hoped", "Feared" })
+            {
+                Assert.Equal(new[] { "CSV1002" }, r.Errors(wrong));
+            }
+        }
+
+        [Fact]
+        public void AFuncsResult_IsNotNull_WhereItsTypeSaysSo()
+        {
+            // (#136, Q: each lambda made one is checked to return what its type says; and a Func may give a generic record)
+            var r = Harness.Verify(@"public sealed record Outcome(int Code);
+public abstract record Verdict<T> { private Verdict() { } public sealed record Yes(T Value) : Verdict<T>; public sealed record No : Verdict<T>; }
+public static class Runs
+{
+    public static Outcome When(bool open, Func<Outcome> then) { Spec.Requires(Spec.Pre(then)); Spec.Ensures<Outcome>(r => open || r.Code == 0); return open ? then() : new Outcome(0); }
+    public static Outcome Maybe(Func<Outcome?> then) { Spec.Requires(Spec.Pre(then)); return then(); }
+    public static Outcome Use() { return When(true, () => new Outcome(1)); }
+    public static Outcome Bad() { return When(true, () => null!); }
+    public static int Code(Func<Verdict<int>> then) { Spec.Requires(Spec.Pre(then)); Spec.Ensures<int>(r => r >= 0); return then() is Verdict<int>.Yes y && y.Value > 0 ? y.Value : 0; }
+}");
+            foreach (var ok in new[] { "Runs.When", "Runs.Use", "Runs.Bad", "Runs.Code" })
+            {
+                Assert.True(r.Errors(ok).Length == 0, r.Explain(ok));
+            }
+            Assert.Equal(new[] { "CSV1014" }, r.Errors("Maybe"));
+            Assert.Contains(r.Methods, m => m.Name.Contains("Bad.<lambda") && m.Diagnostics.Any(d => d.Id == "CSV1014"));
         }
 
         [Fact]
@@ -848,6 +1368,250 @@ public sealed record Money
             }
             Assert.Equal(new[] { "CSV1004" }, r.Errors("Wrong"));
             Assert.Equal(new[] { "CSV1004" }, r.Errors("NestedWrong"));
+        }
+
+        [Fact]
+        public void AValueOfATypeWithARange_IsWithinIt_WhereverItComesFrom()
+        {
+            // (a decimal, a DateTime's or a TimeSpan's ticks, an integer: within its type's range as a nullable value's
+            // value, a struct's field, a tuple's item, an out parameter's or a result's value, a field's, a record's
+            // member's part, a static readonly field's. A field of a data type holds one of its cases. A nullable
+            // struct's parts are its value's, where it has one. A record made of one exists, then: its constructor takes
+            // values of its members' types)
+            var r = Harness.Verify(@"using System.Collections.Generic;
+public enum Tone { Low, High }
+public readonly record struct Slot(decimal Amount, DateTime At);
+public sealed record Reading(decimal Total, DateTime At, TimeSpan Took, int Count, Tone Tone);
+public sealed record Stamp(DateTime At, string? Text);
+public sealed record Stamps(Stamp? First, DateTime? Second, bool Both);
+public readonly record struct Weight(decimal Grams);
+public sealed record Loads(Weight Total, Weight Net);
+public sealed record Dials(bool A, bool B, DateTime? ChangedAt) { public static readonly Dials Off = new(false, false, null); }
+public abstract record Note;
+public sealed record Turned(Dials From, Dials To) : Note;
+public sealed class Panel
+{
+    public Dials Current { get; private set; } = Dials.Off;
+    public List<Note> Turn(bool a, bool b, DateTime at) { var saved = new Dials(a, b, at); var notes = new List<Note>(); if (saved.A != Current.A) { notes.Add(new Turned(Current, saved)); } return notes; }
+    public Turned Kept(Dials saved) => new Turned(Current, saved);
+}
+public readonly record struct Mass
+{
+    public Mass(decimal grams, string unit) { Spec.Ensures(Grams == grams && Unit == unit); Grams = grams; Unit = unit; }
+    public decimal Grams { get; }
+    public string Unit { get; }
+    public static Mass Of(decimal grams) => new(grams, ""g"");
+}
+public sealed record Tariff(Mass Fee, int Free, Mass Limit, Mass? Least = null)
+{
+    public static readonly Mass Standard = Mass.Of(0.20m);
+    public static readonly decimal Rate = 0.5m;
+    public static readonly DateTime Epoch = DateTime.MinValue;
+    public static Mass Mutable = Mass.Of(0.40m);
+    public static Tariff WithLeast(int free, decimal limit, decimal? least) => new(Standard, free, Mass.Of(limit), least is { } l ? Mass.Of(l) : null);
+    public static Tariff Plain(int free, decimal limit) => new(Standard, free, Mass.Of(limit));
+    public static Tariff OfMutable(int free, decimal limit) => new(Mutable, free, Mass.Of(limit));
+    public static Reading OfConstants() => new Reading(Rate, Epoch, TimeSpan.Zero, 0, Tone.Low);
+    public static Turned OfOff(Dials saved) => new Turned(Dials.Off, saved);
+}
+public sealed class Source
+{
+    public decimal? Amount { get; set; }
+    public DateTime? At { get; set; }
+    public TimeSpan? Took { get; set; }
+    public int? Count { get; set; }
+    public Tone? Tone { get; set; }
+    public Slot? Slot { get; set; }
+    public Slot Kept { get; set; }
+    public Dictionary<string, DateTime> Seen { get; } = new Dictionary<string, DateTime>();
+}
+public static class Readings
+{
+    public static Reading OrElse(decimal? a, DateTime? at, TimeSpan? took, int? n, Tone? tone, DateTime now) => new Reading(a ?? 0m, at ?? now, took ?? TimeSpan.Zero, n ?? 0, tone ?? Tone.Low);
+    public static Reading Later(decimal total, DateTime? last, DateTime now) { var at = last ?? now; return new Reading(total, at, TimeSpan.Zero, 0, Tone.Low); }
+    public static Stamps Both(DateTime? first, DateTime? second) { var stamp = first is { } t ? new Stamp(t, null) : null; return new Stamps(stamp, second, false); }
+    public static Reading Values(decimal? a, DateTime? at, TimeSpan? took)
+    {
+        if (a is null || at is null || took is null) { return new Reading(0m, DateTime.MinValue, TimeSpan.Zero, 0, Tone.Low); }
+        return new Reading(a.Value, at.Value, took.Value, 0, Tone.Low);
+    }
+    public static Reading OfProperties(Source s, DateTime now) => new Reading(s.Amount ?? 0m, s.At ?? now, s.Took ?? TimeSpan.Zero, s.Count ?? 0, s.Tone ?? Tone.Low);
+    public static Reading OfSlot(Slot? slot, DateTime now) => slot is { } s ? new Reading(s.Amount, s.At, TimeSpan.Zero, 0, Tone.Low) : new Reading(0m, now, TimeSpan.Zero, 0, Tone.Low);
+    public static Reading OfSlotProperty(Source s, DateTime now) { var slot = s.Slot; return slot is null ? new Reading(0m, now, TimeSpan.Zero, 0, Tone.Low) : new Reading(slot.Value.Amount, slot.Value.At, TimeSpan.Zero, 0, Tone.Low); }
+    public static Reading OfKept(Source s) => new Reading(s.Kept.Amount, s.Kept.At, TimeSpan.Zero, 0, Tone.Low);
+    public static Reading OfTuple((decimal a, DateTime at) t) => new Reading(t.a, t.at, TimeSpan.Zero, 0, Tone.Low);
+    public static Reading OfMap(Source s, string key, DateTime now) => new Reading(0m, s.Seen.TryGetValue(key, out var at) ? at : now, TimeSpan.Zero, 0, Tone.Low);
+    public static DateTime Pick(DateTime? at, DateTime now) => at ?? now;
+    public static Reading OfResult(DateTime? at, DateTime now) => new Reading(0m, Pick(at, now), TimeSpan.Zero, 0, Tone.Low);
+    public static Reading Again(Reading r) => new Reading(r.Total, r.At, r.Took, r.Count, r.Tone);
+    public static Reading OfMember(Loads l, DateTime now) => new Reading(l.Total.Grams, now, TimeSpan.Zero, 0, Tone.Low);
+    // (a range says no more than it is)
+    public static bool Hoped(DateTime? at) { Spec.Ensures<bool>(r => r); return at == null; }
+    public static bool Feared(decimal? a) { Spec.Ensures<bool>(r => r); return a is { } v && v >= 0m; }
+    public static Reading Total(Reading r) { Spec.Ensures<Reading>(x => x.Total > 0m); return new Reading(r.Total, r.At, r.Took, r.Count, r.Tone); }
+}");
+            foreach (var ok in new[] { "OrElse", "Later", "Both", "Values", "OfProperties", "OfSlot", "OfSlotProperty", "OfKept", "OfTuple", "OfMap", "Pick", "OfResult", "Again", "OfMember", "Turn", "Kept", "WithLeast", "Plain", "OfMutable", "OfConstants", "OfOff" })
+            {
+                Assert.True(r.Errors(ok).Length == 0, r.Explain(ok));
+            }
+            Assert.Equal(new[] { "CSV1002" }, r.Errors("Hoped"));
+            Assert.Equal(new[] { "CSV1002" }, r.Errors("Feared"));
+            Assert.Equal(new[] { "CSV1002" }, r.Errors("Readings.Total"));
+        }
+
+        [Fact]
+        public void AComputedProperty_IsAFunctionOfTheState()
+        {
+            // (a [Pure] getter is a function of the state whether its body translates or not: two reads with nothing it
+            // reads written between them give one value, and a precondition of it holds where the body reads it. A
+            // DateTime's Add, Subtract and AddTicks are its + and -; any other property of such a value is a function of
+            // it, so a getter that reads one is an expression function)
+            var r = Harness.Verify(@"
+public sealed class Slot
+{
+    public DateTime? At { get; set; }
+    public DateTime Start { get; set; }
+    public int Count { get; set; }
+    [Pure] public DateTime? Whole => At is { } at ? at.AddTicks(-(at.Ticks % TimeSpan.TicksPerSecond)) : null;
+    public DateTime? Rounded => At is { } at ? at.AddTicks(-(at.Ticks % TimeSpan.TicksPerSecond)) : null;
+    [Pure] public DateTime? NextDay => At is { } at ? at.AddDays(1) : null;
+    public DateTime? Unmarked => At is { } at ? at.AddDays(1) : null;
+    public int? Year => At is { } at ? at.Year : null;
+    public DayOfWeek Day => Start.DayOfWeek;
+}
+public static class Reads
+{
+    public static DateTime Asked(Slot s) { Spec.Requires(s.Whole != null); return s.Whole!.Value; }
+    public static DateTime Twice(Slot s) => s.Whole is not null ? s.Whole.Value : DateTime.MinValue;
+    public static DateTime AskedRounded(Slot s) { Spec.Requires(s.Rounded != null); return s.Rounded!.Value; }
+    public static DateTime TwiceRounded(Slot s) => s.Rounded is not null ? s.Rounded.Value : DateTime.MinValue;
+    public static DateTime AskedNext(Slot s) { Spec.Requires(s.NextDay != null); return s.NextDay!.Value; }
+    public static DateTime TwiceNext(Slot s) => s.NextDay is not null ? s.NextDay.Value : DateTime.MinValue;
+    public static DateTime Other(Slot s) { if (s.NextDay is null) { return DateTime.MinValue; } s.Count = 1; return s.NextDay.Value; }
+    public static DateTime Written(Slot s, DateTime? now) { if (s.NextDay is null) { return DateTime.MinValue; } s.At = now; return s.NextDay.Value; }
+    public static DateTime Another(Slot s, Slot t) { if (s.NextDay is null) { return DateTime.MinValue; } return t.NextDay!.Value; }
+    public static DateTime Code(Slot s) => s.Unmarked is not null ? s.Unmarked.Value : DateTime.MinValue;
+    public static int TwiceYear(Slot s) => s.Year is not null ? s.Year.Value : 0;
+    public static int AskedYear(Slot s) { Spec.Requires(s.Year != null); return s.Year!.Value; }
+    public static bool SameDay(Slot s) { Spec.Ensures<bool>(r => r); return s.Day == s.Day; }
+    public static bool SameYear(DateTime d, TimeSpan t) { Spec.Ensures<bool>(r => r); return d.Year == d.Year && t.Days == t.Days; }
+    public static bool SameKind(DateTime d) { Spec.Ensures<bool>(r => r); return d.Kind == d.Kind; }
+    public static bool YearKnown(DateTime d) { Spec.Ensures<bool>(r => r); return d.Year > 0; }
+}
+public static class Ticks
+{
+    public static DateTime Later(DateTime d, long n) { Spec.Ensures<DateTime>(r => r.Ticks == d.Ticks + n); return d.AddTicks(n); }
+    public static DateTime Plus(DateTime d, TimeSpan t) { Spec.Ensures<DateTime>(r => r == d + t); return d.Add(t); }
+    public static DateTime Minus(DateTime d, TimeSpan t) { Spec.Ensures<DateTime>(r => r == d - t); return d.Subtract(t); }
+    public static TimeSpan Between(DateTime a, DateTime b) { Spec.Ensures<TimeSpan>(r => r == a - b); return a.Subtract(b); }
+    public static TimeSpan Sum(TimeSpan a, TimeSpan b) { Spec.Ensures<TimeSpan>(r => r == a + b); return a.Add(b).Subtract(TimeSpan.Zero); }
+    public static DateTime Floor(DateTime d) { Spec.Ensures<DateTime>(r => r <= d && r.Ticks % TimeSpan.TicksPerSecond == 0); return d.AddTicks(-(d.Ticks % TimeSpan.TicksPerSecond)); }
+    public static DateTime Hoped(DateTime d, long n) { Spec.Ensures<DateTime>(r => r > d); return d.AddTicks(n); }
+    public static DateTime Capped(DateTime d, long n) { try { return d.AddTicks(n); } catch (ArgumentOutOfRangeException) { return DateTime.MaxValue; } }
+}");
+            foreach (var ok in new[] { "get_Whole", "Asked", "Twice", "AskedRounded", "TwiceRounded", "AskedNext", "TwiceNext", "Other", "TwiceYear", "AskedYear", "SameDay", "SameYear",
+                "Later", "Plus", "Minus", "Between", "Sum", "Floor", "Capped" })
+            {
+                Assert.True(r.Errors(ok).Length == 0, r.Explain(ok));
+            }
+            // (a body that isn't translated is not verified; what it reads written between two reads, or another object's)
+            Assert.Equal(new[] { "CSV1902" }, r.Errors("get_NextDay"));
+            Assert.Equal(new[] { "CSV1013" }, r.Errors("Written"));
+            Assert.Equal(new[] { "CSV1013" }, r.Errors("Another"));
+            // (a getter nothing says is a function, whose body isn't one: code, a value at each read)
+            Assert.Equal(new[] { "CSV1013" }, r.Errors("Code"));
+            // (a DateTime's Kind is not its ticks'; a property's value is no more than a function's)
+            Assert.Equal(new[] { "CSV1002" }, r.Errors("SameKind"));
+            Assert.Equal(new[] { "CSV1002" }, r.Errors("YearKnown"));
+            Assert.Equal(new[] { "CSV1002" }, r.Errors("Hoped"));
+        }
+
+        [Fact]
+        public void ThisIsHandedOver_OnceItsObjectIsBuilt()
+        {
+            // (this as a value in its constructor (an argument, a receiver, a value stored): whoever gets it takes it for
+            // an object of its class, so each non-nullable field is set and its invariant holds there, CSV1015. From
+            // there on it is an object like any other: what a call leaves in its fields is not null)
+            var r = Harness.Verify(@"using System.Collections.Generic; using System.Diagnostics.CodeAnalysis;
+public sealed class Leaf { public Tree? Owner { get; set; } public object? Holder { get; set; } }
+public sealed class Tree
+{
+    public string Name { get; private set; }
+    public string Label { get; private set; }
+    public Tree(string name, Leaf? leaf) { Name = name; Label = name; if (leaf is not null) { leaf.Owner = this; } }
+}
+public sealed class Early { public string Name; public string Label; public Early(string name, Leaf leaf) { Name = name; leaf.Holder = this; Label = name; } }
+public sealed class Renamed
+{
+    public string Name; public string Label;
+    public Renamed(string name) { Name = name; Label = name; Rename(name); Spec.Assert(Label.Length >= 0); }
+    public void Rename(string to) { Label = to; }
+}
+public sealed class Hasty
+{
+    public string Name; public string Label;
+    public Hasty(string name) { Name = name; Rename(name); Label = name; }
+    public void Rename(string to) { Label = to; }
+}
+public sealed class Nulled { public string Name; public string Label; public Nulled(string name, Leaf leaf, string? maybe) { Name = name; Label = name; leaf.Holder = this; Label = maybe!; } }
+public sealed class Looped { public string Name; public Looped(string name, List<Leaf> leaves) { Name = name; foreach (var leaf in leaves) { leaf.Holder = this; } } }
+public sealed class LoopedEarly { public string Name; public LoopedEarly(string name, List<Leaf> leaves) { foreach (var leaf in leaves) { leaf.Holder = this; } Name = name; } }
+public sealed record Maker(string Id, string Name);
+public sealed class Link
+{
+    private string makerId = string.Empty;
+    private string makerName = string.Empty;
+    public Link() { }
+    [SetsRequiredMembers] public Link(Maker maker, DateTime at) { At = at; Maker = maker; }
+    public required DateTime At { get; init; }
+    public required Maker Maker { get => new(makerId, makerName); init { makerId = value.Id; makerName = value.Name; } }
+}
+public static class Uses
+{
+    public static void Made(Leaf leaf) { var t = new Tree(""a"", leaf); Spec.Assert(leaf.Owner != t); }
+    public static int Read(Leaf leaf) { var t = new Tree(""a"", leaf); return leaf.Owner is { } o ? o.Name.Length : 0; }
+}
+public sealed class Book { public object? Last; public void Note(object s) { Last = s; } }
+public sealed class Seal
+{
+    public readonly int Id;
+    [Invariant, Pure] public bool Valid() => Id > 0;
+    public Seal(int id, Book book) { Spec.Requires(id > 0); Id = id; book.Note(this); }
+}
+public sealed class SealEarly
+{
+    public readonly int Id;
+    [Invariant, Pure] public bool Valid() => Id > 0;
+    public SealEarly(int id, Book book) { Spec.Requires(id > 0); book.Note(this); Id = id; }
+}
+public sealed class SealChanged
+{
+    public readonly int Id;
+    [Invariant, Pure] public bool Valid() => Id > 0;
+    public SealChanged(int id, Book book) { Spec.Requires(id > 1); Id = id; book.Note(this); Id = id - 1; }
+}
+public class Shape { public string Kind; public Shape(string kind, List<Shape> all) { Kind = kind; all.Add(this); } }
+public sealed class Square : Shape { public string Side; public Square(string side, List<Shape> all) : base(""square"", all) { Side = side; } }
+public class Pet { public string Kind; public Pet(string kind, List<Pet> all) { Kind = kind; all.Add(this); } }
+public sealed class Cat : Pet { public string Sound = ""meow""; public Cat(List<Pet> all) : base(""cat"", all) { } }");
+            foreach (var ok in new[] { "Tree..ctor", "Renamed..ctor", "Looped..ctor", "Read", "Seal..ctor", "Pet..ctor", "Cat..ctor", "Square..ctor" })
+            {
+                Assert.True(r.Errors(ok).Length == 0, r.Explain(ok));
+            }
+            // (a property's init accessor run by a constructor that sets the required members)
+            Assert.Empty(r.Methods.Where(m => m.Name.StartsWith("Link.")).SelectMany(m => m.Diagnostics).Where(d => d.IsError).Select(d => d.Id + " " + d.Message));
+            // (before a field is set: as a value stored, as a receiver, in a loop)
+            Assert.Equal(new[] { "CSV1015" }, r.Errors("Early..ctor"));
+            Assert.Equal(new[] { "CSV1015" }, r.Errors("Hasty..ctor"));
+            Assert.Equal(new[] { "CSV1015" }, r.Errors("LoopedEarly..ctor"));
+            // (a built object's field takes no null; the new object is known to who was handed it)
+            Assert.Equal(new[] { "CSV1014" }, r.Errors("Nulled..ctor"));
+            Assert.Equal(new[] { "CSV1004" }, r.Errors("Made"));
+            // (an immutable object's invariant: holding where it is handed over, and its fields as they were from there)
+            Assert.Equal(new[] { "CSV1015" }, r.Errors("SealEarly..ctor"));
+            Assert.Equal(new[] { "CSV1015" }, r.Errors("SealChanged..ctor"));
+            // (a derived class's object isn't built while its base's constructor runs, unless initializers set its fields)
+            Assert.Equal(new[] { "CSV1015" }, r.Errors("Shape..ctor"));
         }
     }
 }

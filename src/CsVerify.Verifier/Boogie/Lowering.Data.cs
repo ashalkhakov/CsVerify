@@ -258,6 +258,8 @@ namespace CsVerify.Verifier.Boogie
                     return PositionalProperty(dp, mode);
                 case IPropertyReferenceOperation tk when tk.Property.Name == "Ticks" && tk.Instance != null && IsOpaqueTicks(tk.Instance.Type):
                     return Lower(tk.Instance, mode);
+                case IPropertyReferenceOperation vp when ValueProperty(vp) is string function:
+                    return new KOp(function, Lower(vp.Instance, mode));
                 // (a tuple written here: a value of its elements; an element of one: a function of it)
                 // (a GroupBy group's Key: its first element's key)
                 case IPropertyReferenceOperation { Property.Name: "Key", Instance: ILocalReferenceOperation gk } when IsLinqGroup(gk.Type):
@@ -320,6 +322,9 @@ namespace CsVerify.Verifier.Boogie
                     return FloatLiteral(fcv.Value, ff.Type);
                 case IFieldReferenceOperation tc when TimeConstant(tc) is KExpr ticks:
                     return ticks;
+                // (string.Empty: the empty string)
+                case IFieldReferenceOperation { Instance: null, Field: { Name: "Empty", ContainingType.SpecialType: SpecialType.System_String } }:
+                    return new KVar(_literal?.Invoke("") ?? throw new NotTranslated("a string literal"));
                 // (Guid.Empty: the id 0; a new Guid's isn't known, so it may be it)
                 case IFieldReferenceOperation { Instance: null, Field.Name: "Empty" } ge when IsOpaqueId(ge.Field.ContainingType):
                     return KLit.Zero;
@@ -454,6 +459,13 @@ namespace CsVerify.Verifier.Boogie
                 // (not a string's: as an object, one isn't its value, which another equal string may be)
                 case IConversionOperation uc when !uc.IsImplicit && uc.Conversion.IsReference && uc.Conversion.IsImplicit && (IsRef(uc.Type) || IsString(uc.Type)) && IsRef(uc.Operand.Type):
                     return Lower(uc.Operand, mode);
+                // (d as C, of data: d where it's a C, else null; it never throws)
+                case IConversionOperation ta when ta.IsTryCast && ta.Conversion.IsReference && IsData(ta.Type) && IsData(ta.Operand.Type):
+                {
+                    Data(ta.Type);
+                    var v = Operand(ta.Operand, mode);
+                    return Ite(AndAlso(NotNull(v), IsCase(v, ta.Type)), v, KLit.Null);
+                }
                 case IConversionOperation down when !down.IsImplicit && down.Conversion.IsReference && IsData(down.Type) && IsData(down.Operand.Type):
                     return DataDownCast(down, mode);
                 default: return DataExprCoreOther(e, mode);
@@ -551,10 +563,42 @@ namespace CsVerify.Verifier.Boogie
                 case IBinaryOperation eq when eq.OperatorMethod != null && eq.OperatorKind is BinaryOperatorKind.Equals or BinaryOperatorKind.NotEquals &&
                                               IsData(eq.OperatorMethod.ContainingType):
                     return RecordEquality(eq, mode);
+                // (a nullable struct's == and !=, the synthesized operator lifted: with null, whether it has a value; else
+                // both null, or neither and their values equal)
+                case IBinaryOperation ns when ns.OperatorKind is BinaryOperatorKind.Equals or BinaryOperatorKind.NotEquals && ns.IsLifted && ns.OperatorMethod is { IsImplicitlyDeclared: true } &&
+                                              (IsNullableStruct(ns.LeftOperand.Type) || IsNullableStruct(ns.RightOperand.Type)):
+                {
+                    var (l, r) = (LoweredSide(ns.LeftOperand, mode), LoweredSide(ns.RightOperand, mode));
+                    bool withNull = Unconverted(ns.LeftOperand).ConstantValue is { HasValue: true, Value: null } || Unconverted(ns.RightOperand).ConstantValue is { HasValue: true, Value: null };
+                    var same = withNull ? Eq(l, r) : ValuesEqual(l, r, IsNullableStruct(ns.LeftOperand.Type) ? ns.LeftOperand.Type : ns.RightOperand.Type, ns.Syntax, 0)
+                                                     ?? throw new NotTranslated("== of " + ns.OperatorMethod.ContainingType.Name);
+                    return ns.OperatorKind == BinaryOperatorKind.Equals ? same : Not(same);
+                }
                 // (a value object's == and !=: the same object, or two whose fields are equal; not where its own Equals decides)
                 case IBinaryOperation vo when vo.OperatorMethod != null && vo.OperatorMethod.IsImplicitlyDeclared && vo.OperatorKind is BinaryOperatorKind.Equals or BinaryOperatorKind.NotEquals &&
                                               IsValueObject(vo.OperatorMethod.ContainingType) && !OwnEquals(vo.OperatorMethod.ContainingType):
                     return ValueObjectEquality(vo, mode);
+                // (where its own Equals decides: the same object, or the left one's Equals of the right, a function)
+                case IBinaryOperation ve when ve.OperatorMethod != null && ve.OperatorMethod.IsImplicitlyDeclared && ve.OperatorKind is BinaryOperatorKind.Equals or BinaryOperatorKind.NotEquals &&
+                                              IsValueObject(ve.OperatorMethod.ContainingType) && OwnEquals(ve.OperatorMethod.ContainingType):
+                {
+                    var type = ve.OperatorMethod.ContainingType;
+                    var own = type.GetMembers("Equals").OfType<IMethodSymbol>().First(m => !m.IsImplicitlyDeclared && m.Parameters.Length == 1 &&
+                        SymbolEqualityComparer.Default.Equals(m.Parameters[0].Type.OriginalDefinition, type.OriginalDefinition)).OriginalDefinition;
+                    var (l, r) = mode.InSpec ? (Lower(ve.LeftOperand, mode), Lower(ve.RightOperand, mode)) : (Operand(ve.LeftOperand, mode), Operand(ve.RightOperand, mode));
+                    // (with null: whether it is null, as nothing equals null (Equals' law, which every implementation keeps to))
+                    if (Unconverted(ve.LeftOperand).ConstantValue is { HasValue: true, Value: null } || Unconverted(ve.RightOperand).ConstantValue is { HasValue: true, Value: null })
+                    {
+                        return ve.OperatorKind == BinaryOperatorKind.Equals ? Eq(l, r) : Not(Eq(l, r));
+                    }
+                    // (an Equals that is code: whether two objects are equal isn't known)
+                    if (!_isFunction(own))
+                    {
+                        return EqualityNotKnown(l, r, ve, mode);
+                    }
+                    var same = OrElse(Eq(l, r), AndAlso(NotNull(l), new KFnCall { Callee = own, Receiver = l, Args = new[] { r }, At = ve.Syntax }));
+                    return ve.OperatorKind == BinaryOperatorKind.Equals ? same : Not(same);
+                }
                 // (a record struct's == and !=: each field equal, as its synthesized Equals compares them)
                 case IBinaryOperation rs when rs.OperatorMethod != null && rs.OperatorMethod.IsImplicitlyDeclared && rs.OperatorKind is BinaryOperatorKind.Equals or BinaryOperatorKind.NotEquals &&
                                               IsStruct(rs.OperatorMethod.ContainingType) && !OwnEquals(rs.OperatorMethod.ContainingType):
@@ -855,7 +899,27 @@ namespace CsVerify.Verifier.Boogie
                 var actual = Actual(oc.Type, ip.Name)?.Type ?? ip.Type;
                 args.Add(Box(set.TryGetValue(ip, out var given) ? InitValue(given, ip, actual, mode) : InitDefault(ip, def), ip.Type, actual));
             }
-            var made = new KOp(CaseName((INamedTypeSymbol)oc.Type), args.ToArray());
+            KExpr made = new KOp(CaseName((INamedTypeSymbol)oc.Type), args.ToArray());
+            // (a case whose constructor checks its arguments before it stores them: built where no check throws)
+            if (StoredChecksHold(oc, def, ordered, values) is KExpr holds0)
+            {
+                if (mode.InSpec)
+                {
+                    made = Ite(holds0, made, Thrown(oc.Type, oc.Syntax));
+                }
+                else if ((_p.Ghost || _contract.IsPure || _contract.IsLemma) && !(_p.Partial && !_p.Ghost))
+                {
+                    Emit(KCheck.Of(holds0, "CSV1011", oc.Syntax, $"'{oc.Syntax}' might throw: what {oc.Type.Name}'s constructor checks might not hold"));
+                }
+                else
+                {
+                    // (where it throws: to the handlers, or the path ends)
+                    var held = Declare("t$" + _temps++, KernelTypes.Compilation.GetSpecialType(SpecialType.System_Boolean));
+                    Emit(KAssign.Of(held, holds0));
+                    CastThrows(new KVar(held), false);
+                    Emit(KAssume.Of(new KVar(held)));
+                }
+            }
             if (mode.InSpec || !HasInvariants(oc.Type))
             {
                 return made;
@@ -880,6 +944,46 @@ namespace CsVerify.Verifier.Boogie
             }
             AssumeValid(new KVar(t), oc.Type);
             return new KVar(t);
+        }
+
+        /// <summary>
+        /// What a case's constructor checks of its arguments before it stores them (SpecSymbols.StoredChecks), all
+        /// holding, of these arguments; null where it checks nothing.
+        /// </summary>
+        private KExpr StoredChecksHold(IObjectCreationOperation oc, IMethodSymbol ctor, List<IArgumentOperation> ordered, KExpr[] values)
+        {
+            var checks = SpecSymbols.StoredChecks(ctor.ContainingType.OriginalDefinition);
+            if (checks.Count == 0 || !SymbolEqualityComparer.Default.Equals(ctor, DataTypes.Constructor(ctor.ContainingType.OriginalDefinition)))
+            {
+                return null;
+            }
+            KExpr Argument(IParameterSymbol p) => values[ordered.FindIndex(a => a.Parameter.Ordinal == p.Ordinal)];
+            KExpr all = KLit.True;
+            foreach (var (condition, throwsWhen, isNull) in checks)
+            {
+                KExpr c;
+                if (isNull != null)
+                {
+                    c = IsNull(Argument(isNull));
+                }
+                else
+                {
+                    var model = Compilations.ModelOf(KernelTypes.Compilation, condition.SyntaxTree);
+                    c = Spec(model.GetOperation(condition) ?? throw new NotTranslated("a constructor's check: " + condition), null);
+                    // (each parameter named apart, then given its argument: an argument may be a variable of a parameter's name)
+                    var names = ctor.Parameters.Select(_ => "k$" + _temps++).ToList();
+                    foreach (var p in ctor.Parameters)
+                    {
+                        c = Nameless.Substitute(c, new KVar(Local(p)), new KVar(names[p.Ordinal]));
+                    }
+                    foreach (var p in ctor.Parameters)
+                    {
+                        c = Nameless.Substitute(c, new KVar(names[p.Ordinal]), Argument(p));
+                    }
+                }
+                all = AndAlso(all, throwsWhen ? Not(c) : c);
+            }
+            return all;
         }
 
         private KExpr PositionalProperty(IPropertyReferenceOperation dp, LowerMode mode)
@@ -1018,7 +1122,8 @@ namespace CsVerify.Verifier.Boogie
             KExpr acc = null;
             var arms = sw.Arms.Select(arm =>
             {
-                var cond = Pattern(arm.Pattern, v, sw.Value.Type, mode);
+                // (of a nullable value, int? or an enum's: its patterns are of its value where it has one)
+                var cond = PartPattern(arm.Pattern, v, sw.Value.Type, mode);
                 if (arm.Guard != null)
                 {
                     cond = AndAlso(cond, Lower(arm.Guard, mode));
@@ -1083,12 +1188,8 @@ namespace CsVerify.Verifier.Boogie
                 _p.AddField(f);
                 KExpr Read(KExpr o) => new KField { Field = f, Instance = o, NoNull = true, At = at, InstanceAt = at };
                 var (a, b) = (Read(l), Read(r));
-                all = AndAlso(all,
-                    Scalar(ft) ? Eq(a, b)
-                    : IsString(ft) ? new KOp("streq", a, b)
-                    : IsData(ft) && KernelTypes.Data.HasValueEquality((INamedTypeSymbol)ft) ? Eq(a, b)
-                    : IsValueObject(ft) && depth < 4 ? OrElse(Eq(a, b), AndAlso(AndAlso(NotNull(a), NotNull(b)), FieldsEqual(a, b, ft, at, depth + 1)))
-                    : throw new NotTranslated("== of " + type.Name + ", whose field " + f.Name + " is a " + ft));
+                // (as a record's synthesized Equals compares it: a struct by its fields, a date by its ticks, a nullable value)
+                all = AndAlso(all, ValuesEqual(a, b, ft, at, depth + 1) ?? throw new NotTranslated("== of " + type.Name + ", whose field " + f.Name + " is a " + ft));
             }
             return all;
         }
@@ -1104,7 +1205,14 @@ namespace CsVerify.Verifier.Boogie
         /// </summary>
         private KExpr ValuesEqual(KExpr a, KExpr b, ITypeSymbol t, SyntaxNode at, int depth)
         {
-            if (Scalar(t) || IsDecimal(t) || IsNullableValue(t) || IsData(t) && KernelTypes.Data.HasValueEquality((INamedTypeSymbol)t))
+            // (a nullable struct's: both null, or neither and the structs' values equal)
+            if (IsNullableStruct(t))
+            {
+                return depth < 4 && ValuesEqual(NullableValue(a, t), NullableValue(b, t), Underlying(t), at, depth + 1) is KExpr values
+                    ? OrElse(AndAlso(IsNull(a), IsNull(b)), AndAlso(AndAlso(NotNull(a), NotNull(b)), values)) : null;
+            }
+            // (a DateTime's or a TimeSpan's ticks and a Guid: the ints the kernel keeps for them)
+            if (Scalar(t) || IsDecimal(t) || IsOpaqueTicks(t) || IsOpaqueId(t) || IsNullableValue(t) || IsData(t) && KernelTypes.Data.HasValueEquality((INamedTypeSymbol)t))
             {
                 return Eq(a, b);
             }
@@ -1177,6 +1285,28 @@ namespace CsVerify.Verifier.Boogie
             return null;
         }
 
+        /// <summary>
+        /// A record's == of fields the kernel doesn't compare: one reference (two nulls too) is equal, as C#'s synthesized
+        /// operator says before it asks Equals; two are some relation not known ($dataEq in a specification, a value not
+        /// known in code).
+        /// </summary>
+        private KExpr EqualityNotKnown(KExpr l, KExpr r, IBinaryOperation eq, LowerMode mode)
+        {
+            KExpr two;
+            if (mode.InSpec)
+            {
+                two = new KOp("$dataEq", l, r);
+            }
+            else
+            {
+                var unknown = Declare("t$" + _temps++, eq.Type);
+                Emit(KHavoc.Of(unknown));
+                two = new KVar(unknown);
+            }
+            var same = OrElse(Eq(l, r), two);
+            return eq.OperatorKind == BinaryOperatorKind.Equals ? same : Not(same);
+        }
+
         private KExpr RecordEquality(IBinaryOperation eq, LowerMode mode)
         {
             // (with null: whether it is null, whatever its fields are)
@@ -1189,29 +1319,12 @@ namespace CsVerify.Verifier.Boogie
                 {
                     return eq.OperatorKind == BinaryOperatorKind.Equals ? same : Not(same);
                 }
-                if (mode.InSpec)
-                {
-                    var eqv = new KOp("$dataEq", dl, dr);
-                    return eq.OperatorKind == BinaryOperatorKind.Equals ? eqv : Not(eqv);
-                }
-                var unknown = Declare("t$" + _temps++, eq.Type);
-                Emit(KHavoc.Of(unknown));
-                return new KVar(unknown);
+                return EqualityNotKnown(dl, dr, eq, mode);
             }
-            // (fields that don't compare as values, strings': in code, whether they're equal isn't known)
+            // (fields that don't compare as values, strings', or the record's own Equals: whether two are equal isn't known)
             if (!withNull && !KernelTypes.Data.HasValueEquality((INamedTypeSymbol)eq.OperatorMethod.ContainingType))
             {
-                // (in a specification: some relation, not known, between them)
-                if (mode.InSpec)
-                {
-                    var eqv = new KOp("$dataEq", Lower(eq.LeftOperand, mode), Lower(eq.RightOperand, mode));
-                    return eq.OperatorKind == BinaryOperatorKind.Equals ? eqv : Not(eqv);
-                }
-                Lower(eq.LeftOperand, mode);
-                Lower(eq.RightOperand, mode);
-                var unknown = Declare("t$" + _temps++, eq.Type);
-                Emit(KHavoc.Of(unknown));
-                return new KVar(unknown);
+                return EqualityNotKnown(Lower(eq.LeftOperand, mode), Lower(eq.RightOperand, mode), eq, mode);
             }
             var l = Lower(eq.LeftOperand, mode);
             var r = Lower(eq.RightOperand, mode);

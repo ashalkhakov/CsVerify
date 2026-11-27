@@ -29,6 +29,17 @@ namespace CsVerify.Verifier.Boogie
             stmts.Add(MMapUpdate.Of("$Alloc", t, MLit.True));
         }
 
+        /// <summary>A map's row at an object is this value: where the value is a lambda, at each index (the row's reads the triggers).</summary>
+        private static MExpr RowIs(string map, MExpr at, MExpr value)
+        {
+            if (!(value is MMapLambda lambda))
+            {
+                return Eq(Sel(map, at), value);
+            }
+            var cell = Sel(new MVar(map), at, new MBound(0));
+            return new MQuant(true, lambda.Type, null, Eq(cell, lambda.Body), new MExpr[] { cell });
+        }
+
         /// <summary>Level 2 to level 3: each block's statements made level 3's, then the loop frames added.</summary>
         public static HProcedure Run(MProcedure p)
         {
@@ -139,30 +150,44 @@ namespace CsVerify.Verifier.Boogie
                             var map = Elements(n.ArrayType);
                             var t = new MVar(n.Var);
                             p.Source.AddModifies("$Alloc");
-                            p.Source.AddModifies(map);
                             p.Source.AddAnyWrite("$Alloc");
-                            p.Source.AddAnyWrite(map);
                             // (a negative size throws: the path ends)
                             stmts.Add(MAssume.Of(Ge(n.Size, MLit.Zero)));
                             Allocate(stmts, n.Var, AndAlso(Eq(Length(t), n.Size), new MOp("$arr", t)));
                             var zero = ElementValue(map) switch { "bool" => "false", "Ref" => "null", _ => "0" };
                             // (a struct's array: each cell the struct's default value)
                             var element = ((IArrayTypeSymbol)n.ArrayType).ElementType;
-                            stmts.Add(MMapUpdate.Of(
-                                map,
-                                t,
-                                IsStruct(element) ? MapLambda("j", "int", MathTypes.StructDefault(element))
-                                                                         : IsFloating(element) ? MapLambda("j", "int", MathTypes.FloatLiteral(0.0, element))
-                                                                         : new MLit($"(lambda j: int :: {zero})")));
-                            if (n.Elements != null)
+                            MExpr cell = IsStruct(element) ? MathTypes.StructDefault(element)
+                                : IsFloating(element) ? MathTypes.FloatLiteral(0.0, element)
+                                : new MLit(zero);
+                            // (the new array's cells are what it is made with: an object not allocated before has cells
+                            // nothing was known of, so they are these, and no array's cells change. Cell by cell, the
+                            // initializer's and then every other: a row's equality with a lambda is hard on the solver)
+                            if (n.Cells != null)
                             {
-                                for (int k = 0; k < n.Elements.Length; k++)
-                                {
-                                    stmts.Add(MMapUpdate.Of(map, t, index: new MLit(k.ToString()), value: n.Elements[k]));
-                                }
+                                stmts.Add(MAssume.Of(RowIs(map, t, n.Cells)));
+                                break;
                             }
+                            int given = n.Elements?.Length ?? 0;
+                            for (int k = 0; k < given; k++)
+                            {
+                                stmts.Add(MAssume.Of(Eq(Sel(new MVar(map), t, new MLit(k.ToString())), n.Elements[k])));
+                            }
+                            var j = new MVar("j$");
+                            stmts.Add(MAssume.Of(MQuant.ForAll("j$", Eq(Sel(new MVar(map), t, j), cell),
+                                given == 0 ? null : OrElse(Lt(j, MLit.Zero), Le(new MLit(given.ToString()), j)))));
                             break;
                         }
+                        // (as a new array: its models' rows are what it is made with, and no collection's change)
+                        case MNewCollection n:
+                            p.Source.AddModifies("$Alloc");
+                            p.Source.AddAnyWrite("$Alloc");
+                            Allocate(stmts, n.Var);
+                            foreach (var (map, value) in n.Rows)
+                            {
+                                stmts.Add(MAssume.Of(RowIs(map, new MVar(n.Var), value)));
+                            }
+                            break;
                         case MLambda lam:
                             // (a new reference: no other delegate's facts are its)
                             p.Source.AddModifies("$Alloc");
@@ -193,7 +218,7 @@ namespace CsVerify.Verifier.Boogie
                 var body = p.Blocks.Where(b => b.Ordinal >= head && b.Ordinal <= last).ToList();
                 var assigned = new HashSet<string>(body.SelectMany(b => b.Stmts).Select(s => s switch
                 {
-                    MAssign a => a.Var, MCall c => c.Result, MInvoke iv => iv.Result, MLambda lam => lam.Var, MNew n => n.Var, MNewObj o => o.Var, MHavoc h => h.Var, _ => null,
+                    MAssign a => a.Var, MCall c => c.Result, MInvoke iv => iv.Result, MLambda lam => lam.Var, MNew n => n.Var, MNewCollection c => c.Var, MNewObj o => o.Var, MHavoc h => h.Var, _ => null,
                 }).Where(x => x != null));
                 var frame = new HLoopFrame { Head = head };
                 bool keeps = true;

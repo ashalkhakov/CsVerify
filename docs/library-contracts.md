@@ -250,7 +250,8 @@ does, so a partial sum out of range is reported (CSV1001, it would throw `Overfl
 Over `double` the arithmetic is IEEE's ([Floating point](semantics.md#floating-point)): `Sum` adds in order from 0.0,
 rounding each step, so `{ 0.1, 0.2 }.Sum()` is not 0.3; `Min` is NaN if any element is, and `Max` skips NaN unless all
 are; `Average` is the sum over the count, but for the sign of a zero (.NET adds from 0.0 or from the first element
-by the source's kind, so an average of `-0.0`s is either zero). Sums and bounds that need induction over an unknown
+by the source's kind, so an average of `-0.0`s is either zero). Over `decimal`, `Sum` adds in order from 0, each sum
+as decimal `+` gives it (rounded to what a decimal holds). Sums and bounds that need induction over an unknown
 length (a `double[]` of 2.0s averages to 2.0) are not proved. `float`, `decimal`, nullable sums and comparers are
 library calls.
 
@@ -296,7 +297,9 @@ These make views too, read the same way:
 `SequenceEqual` is element by element; `MinBy` and `MaxBy` are the first element with the least or greatest key (a
 stable sort's first), and need a non-empty source, which is more than .NET asks of a source of a reference type (it
 gives null) and says only "some element" for keys the verifier does not order. `ToDictionary` is a precondition only:
-no key is null, and none repeats (else it throws); the dictionary is a library value.
+no key is null, and none repeats (else it throws); the dictionary is a library value. `ToHashSet` is a new
+`HashSet<T>` whose members are the elements: `Contains` is whether some element is that value, and `Count` is the
+number of elements where no two are the same, at most that otherwise.
 
 A lambda the verifier inlines may call these members, as long as they cannot throw: `(k, g) => g.Count()` is read,
 `(x, ys) => ys.First()` is not (the call is a library call). Which lambdas .NET runs, and when, depends on the

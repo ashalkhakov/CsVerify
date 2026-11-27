@@ -315,6 +315,12 @@ namespace CsVerify.Bcl
             throw null!;
         }
 
+        // it never throws; the set itself is a library value (its members the elements, as many as differ)
+        public static HashSet<T> ToHashSet<T>(IEnumerable<T> source)
+        {
+            throw null!;
+        }
+
         public static T? FirstOrDefault<T>(IEnumerable<T> source) => Q.Count(source) > 0 ? Q.At(source, 0) : default;
 
         public static T? FirstOrDefault<T>(IEnumerable<T> source, Func<T, bool> predicate) =>
@@ -405,6 +411,12 @@ namespace CsVerify.Bcl
         public static double Sum(IEnumerable<double> source) => Q.Fold(source, 0.0, (a, x) => a + x);
 
         public static double Sum<T>(IEnumerable<T> source, Func<T, double> selector) => Sum(Select(source, selector));
+
+        // decimals: added in order from 0, each sum as decimal + gives it (rounded to what a decimal holds; past
+        // MaxValue, OverflowException)
+        public static decimal Sum(IEnumerable<decimal> source) => Q.Fold(source, 0m, (a, x) => a + x);
+
+        public static decimal Sum<T>(IEnumerable<T> source, Func<T, decimal> selector) => Sum(Select(source, selector));
 
         // NaN if any is NaN; else the least, the first of equals (-0.0 and 0.0 are equal)
         public static double Min(IEnumerable<double> source)

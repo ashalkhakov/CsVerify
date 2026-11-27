@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using CsVerify.Analyzers;
 using Microsoft.CodeAnalysis;
 using static CsVerify.Verifier.Boogie.KernelTypes;
 using static CsVerify.Verifier.Boogie.MOp;
@@ -455,10 +456,12 @@ namespace CsVerify.Verifier.Boogie
                 {
                     _headInto = null;
                 }
+                _inBody = true;
                 foreach (var s in b.Stmts)
                 {
                     Statement(s, contract.Decreases);
                 }
+                _inBody = false;
                 _headInto = null;
                 switch (b.Jump)
                 {
@@ -508,11 +511,17 @@ namespace CsVerify.Verifier.Boogie
                 At = r.Source.At,
                 Check = At(BoogieTranslator.Aux, r.Source.At, $"precondition '{r.Source.At}' of '{m.Name}'", "CSV1001"),
             }).ToList();
-            _m.Ensures = ensures.Select(e => new MSpec
+            // (a postcondition that holds is well-defined, which each return checks, with those before it holding
+            // (CSV1012): promised with it, so that a caller's specification may read what it does)
+            _m.Ensures = new List<MSpec>();
+            foreach (var e in ensures)
             {
-                Expr = e.Math,
-                At = e.Source.At,
-            }).ToList();
+                if (e.Wf.Count > 0)
+                {
+                    _m.Ensures.Add(new MSpec { Expr = And(e.Wf), At = e.Source.At });
+                }
+                _m.Ensures.Add(new MSpec { Expr = e.Math, At = e.Source.At, Domain = e.Source.Expr is KOp { Op: "$domain" } });
+            }
             // (the caller's measure is as it was at entry, as Dafny's is: what the body writes before the call doesn't count)
             var decreases = _p.Decreases?.Select(d => (MExpr)Old(Spec(d, out _))).ToList();
             if (_p.FunctionBody != null)
@@ -637,6 +646,12 @@ namespace CsVerify.Verifier.Boogie
             if (_p.HasThis && !_p.IsCtor && !DefinesInvariant(_p.Method))
             {
                 ObjectInvariant(new MVar("this"), _p.Method.ContainingType);
+            }
+            // (a constructor that hands this over: it hasn't yet)
+            if (_p.ThisEscapes)
+            {
+                _p.AddLocal(KLocal.Of(BuiltFlag, "bool"));
+                Emit(MAssign.Of(BuiltFlag, MLit.False));
             }
             if (_m.Frame != null)
             {
