@@ -258,6 +258,8 @@ namespace CsVerify.Verifier.Boogie
                     return PositionalProperty(dp, mode);
                 case IPropertyReferenceOperation tk when tk.Property.Name == "Ticks" && tk.Instance != null && IsOpaqueTicks(tk.Instance.Type):
                     return Lower(tk.Instance, mode);
+                case IPropertyReferenceOperation vp when ValueProperty(vp) is string function:
+                    return new KOp(function, Lower(vp.Instance, mode));
                 // (a tuple written here: a value of its elements; an element of one: a function of it)
                 // (a GroupBy group's Key: its first element's key)
                 case IPropertyReferenceOperation { Property.Name: "Key", Instance: ILocalReferenceOperation gk } when IsLinqGroup(gk.Type):

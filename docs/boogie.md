@@ -624,7 +624,12 @@ EF concurrency token is compared by it. That int is its `Ticks` (0 to `DateTime.
 `long`'s range), so `==`, `!=`, `<` and the rest of two `DateTime`s, or two `TimeSpan`s, compare it, as .NET's do,
 and `.Ticks` is it. `DateTime ± TimeSpan`, `DateTime - DateTime` and `TimeSpan ± TimeSpan` are the ticks' sum or
 difference: past `DateTime`'s range they throw an `ArgumentOutOfRangeException`, past `TimeSpan`'s an
-`OverflowException`. `MinValue`, `MaxValue` and `TimeSpan.Zero` are their ticks; their other operators and members are
+`OverflowException`. The methods those operators are do the same: `d.Add(t)`, `d.Subtract(t)` (of a `TimeSpan` or a
+`DateTime`), `d.AddTicks(n)`, `t.Add(u)`, `t.Subtract(u)`; an expression function may call them. `MinValue`,
+`MaxValue` and `TimeSpan.Zero` are their ticks. Any other property of such a value (`d.Year`, `d.DayOfWeek`,
+`t.Days`, a `DateOnly`'s `Month`) is a function of it, `$vp.System.DateTime.Year(d)`, within its type's range, of
+which nothing more is known: the value is all there is to it, so `d.Year == d.Year`. A `DateTime`'s `Kind` isn't
+one, as its ticks don't say it: it is unknown at each read (CSV1900). Their other operators and methods are
 not translated (CSV1902). A `DateOnly` and a `TimeOnly` are kept so too (a day's number, a time's ticks, within
 `DateTime`'s range): held, handed on and compared, nothing more. A `Guid` is an `int` too, of which `==` and `!=` are
 all there is: `Guid.Empty` is 0, and `Guid.NewGuid()` gives one nothing is known of (0 too, maybe). `x.CompareTo(y)`
@@ -870,6 +875,9 @@ a new object is none of them.
 its contract alone for its callers (as an abstract member is), so they are Boogie's still; it may write what the
 effects analysis (`FieldEffects`) says it and its callees write (any field, where that says so), and every array
 unless it writes none (`MayWriteHeap`); a constructor, the fields of the new object it sets too, at that object only.
+A `[Pure]` one is a function of the state as any `[Pure]` member is: it writes no array and makes no object a caller
+sees (a field only where the analysis finds a write), so two reads of it with nothing it reads written between them
+give one value, and what a precondition says of it holds where the body reads it.
 Its own body is not verified (CSV1902, saying why). So is a method `--only` leaves out, for its callers. The
 analysis judges a library member no class overrides by what each call hands it: the lambdas and the methods it is
 handed it runs, so what they write, it writes; a LINQ query made where it is handed on (`xs.Where(f)` in

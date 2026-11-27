@@ -240,9 +240,9 @@ namespace CsVerify.Analyzers
         private static bool PureOrInferred(IPropertySymbol q, Compilation compilation, HashSet<ISymbol> inferred, HashSet<ISymbol> refused, HashSet<ISymbol> visiting) =>
             SpecSymbols.IsPure(q) || q.GetMethod != null && SpecSymbols.IsPure(q.GetMethod) || Candidate(q) && Infer(q, compilation, inferred, refused, visiting);
 
-        /// <summary>A function: a proof's, a library's with a [Pure] contract, or a member of the program taken as one here.</summary>
+        /// <summary>A function: a proof's, a library's with a [Pure] contract or of ticks (as its operators are), or a member of the program taken as one here.</summary>
         private static bool Function(IMethodSymbol called, Compilation compilation, HashSet<ISymbol> inferred, HashSet<ISymbol> refused, HashSet<ISymbol> visiting) =>
-            SpecSymbols.IsPureCallee(called) || ContractStubs.For(compilation).IsPureMember(called) ||
+            SpecSymbols.IsPureCallee(called) || ContractStubs.For(compilation).IsPureMember(called) || SpecSymbols.IsTickArithmetic(called) ||
             Member(called) is ISymbol s && Candidate(s) && Infer(s, compilation, inferred, refused, visiting);
     }
 }

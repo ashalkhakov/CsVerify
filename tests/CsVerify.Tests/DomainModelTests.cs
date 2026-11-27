@@ -1460,6 +1460,73 @@ public static class Readings
         }
 
         [Fact]
+        public void AComputedProperty_IsAFunctionOfTheState()
+        {
+            // (a [Pure] getter is a function of the state whether its body translates or not: two reads with nothing it
+            // reads written between them give one value, and a precondition of it holds where the body reads it. A
+            // DateTime's Add, Subtract and AddTicks are its + and -; any other property of such a value is a function of
+            // it, so a getter that reads one is an expression function)
+            var r = Harness.Verify(@"
+public sealed class Slot
+{
+    public DateTime? At { get; set; }
+    public DateTime Start { get; set; }
+    public int Count { get; set; }
+    [Pure] public DateTime? Whole => At is { } at ? at.AddTicks(-(at.Ticks % TimeSpan.TicksPerSecond)) : null;
+    public DateTime? Rounded => At is { } at ? at.AddTicks(-(at.Ticks % TimeSpan.TicksPerSecond)) : null;
+    [Pure] public DateTime? NextDay => At is { } at ? at.AddDays(1) : null;
+    public DateTime? Unmarked => At is { } at ? at.AddDays(1) : null;
+    public int? Year => At is { } at ? at.Year : null;
+    public DayOfWeek Day => Start.DayOfWeek;
+}
+public static class Reads
+{
+    public static DateTime Asked(Slot s) { Spec.Requires(s.Whole != null); return s.Whole!.Value; }
+    public static DateTime Twice(Slot s) => s.Whole is not null ? s.Whole.Value : DateTime.MinValue;
+    public static DateTime AskedRounded(Slot s) { Spec.Requires(s.Rounded != null); return s.Rounded!.Value; }
+    public static DateTime TwiceRounded(Slot s) => s.Rounded is not null ? s.Rounded.Value : DateTime.MinValue;
+    public static DateTime AskedNext(Slot s) { Spec.Requires(s.NextDay != null); return s.NextDay!.Value; }
+    public static DateTime TwiceNext(Slot s) => s.NextDay is not null ? s.NextDay.Value : DateTime.MinValue;
+    public static DateTime Other(Slot s) { if (s.NextDay is null) { return DateTime.MinValue; } s.Count = 1; return s.NextDay.Value; }
+    public static DateTime Written(Slot s, DateTime? now) { if (s.NextDay is null) { return DateTime.MinValue; } s.At = now; return s.NextDay.Value; }
+    public static DateTime Another(Slot s, Slot t) { if (s.NextDay is null) { return DateTime.MinValue; } return t.NextDay!.Value; }
+    public static DateTime Code(Slot s) => s.Unmarked is not null ? s.Unmarked.Value : DateTime.MinValue;
+    public static int TwiceYear(Slot s) => s.Year is not null ? s.Year.Value : 0;
+    public static int AskedYear(Slot s) { Spec.Requires(s.Year != null); return s.Year!.Value; }
+    public static bool SameDay(Slot s) { Spec.Ensures<bool>(r => r); return s.Day == s.Day; }
+    public static bool SameYear(DateTime d, TimeSpan t) { Spec.Ensures<bool>(r => r); return d.Year == d.Year && t.Days == t.Days; }
+    public static bool SameKind(DateTime d) { Spec.Ensures<bool>(r => r); return d.Kind == d.Kind; }
+    public static bool YearKnown(DateTime d) { Spec.Ensures<bool>(r => r); return d.Year > 0; }
+}
+public static class Ticks
+{
+    public static DateTime Later(DateTime d, long n) { Spec.Ensures<DateTime>(r => r.Ticks == d.Ticks + n); return d.AddTicks(n); }
+    public static DateTime Plus(DateTime d, TimeSpan t) { Spec.Ensures<DateTime>(r => r == d + t); return d.Add(t); }
+    public static DateTime Minus(DateTime d, TimeSpan t) { Spec.Ensures<DateTime>(r => r == d - t); return d.Subtract(t); }
+    public static TimeSpan Between(DateTime a, DateTime b) { Spec.Ensures<TimeSpan>(r => r == a - b); return a.Subtract(b); }
+    public static TimeSpan Sum(TimeSpan a, TimeSpan b) { Spec.Ensures<TimeSpan>(r => r == a + b); return a.Add(b).Subtract(TimeSpan.Zero); }
+    public static DateTime Floor(DateTime d) { Spec.Ensures<DateTime>(r => r <= d && r.Ticks % TimeSpan.TicksPerSecond == 0); return d.AddTicks(-(d.Ticks % TimeSpan.TicksPerSecond)); }
+    public static DateTime Hoped(DateTime d, long n) { Spec.Ensures<DateTime>(r => r > d); return d.AddTicks(n); }
+    public static DateTime Capped(DateTime d, long n) { try { return d.AddTicks(n); } catch (ArgumentOutOfRangeException) { return DateTime.MaxValue; } }
+}");
+            foreach (var ok in new[] { "get_Whole", "Asked", "Twice", "AskedRounded", "TwiceRounded", "AskedNext", "TwiceNext", "Other", "TwiceYear", "AskedYear", "SameDay", "SameYear",
+                "Later", "Plus", "Minus", "Between", "Sum", "Floor", "Capped" })
+            {
+                Assert.True(r.Errors(ok).Length == 0, r.Explain(ok));
+            }
+            // (a body that isn't translated is not verified; what it reads written between two reads, or another object's)
+            Assert.Equal(new[] { "CSV1902" }, r.Errors("get_NextDay"));
+            Assert.Equal(new[] { "CSV1013" }, r.Errors("Written"));
+            Assert.Equal(new[] { "CSV1013" }, r.Errors("Another"));
+            // (a getter nothing says is a function, whose body isn't one: code, a value at each read)
+            Assert.Equal(new[] { "CSV1013" }, r.Errors("Code"));
+            // (a DateTime's Kind is not its ticks'; a property's value is no more than a function's)
+            Assert.Equal(new[] { "CSV1002" }, r.Errors("SameKind"));
+            Assert.Equal(new[] { "CSV1002" }, r.Errors("YearKnown"));
+            Assert.Equal(new[] { "CSV1002" }, r.Errors("Hoped"));
+        }
+
+        [Fact]
         public void ThisIsHandedOver_OnceItsObjectIsBuilt()
         {
             // (this as a value in its constructor (an argument, a receiver, a value stored): whoever gets it takes it for

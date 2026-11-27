@@ -331,6 +331,15 @@ namespace CsVerify.Analyzers
         /// Methods ghost and pure code may call: the spec library's ghost members, lemmas, pure functions, System.Math,
         /// and an array's GetLength (its lengths never change).
         /// </summary>
+        /// <summary>
+        /// DateTime's and TimeSpan's arithmetic by name, on their ticks, which their + and - are: d.Add(t), d.Subtract(t)
+        /// (of a TimeSpan or a DateTime), d.AddTicks(n), t.Add(u), t.Subtract(u). Functions of their values.
+        /// </summary>
+        public static bool IsTickArithmetic(IMethodSymbol m) =>
+            m is { IsStatic: false, Parameters.Length: 1 } && m.ContainingType?.ContainingNamespace?.ToDisplayString() == "System" &&
+            (m.ContainingType.Name == "DateTime" && (m.Name is "Add" or "Subtract" || m.Name == "AddTicks" && m.Parameters[0].Type.SpecialType == SpecialType.System_Int64) ||
+             m.ContainingType.Name == "TimeSpan" && m.Name is "Add" or "Subtract");
+
         public static bool IsPureCallee(IMethodSymbol m) =>
             m != null && (IsGhostMethod(m) || IsProofMethod(m.OriginalDefinition) || m.ContainingType?.ToDisplayString() == "System.Math" ||
                           m.Name is "GetLength" or "Empty" && m.ContainingType?.SpecialType == SpecialType.System_Array ||

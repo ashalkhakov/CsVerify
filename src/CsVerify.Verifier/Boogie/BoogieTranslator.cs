@@ -1396,6 +1396,13 @@ namespace CsVerify.Verifier.Boogie
             foreach (var p in _pending.Where(p => p.Source.Opaque))
             {
                 var (written, all) = KernelTypes.FieldEffectsOf?.Invoke(p.Source.Method) ?? (null, true);
+                // (a [Pure] one is a function of the state: it writes no array and makes no object a caller sees, so two
+                // calls with nothing written between them give one value; a field only where the analysis finds a write)
+                if (!all && ContractOf(p.Source.Method) is Contract { IsPure: true })
+                {
+                    sets[p.Source.Method].UnionWith(written.Select(FieldMap).Where(_allMaps.Contains));
+                    continue;
+                }
                 var kept = all ? new HashSet<string>() : new HashSet<string>(_allMaps.Where(x => x.StartsWith("$F.")));
                 if (!all)
                 {
