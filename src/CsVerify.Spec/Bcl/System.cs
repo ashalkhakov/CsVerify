@@ -159,6 +159,98 @@ namespace CsVerify.Bcl
     }
 
     /// <summary>
+    /// Contracts for <see cref="char"/>'s tests of a character's Unicode category: each is a function of the character
+    /// alone (no culture is read), and nothing more is said of which characters it holds for.
+    /// </summary>
+    [ContractsFor(typeof(char))]
+    public static class CharContracts
+    {
+        [Pure]
+        public static bool IsWhiteSpace(char c)
+        {
+            throw null!;
+        }
+
+        [Pure]
+        public static bool IsLetter(char c)
+        {
+            throw null!;
+        }
+
+        [Pure]
+        public static bool IsDigit(char c)
+        {
+            throw null!;
+        }
+
+        [Pure]
+        public static bool IsLetterOrDigit(char c)
+        {
+            throw null!;
+        }
+
+        [Pure]
+        public static bool IsNumber(char c)
+        {
+            throw null!;
+        }
+
+        [Pure]
+        public static bool IsUpper(char c)
+        {
+            throw null!;
+        }
+
+        [Pure]
+        public static bool IsLower(char c)
+        {
+            throw null!;
+        }
+
+        [Pure]
+        public static bool IsPunctuation(char c)
+        {
+            throw null!;
+        }
+
+        [Pure]
+        public static bool IsSymbol(char c)
+        {
+            throw null!;
+        }
+
+        [Pure]
+        public static bool IsSeparator(char c)
+        {
+            throw null!;
+        }
+
+        [Pure]
+        public static bool IsControl(char c)
+        {
+            throw null!;
+        }
+
+        [Pure]
+        public static bool IsSurrogate(char c)
+        {
+            throw null!;
+        }
+
+        [Pure]
+        public static bool IsHighSurrogate(char c)
+        {
+            throw null!;
+        }
+
+        [Pure]
+        public static bool IsLowSurrogate(char c)
+        {
+            throw null!;
+        }
+    }
+
+    /// <summary>
     /// Contracts for <see cref="Math"/>'s integer functions beyond Min, Max and Abs (which the verifier builds in:
     /// it must see their definitions everywhere, inside the definitions of [Pure] functions too).
     /// </summary>

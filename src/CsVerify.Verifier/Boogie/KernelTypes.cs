@@ -230,7 +230,7 @@ namespace CsVerify.Verifier.Boogie
         public static bool IsLinqGroup(ITypeSymbol t) => t is INamedTypeSymbol { Name: "IGrouping", Arity: 2 } g && g.ContainingNamespace?.ToDisplayString() == "System.Linq";
 
         /// <summary>A tuple of the subset's values: a value whose elements are functions of it ($tup.i.Kind).</summary>
-        public static bool IsTuple(ITypeSymbol t) => t is INamedTypeSymbol n && (n.IsTupleType || n.IsAnonymousType) && PartsOf(t).All(e => InSubset(e) && !IsTuple(e));
+        public static bool IsTuple(ITypeSymbol t) => t is INamedTypeSymbol n && (n.IsTupleType || n.IsAnonymousType) && PartsOf(t).All(InSubset);
 
         /// <summary>
         /// A struct of the program's, of the subset's values (structs and tuples among them; generic, of boxed type
@@ -605,7 +605,7 @@ namespace CsVerify.Verifier.Boogie
 
         // (a data value, a record's, is a reference as an object is)
         private static bool FuncValue(ITypeSymbol t) =>
-            Scalar(t) || IsArray(t) || IsClass(t) || IsString(t) || IsToken(t) || IsGivenTask(t) || t?.SpecialType == SpecialType.System_Object ||
+            Scalar(t) || IsArray(t) || IsClass(t) || IsInterface(t) || IsString(t) || IsToken(t) || IsGivenTask(t) || t?.SpecialType == SpecialType.System_Object ||
             t is INamedTypeSymbol { IsGenericType: false } && IsData(t);
 
         /// <summary>A Func's or an Action's signature, as Boogie's types: its parameters', then its result's (or void).</summary>
@@ -689,6 +689,14 @@ namespace CsVerify.Verifier.Boogie
             IsTaskMethod(m) || IsTaskLike(m.ReturnType) && AsyncStub?.Invoke(m.OriginalDefinition) == true ? ((INamedTypeSymbol)m.ReturnType).TypeArguments.FirstOrDefault() : m.ReturnsVoid ? null : m.ReturnType;
 
         /// <summary>A lock's object (readonly, of type object): no state of the kernel's.</summary>
+        /// <summary>A field of an object that only the object's own construction writes: a readonly field, or an
+        /// auto-property without a setter or with an init one (which an initializer of the new object calls). Not a
+        /// member of what EF fills: it writes a row's values into an object it tracks, whatever the member's accessors.</summary>
+        public static bool FixedOnceMade(ISymbol s) =>
+            s is { IsStatic: false, ContainingType.IsReferenceType: true } &&
+            (s is IFieldSymbol { IsReadOnly: true } || s is IPropertySymbol p && (p.SetMethod == null || p.SetMethod.IsInitOnly)) &&
+            Ef?.Fills(s.ContainingType) != true;
+
         public static bool IsLockObject(ISymbol s) => s is IFieldSymbol { IsReadOnly: true } f && (f.Type.SpecialType == SpecialType.System_Object || IsSemaphore(f.Type) || IsLockPrimitive(f.Type));
 
         /// <summary>A lock of the library's other than a monitor's or a semaphore's: a reader-writer lock, a mutex, a spin lock, C# 13's Lock.</summary>
@@ -764,7 +772,7 @@ namespace CsVerify.Verifier.Boogie
         /// <summary>CsVerify's effects analysis of a method: the fields it (or what it calls) writes, and whether it may write any.</summary>
         [System.ThreadStatic] public static System.Func<IMethodSymbol, (IEnumerable<ISymbol> fields, bool all)> FieldEffectsOf;
         /// <summary>May a value of this type's ToString change something of the program's (the Engine's effects analysis)?</summary>
-        [System.ThreadStatic] public static System.Func<ITypeSymbol, bool> StringOfWrites;
+        [System.ThreadStatic] public static System.Func<ITypeSymbol, bool> StringOfWrites, HandsOver;
         /// <summary>The semantic model of a tree of the program's (the Engine's, made once).</summary>
         [System.ThreadStatic] public static System.Func<SyntaxTree, SemanticModel> TreeModel;
         /// <summary>The fields of the new object a constructor sets (which FieldEffectsOf leaves out).</summary>
@@ -782,7 +790,15 @@ namespace CsVerify.Verifier.Boogie
         public static bool IsLibraryInterface(ITypeSymbol t) =>
             t is INamedTypeSymbol { TypeKind: TypeKind.Interface, IsGenericType: false } n && n.DeclaringSyntaxReferences.Length == 0 &&
             n.ContainingNamespace?.ToDisplayString() is string ns && !ns.StartsWith("CsVerify") && !ns.StartsWith("System.Collections") && !ns.StartsWith("System.Linq") &&
-            !IsEfTransaction(n);
+            !IsEfTransaction(n) || IsReadOnlyDictionary(t);
+
+        /// <summary>
+        /// IReadOnlyDictionary of the subset's keys and values: a reference to something that maps keys, which its members
+        /// read and none of them changes. What it maps isn't modeled behind the interface: its members are library calls.
+        /// </summary>
+        public static bool IsReadOnlyDictionary(ITypeSymbol t) =>
+            t is INamedTypeSymbol { TypeKind: TypeKind.Interface, Arity: 2, Name: "IReadOnlyDictionary" } d && d.ContainingNamespace?.ToDisplayString() == "System.Collections.Generic" &&
+            d.TypeArguments.All(InSubset);
 
         /// <summary>A library class the kernel models another way: a collection (or a generic one of System.Collections.Generic), an exception, a delegate, a string, a task, a semaphore.</summary>
         private static bool ModeledOtherwise(INamedTypeSymbol n) =>
@@ -1489,11 +1505,12 @@ namespace CsVerify.Verifier.Boogie
         /// isn't nullable: never null (every write keeps it so, CSV1014).
         /// </summary>
         public static bool StaticStartsWithObject(ISymbol field) =>
-            field.IsStatic && field.DeclaringSyntaxReferences.Select(r => r.GetSyntax()).OfType<VariableDeclaratorSyntax>().Any(v =>
-                v.Initializer?.Value is BaseObjectCreationExpressionSyntax || v.Initializer?.Value is ArrayCreationExpressionSyntax ||
-                v.Initializer?.Value is ImplicitArrayCreationExpressionSyntax || v.Initializer?.Value is CollectionExpressionSyntax ||
-                v.Initializer?.Value is LiteralExpressionSyntax l && l.IsKind(SyntaxKind.StringLiteralExpression) ||
-                v.Initializer?.Value is InvocationExpressionSyntax call && Compilation != null &&
+            field.IsStatic && field.DeclaringSyntaxReferences.Select(r => r.GetSyntax())
+                .Select(d => d is VariableDeclaratorSyntax v ? v.Initializer?.Value : (d as PropertyDeclarationSyntax)?.Initializer?.Value).Any(value =>
+                value is BaseObjectCreationExpressionSyntax || value is ArrayCreationExpressionSyntax ||
+                value is ImplicitArrayCreationExpressionSyntax || value is CollectionExpressionSyntax ||
+                value is LiteralExpressionSyntax l && l.IsKind(SyntaxKind.StringLiteralExpression) ||
+                value is InvocationExpressionSyntax call && Compilation != null &&
                 Compilation.ModelOf(call.SyntaxTree).GetSymbolInfo(call).Symbol is IMethodSymbol m && StaticChecks.IsNonNullableReturn(m));
 
         /// <summary>

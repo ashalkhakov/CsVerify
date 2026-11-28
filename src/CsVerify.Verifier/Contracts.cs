@@ -91,6 +91,25 @@ namespace CsVerify.Verifier
         /// <summary>A stub that promises a fresh result (<c>Spec.Fresh(r)</c>): a returned array is a new one.</summary>
         public bool StubFreshResult;
 
+        /// <summary>
+        /// The value a member returns for this expression: the expression converted to the member's type, where C#
+        /// converts it without a cast (an int to an int?, a value to its base). Not a conversion to the type the
+        /// expression already has (a conditional's, typed by what it is assigned to).
+        /// </summary>
+        private static IOperation Returned(IOperation value)
+        {
+            while (value?.Parent is IConversionOperation { IsImplicit: true } c && c.Syntax == value.Syntax)
+            {
+                value = c;
+            }
+            while (value is IConversionOperation { IsImplicit: true } same && same.Syntax == same.Operand.Syntax &&
+                   SymbolEqualityComparer.Default.Equals(same.Type, same.Operand.Type))
+            {
+                value = same.Operand;
+            }
+            return value;
+        }
+
         /// <summary>The contract an external member gets from its stub.</summary>
         public static Contract ReadStub(IMethodSymbol member, IMethodSymbol stub, Compilation compilation)
         {
@@ -187,7 +206,8 @@ namespace CsVerify.Verifier
             {
                 c.IsPure = c.InferredPure = true;
             }
-            var syntax = method.DeclaringSyntaxReferences.Select(r => r.GetSyntax()).FirstOrDefault();
+            // (a partial method's body is its other part's, wherever that is written: a source generator's, say)
+            var syntax = (method.PartialImplementationPart ?? method).DeclaringSyntaxReferences.Select(r => r.GetSyntax()).FirstOrDefault();
             BlockSyntax block;
             ExpressionSyntax exprBody;
             switch (syntax)
@@ -241,7 +261,7 @@ namespace CsVerify.Verifier
                 } // (a stub's body is not a definition)
                 if ((c.IsPure || SpecSymbols.IsPredicate(method)) && !c.IsTrusted)
                 {
-                    c.PureBody = c.Model.GetOperation(exprBody);
+                    c.PureBody = Returned(c.Model.GetOperation(exprBody));
                 }
                 return c;
             }
@@ -294,7 +314,7 @@ namespace CsVerify.Verifier
                                 c.Model.GetOperation(inv) is IInvocationOperation op && SpecSymbols.IsSpecClass(op.TargetMethod.ContainingType) && op.TargetMethod.Name == "Unfold");
             if ((c.IsPure || SpecSymbols.IsPredicate(method)) && !c.IsTrusted && rest.Count == 1 && rest[0] is ReturnStatementSyntax ret && ret.Expression != null)
             {
-                c.PureBody = c.Model.GetOperation(ret.Expression);
+                c.PureBody = Returned(c.Model.GetOperation(ret.Expression));
             }
             else if (c.IsPure && !c.IsTrusted && rest.Count > 0)
             {

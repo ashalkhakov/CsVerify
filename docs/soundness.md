@@ -138,7 +138,7 @@ calculus, with the styles as derived forms.
 **N3. The library.** Contracts and LINQ's definitions are trusted (A5). Their conformance tests run each against the
 real member on random inputs, including the edge cases that matter (NaN, -0.0, overflow, empty and repeated
 values). Testing finds wrong definitions but cannot prove them right. Two choices keep the risk down: a definition
-may be stronger than .NET where that only loses completeness (`MinBy` requires a non-empty source), and a member
+may be stronger than .NET where that only loses completeness (`MinBy` passes null keys over), and a member
 whose behaviour depends on what .NET does internally (when a lambda runs) is not read at all.
 
 **N4. Closed-world facts.** Data records' closedness, sealed overrides and "library code runs only what it is handed"

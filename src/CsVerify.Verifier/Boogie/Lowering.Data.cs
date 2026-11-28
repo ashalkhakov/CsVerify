@@ -159,6 +159,9 @@ namespace CsVerify.Verifier.Boogie
                 // (Array.Empty<T>(): an empty array, the same each time)
                 case IInvocationOperation { TargetMethod: { Name: "Empty", IsStatic: true, ContainingType.SpecialType: SpecialType.System_Array }, Arguments.Length: 0 }:
                     return new KOp("$aempty");
+                // (Enumerable.Empty<T>(), as a value: a sequence of none, which is some object; read as a query, QueryCore's)
+                case IInvocationOperation { TargetMethod: { Name: "Empty", IsStatic: true }, Arguments.Length: 0 } none when IsEnumerableCall(none.TargetMethod):
+                    return new KOp("$qempty");
                 // (char.IsAsciiDigit(c) and the other ASCII tests: ranges of its code)
                 case IInvocationOperation at when AsciiTest(at.TargetMethod) && at.Arguments.Length == 1:
                 {
@@ -621,7 +624,7 @@ namespace CsVerify.Verifier.Boogie
                 case IIsPatternOperation ip when IsData(Unconverted(ip.Value).Type) || Scalar(ip.Value.Type) ||
                                                  (IsRef(ip.Value.Type) || IsString(ip.Value.Type)) && NullPattern(ip.Pattern) ||
                                                  IsArray(Unconverted(ip.Value).Type) && ip.Pattern is IListPatternOperation ||
-                                                 IsTuple(Unconverted(ip.Value).Type) && ip.Pattern is IRecursivePatternOperation || IsStruct(Unconverted(ip.Value).Type) ||
+                                                 IsTuple(Unconverted(ip.Value).Type) || IsStruct(Unconverted(ip.Value).Type) ||
                                                  IsClass(Unconverted(ip.Value).Type) && !IsData(Unconverted(ip.Value).Type) && ip.Pattern is IRecursivePatternOperation ||
                                                  (IsRef(Unconverted(ip.Value).Type) || IsString(Unconverted(ip.Value).Type) || IsException(Unconverted(ip.Value).Type)) && !IsData(Unconverted(ip.Value).Type):
                     return IsPattern(ip, mode);
@@ -872,26 +875,38 @@ namespace CsVerify.Verifier.Boogie
                     }
                 }
             }
+            // (each value's parameter of the constructor, its type here, and where it is written)
+            var ordinals = ordered.Select(a => a.Parameter.Ordinal).ToList();
+            var typed = ordered.Select(a => a.Parameter.Type).ToList();
+            var at = ordered.Select(a => a.Value.Syntax).ToList();
+            // (a constructor that only chains to another of the record's: the value is that one's, of what it hands on)
+            while (DataTypes.Delegates(def))
+            {
+                (def, values) = HandedOn(def, ordinals, values);
+                ordinals = Enumerable.Range(0, def.Parameters.Length).ToList();
+                typed = def.Parameters.Select(p => p.Type).ToList();
+                at = ordinals.Select(_ => oc.Syntax).ToList();
+            }
             // (a package built: the views that go in are handed over to it)
             if (!mode.InSpec && IsPackage(oc.Type))
             {
                 CheckPackage(oc.Type);
-                for (int k = 0; k < ordered.Count; k++)
+                for (int k = 0; k < ordinals.Count; k++)
                 {
-                    if (IsView(def.Parameters[ordered[k].Parameter.Ordinal].Type))
+                    if (IsView(def.Parameters[ordinals[k]].Type))
                     {
                         Emit(new KOwn
                         {
                             Kind = "pack",
                             Obj = values[k],
-                            Type = ViewOf(ordered[k].Parameter.Type),
+                            Type = ViewOf(typed[k]),
                             Into = oc.Type,
-                            At = ordered[k].Value.Syntax,
+                            At = at[k],
                         });
                     }
                 }
             }
-            var args = ordered.Select((a, k) => Box(values[k], def.Parameters[a.Parameter.Ordinal].Type, a.Parameter.Type)).ToList();
+            var args = ordinals.Select((o, k) => Box(values[k], def.Parameters[o].Type, typed[k])).ToList();
             // (a case's init properties: as the object initializer sets them, else their initializers)
             var set = oc.Initializer == null ? new Dictionary<IPropertySymbol, IOperation>(SymbolEqualityComparer.Default) : InitFieldsSet(oc.Initializer);
             foreach (var ip in DataTypes.InitFields((INamedTypeSymbol)oc.Type))
@@ -901,7 +916,7 @@ namespace CsVerify.Verifier.Boogie
             }
             KExpr made = new KOp(CaseName((INamedTypeSymbol)oc.Type), args.ToArray());
             // (a case whose constructor checks its arguments before it stores them: built where no check throws)
-            if (StoredChecksHold(oc, def, ordered, values) is KExpr holds0)
+            if (StoredChecksHold(def, ordinals, values) is KExpr holds0)
             {
                 if (mode.InSpec)
                 {
@@ -950,14 +965,48 @@ namespace CsVerify.Verifier.Boogie
         /// What a case's constructor checks of its arguments before it stores them (SpecSymbols.StoredChecks), all
         /// holding, of these arguments; null where it checks nothing.
         /// </summary>
-        private KExpr StoredChecksHold(IObjectCreationOperation oc, IMethodSymbol ctor, List<IArgumentOperation> ordered, KExpr[] values)
+        /// <summary>
+        /// What a constructor that only chains to another of its record's hands that one, of these arguments of its own:
+        /// the constructor chained to, and its arguments in its parameters' order.
+        /// </summary>
+        private (IMethodSymbol, KExpr[]) HandedOn(IMethodSymbol ctor, List<int> ordinals, KExpr[] values)
+        {
+            if (ctor.ContainingType.IsGenericType)
+            {
+                throw new NotTranslated("a generic record's constructor that chains to another");
+            }
+            var syntax = (ConstructorDeclarationSyntax)ctor.DeclaringSyntaxReferences[0].GetSyntax();
+            var model = Compilations.ModelOf(KernelTypes.Compilation, syntax.SyntaxTree);
+            var chain = model.GetOperation(syntax.Initializer) as IInvocationOperation ?? throw new NotTranslated("a constructor's chain not found: " + ctor.ContainingType.Name);
+            var next = chain.TargetMethod.OriginalDefinition;
+            var handed = new KExpr[next.Parameters.Length];
+            // (each parameter named apart, then given its argument: an argument may be a variable of a parameter's name)
+            var names = ctor.Parameters.Select(_ => "k$" + _temps++).ToList();
+            foreach (var a in chain.Arguments)
+            {
+                var v = Spec(a.Value, null);
+                foreach (var p in ctor.Parameters)
+                {
+                    v = Nameless.Substitute(v, new KVar(Local(p)), new KVar(names[p.Ordinal]));
+                }
+                foreach (var p in ctor.Parameters)
+                {
+                    v = Nameless.Substitute(v, new KVar(names[p.Ordinal]), values[ordinals.IndexOf(p.Ordinal)]);
+                }
+                // (an integer computed there is the parameter's: wrapped to its type, as where the constructor stores it)
+                handed[a.Parameter.Ordinal] = v is KVar || v is KLit || !IsIntegral(a.Parameter.Type) ? v : Wrap(v, a.Parameter.Type);
+            }
+            return (next, handed);
+        }
+
+        private KExpr StoredChecksHold(IMethodSymbol ctor, List<int> ordinals, KExpr[] values)
         {
             var checks = SpecSymbols.StoredChecks(ctor.ContainingType.OriginalDefinition);
             if (checks.Count == 0 || !SymbolEqualityComparer.Default.Equals(ctor, DataTypes.Constructor(ctor.ContainingType.OriginalDefinition)))
             {
                 return null;
             }
-            KExpr Argument(IParameterSymbol p) => values[ordered.FindIndex(a => a.Parameter.Ordinal == p.Ordinal)];
+            KExpr Argument(IParameterSymbol p) => values[ordinals.IndexOf(p.Ordinal)];
             KExpr all = KLit.True;
             foreach (var (condition, throwsWhen, isNull) in checks)
             {

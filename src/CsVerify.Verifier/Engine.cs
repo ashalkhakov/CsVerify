@@ -1079,6 +1079,7 @@ namespace CsVerify.Verifier
             Boogie.KernelTypes.SelfWritesOf = engine.Fields.SelfWritesOf;
             Boogie.KernelTypes.TreeModel = engine.ModelOf;
             Boogie.KernelTypes.StringOfWrites = engine.Fields.StringOfWrites;
+            Boogie.KernelTypes.HandsOver = engine.Fields.HandsOver;
             Boogie.KernelTypes.FieldEffectsOf = m =>
             {
                 var (f, all) = engine.Fields.WritesOf(m);
@@ -1132,6 +1133,14 @@ namespace CsVerify.Verifier
                         if (model.GetDeclaredSymbol(decl) is IMethodSymbol am && am.IsAbstract && Boogie.BoogieTranslator.Candidate(am, engine.ContractOf(am)))
                         {
                             forBoogie.Add((am, engine.ContractOf(am), decl, new MethodResult { Name = null }));
+                        }
+                        // (a partial method whose body a source generator writes, [GeneratedRegex]'s: code the run compiles
+                        // and doesn't verify. Called by its contract, and by what its body may change, as a method of a
+                        // referenced project is)
+                        else if (model.GetDeclaredSymbol(decl) is IMethodSymbol { PartialImplementationPart: { } written } declared &&
+                                 written.DeclaringSyntaxReferences.FirstOrDefault()?.GetSyntax() is SyntaxNode body && IsGenerated(body.SyntaxTree))
+                        {
+                            Unselected(declared, engine.ContractOf(declared), body, forBoogie);
                         }
                         continue;
                     }

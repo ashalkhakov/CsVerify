@@ -1514,8 +1514,9 @@ public static class Ticks
             {
                 Assert.True(r.Errors(ok).Length == 0, r.Explain(ok));
             }
-            // (a body that isn't translated is not verified; what it reads written between two reads, or another object's)
-            Assert.Equal(new[] { "CSV1902" }, r.Errors("get_NextDay"));
+            // (a [Pure] property written as one expression is checked as any [Pure] body is, #139: AddDays is no function
+            // the verifier has; what it reads written between two reads, or another object's)
+            Assert.Equal(new[] { "CSV0013" }, r.Errors("get_NextDay"));
             Assert.Equal(new[] { "CSV1013" }, r.Errors("Written"));
             Assert.Equal(new[] { "CSV1013" }, r.Errors("Another"));
             // (a getter nothing says is a function, whose body isn't one: code, a value at each read)

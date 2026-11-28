@@ -515,7 +515,8 @@ namespace CsVerify.Verifier.Boogie
 
         /// <summary>A library's method or getter, not a collection's, not a [Pure] stub's, not generic, not async.</summary>
         private bool PlainLibraryMember(IMethodSymbol m) =>
-            m.DeclaringSyntaxReferences.Length == 0 && !IsCollection(m.ContainingType) && !IsStub(m) && !m.IsGenericMethod && m.ContainingType is INamedTypeSymbol { IsGenericType: false } &&
+            m.DeclaringSyntaxReferences.Length == 0 && !IsCollection(m.ContainingType) && !IsStub(m) && !m.IsGenericMethod &&
+            (m.ContainingType is INamedTypeSymbol { IsGenericType: false } || IsReadOnlyDictionary(m.ContainingType)) &&
             m.MethodKind is MethodKind.Ordinary or MethodKind.PropertyGet && !m.IsAsync;
 
         /// <summary>

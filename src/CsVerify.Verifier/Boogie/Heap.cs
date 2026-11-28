@@ -317,6 +317,58 @@ namespace CsVerify.Verifier.Boogie
                         }
                     }
                 }
+                // (the fields only construction writes: code the loop calls makes no object that was there on its entry.
+                // Not where the loop's caller runs within it, at an await or an iterator's yield: that may be a constructor)
+                var all = body.SelectMany(b => b.Stmts).ToList();
+                if (entry != null && all.Any(s => s is MCall || s is MInvoke || s is MHavocAll || s is MNewObj) &&
+                    !all.Any(s => s is MAwait || s is MHavocAll { Callers: true }))
+                {
+                    var stored = new HashSet<string>(all.OfType<MFieldStore>().Select(s => FieldMap(s.Field)));
+                    var fixedFrame = new HFixedFrame { Head = head };
+                    foreach (var f in p.Source.Fields.Where(f => IsField(f) && KernelTypes.FixedOnceMade(f)).OrderBy(FieldMap, System.StringComparer.Ordinal))
+                    {
+                        var map = FieldMap(f);
+                        if (stored.Contains(map) || fixedFrame.Maps.Contains(map))
+                        {
+                            continue;
+                        }
+                        fixedFrame.Maps.Add(map);
+                        p.Source.AddLocal(KLocal.Of($"fx{head}{map}", "[Ref]" + TypeOf(FieldType(f))));
+                    }
+                    if (fixedFrame.Maps.Count > 0 && hInto.Count > 0)
+                    {
+                        p.Source.AddLocal(KLocal.Of($"fx{head}$Alloc", "[Ref]bool"));
+                        hEntry.InsertStmt(0, fixedFrame);
+                        foreach (var b in hInto)
+                        {
+                            b.AddStmt(new HFixedSnapshot { Frame = fixedFrame });
+                        }
+                    }
+                }
+                // (in a constructor, the object nobody was handed yet: code the loop calls reaches none of it)
+                if (entry != null && p.Source.OwnTillHanded && hInto.Count > 0 && all.Any(s => s is MCall || s is MInvoke || s is MHavocAll || s is MNewObj))
+                {
+                    var stored = new HashSet<string>(all.OfType<MFieldStore>().Select(s => FieldMap(s.Field)));
+                    var own = new HOwnFrame { Head = head, Escapes = p.Source.ThisEscapes };
+                    foreach (var f in InstanceFields(p.Source.Method.ContainingType).Where(IsField))
+                    {
+                        var map = FieldMap(f);
+                        if (stored.Contains(map) || own.Maps.Contains(map))
+                        {
+                            continue;
+                        }
+                        own.Maps.Add(map);
+                        p.Source.AddLocal(KLocal.Of($"ow{head}{map}", TypeOf(FieldType(f))));
+                    }
+                    if (own.Maps.Count > 0)
+                    {
+                        hEntry.InsertStmt(0, own);
+                        foreach (var b in hInto)
+                        {
+                            b.AddStmt(new HOwnSnapshot { Frame = own });
+                        }
+                    }
+                }
                 if (!keeps || entry == null)
                 {
                     continue;

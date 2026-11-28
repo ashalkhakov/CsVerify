@@ -123,16 +123,24 @@ namespace CsVerify.Verifier.Boogie
                 return m.MethodKind is MethodKind.Ordinary or MethodKind.StaticConstructor or MethodKind.PropertyGet or MethodKind.PropertySet or MethodKind.UserDefinedOperator;
             }
             var ofItsType = OwnerTakesInstanceMember(m) && InstanceKindInSubset(m);
-            return ofItsType || StructConstructor(m) || StructReader(m);
+            return ofItsType || StructConstructor(m) || StructReader(m) || IsData(m.ContainingType) && Verifier.DataTypes.Delegates(m);
         }
 
         /// <summary>A member of a class, an interface's abstract one, or a data type's plain method or getter.</summary>
         private static bool OwnerTakesInstanceMember(IMethodSymbol m)
         {
             var t = m.ContainingType;
-            var plainMethod = m.MethodKind is MethodKind.Ordinary or MethodKind.PropertyGet && !m.IsVirtual && !m.IsAbstract && !m.IsOverride && !m.IsImplicitlyDeclared;
+            var plainMethod = m.MethodKind is MethodKind.Ordinary or MethodKind.PropertyGet && !m.IsVirtual && !m.IsAbstract && (!m.IsOverride || Formats(m)) && !m.IsImplicitlyDeclared;
             return IsClass(t) || IsInterface(t) && m.IsAbstract || IsData(t) && plainMethod;
         }
+
+        /// <summary>
+        /// A value type's or a data type's own ToString: it says how a value is written, and nothing of what the value
+        /// is (as its Equals or GetHashCode would), so it is a method like its others.
+        /// </summary>
+        private static bool Formats(IMethodSymbol m) =>
+            m.IsOverride && m.Name == "ToString" && m.Parameters.Length == 0 &&
+            m.OverriddenMethod?.ContainingType.SpecialType is SpecialType.System_Object or SpecialType.System_ValueType;
 
         /// <summary>A method or a property's accessor; a constructor or an explicit interface implementation only of a class.</summary>
         private static bool InstanceKindInSubset(IMethodSymbol m)
@@ -151,7 +159,7 @@ namespace CsVerify.Verifier.Boogie
         private static bool StructReader(IMethodSymbol m)
         {
             var reads = m.MethodKind is MethodKind.Ordinary or MethodKind.PropertyGet;
-            return IsStruct(m.ContainingType) && reads && !m.IsVirtual && !m.IsOverride;
+            return IsStruct(m.ContainingType) && reads && !m.IsVirtual && (!m.IsOverride || Formats(m));
         }
 
         /// <summary>Not async, or async returning a task, and code (not [Pure], not a lemma).</summary>
@@ -783,6 +791,8 @@ namespace CsVerify.Verifier.Boogie
             _printer.Recursive = (a, b) => Recursive(a.OriginalDefinition, b.OriginalDefinition);
             foreach (var p in _pending.Where(p => IsFunction(p.Source.Method) && !p.Source.IsPredicate))
             {
+                // (its lines are its method's: a definition Boogie doesn't type check leaves that method out, not all)
+                var from = _printer.NextLine;
                 if (OverPredicate(p.Source.Method) != null)
                 {
                     _printer.FunctionOverPredicate(p);
@@ -792,6 +802,7 @@ namespace CsVerify.Verifier.Boogie
                     _printer.Function(p, FunctionFields(p.Source.Method), fields,
                                            ((IProgramFacts)this).Signature(p.Source.Method).Requires.SelectMany(r => r.Expr.Atoms()).Any(a => a is KInst));
                 }
+                Spans.Add((from, _printer.NextLine - 1, p.Source.Result));
             }
             // (a [Pure] override, of an object whose dynamic type is exactly its class: the base member's value is its)
             foreach (var p in _pending.Where(p => IsFunction(p.Source.Method) && !p.Source.IsPredicate && OverPredicate(p.Source.Method) == null && p.Source.Method.IsOverride))

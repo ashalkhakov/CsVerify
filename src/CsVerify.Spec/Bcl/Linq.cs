@@ -286,19 +286,19 @@ namespace CsVerify.Bcl
             Q.Count(first) == Q.Count(second) && Spec.Forall(0, Q.Count(first), i => Spec.Equal(Ghost.Of(Q.At(first, i)), Ghost.Of(Q.At(second, i))));
 
         // the first element with the least (greatest) key, by Comparer<K>.Default: the first of a stable sort by it.
-        // (Stronger than .NET where it is weaker: an empty source of a reference type gives null rather than throwing,
-        // and null keys are passed over; the verifier orders only integer, char and enum keys, so of the others the
-        // result is only some element.)
-        public static T MinBy<T, K>(IEnumerable<T> source, Func<T, K> keySelector)
+        // An empty source gives null where T has one (a reference, a nullable value), and throws otherwise.
+        // (Stronger than .NET where it is weaker: null keys are passed over; the verifier orders only integer, char
+        // and enum keys, so of the others the result is only some element.)
+        public static T? MinBy<T, K>(IEnumerable<T> source, Func<T, K> keySelector)
         {
-            Spec.Requires(Q.Count(source) > 0);
-            return Q.At(Q.Sort(source, keySelector, false), 0);
+            Spec.Requires(Q.Count(source) > 0 || default(T) == null);
+            return Q.Count(source) > 0 ? Q.At(Q.Sort(source, keySelector, false), 0) : default;
         }
 
-        public static T MaxBy<T, K>(IEnumerable<T> source, Func<T, K> keySelector)
+        public static T? MaxBy<T, K>(IEnumerable<T> source, Func<T, K> keySelector)
         {
-            Spec.Requires(Q.Count(source) > 0);
-            return Q.At(Q.Sort(source, keySelector, true), 0);
+            Spec.Requires(Q.Count(source) > 0 || default(T) == null);
+            return Q.Count(source) > 0 ? Q.At(Q.Sort(source, keySelector, true), 0) : default;
         }
 
         // where it throws, only: a key that is null, or the same as an earlier one's (ArgumentNullException,

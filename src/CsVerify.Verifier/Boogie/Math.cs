@@ -688,6 +688,8 @@ namespace CsVerify.Verifier.Boogie
         public MExpr Unless;
         /// <summary>The program's fields and arrays only: not the collections' models (code an Equals runs, not the collection's).</summary>
         public bool ProgramState;
+        /// <summary>The code that runs is this method's caller, which may be a constructor still making its object.</summary>
+        public bool Callers;
     }
 
     /// <summary>Around a call of an async method: the objects of these (confined) locals, which no code can reach, are as they were.</summary>
@@ -894,6 +896,40 @@ namespace CsVerify.Verifier.Boogie
         public Dictionary<string, HashSet<string>> Locals = new Dictionary<string, HashSet<string>>();
 
         public bool RemoveLocal(string key) => Locals.Remove(key);
+    }
+
+    /// <summary>
+    /// At a loop head: a field only its object's construction writes is as it was when the loop was entered, for the
+    /// objects there then (the loop writes none of these fields itself, and its caller doesn't run within it).
+    /// </summary>
+    internal sealed class HFixedFrame : IHeapStmt
+    {
+        public int Head;
+        public List<string> Maps = new List<string>();
+    }
+
+    /// <summary>
+    /// At a loop head in a constructor whose object nobody else can reach till it is handed over (OwnTillHanded): while
+    /// it hasn't been, its fields the loop doesn't store are as they were when the loop was entered.
+    /// </summary>
+    internal sealed class HOwnFrame : IHeapStmt
+    {
+        public int Head;
+        /// <summary>The constructor hands this over somewhere (its flag says whether it has yet).</summary>
+        public bool Escapes;
+        public List<string> Maps = new List<string>();
+    }
+
+    /// <summary>On the way into such a loop: its object's fields, as they are now.</summary>
+    internal sealed class HOwnSnapshot : IHeapStmt
+    {
+        public HOwnFrame Frame;
+    }
+
+    /// <summary>On the way into a loop: the maps its HFixedFrame keeps, as they are now.</summary>
+    internal sealed class HFixedSnapshot : IHeapStmt
+    {
+        public HFixedFrame Frame;
     }
 
     /// <summary>On the way into a loop: every state map, as it is now (for its HConfinedFrame).</summary>

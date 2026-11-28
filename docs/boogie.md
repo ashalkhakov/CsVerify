@@ -538,7 +538,7 @@ chars), `Zip` pairs two, `SelectMany` flattens (running offsets, monotone, and e
 filters the pairs of a flattening (a nullable key that is null matches nothing), `LeftJoin` adds each outer element
 no inner one matches, with none; `Count`, `Any`, `All`, `Contains`, `First`, `Last` (and `OrDefault`), `Max`, `Min`,
 `Sum` (every partial sum in range, CSV1001, as .NET adds them checked), `Average`, `MinBy` and `MaxBy` (the first
-element whose integer key is least, or greatest) and `SequenceEqual` read it, their definitions' preconditions
+element whose integer key is least, or greatest; null of no elements, where their type has one) and `SequenceEqual` read it, their definitions' preconditions
 CSV1001 (an empty sequence has no `First`); a List's `Find`, `FindIndex`, `Exists` and `TrueForAll` of a pure lambda
 are its first match (or the default), the first match's index (or -1), `Any` and `All`; `Index` pairs each element with its
 index; `ToDictionary` is a dictionary of the library's (what's in it unknown), its definition's precondition checked
@@ -638,7 +638,9 @@ not translated (CSV1902). A `DateOnly` and a `TimeOnly` are kept so too (a day's
 `DateTime`'s range): held, handed on and compared, nothing more. A `Guid` is an `int` too, of which `==` and `!=` are
 all there is: `Guid.Empty` is 0, and `Guid.NewGuid()` gives one nothing is known of (0 too, maybe). `x.CompareTo(y)`
 of integers, decimals, `DateTime`s and `TimeSpan`s is the sign of `x - y`, and `char`'s ASCII tests
-(`char.IsAsciiDigit`, `IsAsciiLetter`, `IsAsciiLetterUpper`, ...) are ranges of the code.
+(`char.IsAsciiDigit`, `IsAsciiLetter`, `IsAsciiLetterUpper`, ...) are ranges of the code. Its tests of a Unicode
+category (`char.IsWhiteSpace`, `IsLetter`, `IsDigit`, `IsUpper`, ...) are `[Pure]` stubs: functions of the character,
+of which nothing more is said.
 
 **Decimals.** A `decimal` is an `int`, its value in units of 10^-28 (every decimal is *m* / 10^*e*, |*m*| < 2^96,
 0 <= *e* <= 28), so comparisons are exact. `+` and `-` are `$dround` of the exact result, and `*` and `/` are
@@ -1364,8 +1366,43 @@ Also exceptions: `throw`, `try`/`catch` by type, rethrow, `finally`, `using`, ca
 and a `throw` expression (a `switch` arm's `_ => throw ...`).
 
 **Generated code and ill-typed translations.** Generated files are compiled with the program but not verified. A
-method whose translation Boogie doesn't type check is left out (CSV1902), with its callers, and the rest of the
-program translated again.
+partial method whose body a source generator writes (`[GeneratedRegex]`'s) is called by its contract, which is none,
+and by what the effects analysis says that body may change, as a method `--only` doesn't select is. A method whose
+translation Boogie doesn't type check is left out (CSV1902), with its callers, and the rest of the program translated
+again; so is one whose function's definition doesn't.
+
+**What code called from here can't change.** A call of code whose contract isn't known (a delegate's, an unknown
+sequence's `MoveNext`, a library member that may run the program's code) may change anything such code may. A field
+only its object's construction writes isn't one of those: a `readonly` field, or an auto-property without a setter
+or with an `init` one, of an object that exists is as it was after such a call, and at the head of a loop that makes
+such calls, for the objects there when the loop was entered. Not a member of an entity or an owned type of an EF
+model, which EF fills whatever its accessors say. Not across an `await` or an iterator's `yield` either: there the
+method's caller runs, which may be a constructor still making its object.
+
+**In its constructor, an object is nobody else's until it is handed over.** Where the class derives from `object`
+and the constructor chains to no other and makes no lambda, local function or delegate of its own methods, no code
+the constructor calls can reach the object before `this` is used as a value (an argument, a receiver, something
+stored). Until then its fields are as the constructor left them after every call, and at the head of a loop that
+makes calls. From then on it is an object like any other.
+
+**Records and values.** A positional record's other constructor that only chains to one of its own (`public Mark(int
+at) : this(at, 0) { }`) leaves the record a data type: a value it builds is the primary constructor's, of what it
+hands on, and what it computes on the way is checked in the constructor's own procedure. `with` on an object of a
+sealed record class (a value object) makes a new object of that class, each member the original's, then stores what
+the expression sets (not where the class has a copy constructor of its own). A value type's or a data type's own
+`ToString` is a method like its others. A tuple may hold a tuple (`(a, (b, c))`, which one of more than seven parts
+is too). A switch expression over a tuple tests its parts in turn, a nullable value's as its value's where it has
+one. A function's definition is its expression converted to its type, as C# converts it (`int? F(bool b) => b ? 1 :
+default;` gives 0, an `int?`, where `b` is false).
+
+**Static auto-properties** are the static fields they are kept in: one without a setter a static readonly field (a
+value of the run's that never changes, not known which), one with a setter a static field.
+
+**A library's own operator of values** that the kernel has no model of (`TimeSpan * double`, `TimeSpan / TimeSpan`)
+reaches none of the program's objects: its operands are evaluated, it changes nothing, what it gives is a value not
+known (nor that it gives the same again), and it may throw. A library's call of values and of its own objects (a
+`TimeZoneInfo`) in a LINQ lambda is likewise a value of each element as it is read there, in a selector or a
+predicate.
 
 **Lambdas and local functions** are units of their own: a procedure each
 (`C.nested$<position>$<parameter types>`), which nothing calls; a call of the delegate is of its contract. What one
@@ -1420,7 +1457,11 @@ methods, generic classes and type parameters constrained to references; interfac
 Also arrays of objects and strings, and null patterns of references.
 
 Also exception filters, `Spec.Multiset` and `Bag`, collections keyed by strings, a dictionary's `Keys` and `Values`,
-and reading collections through their interfaces.
+and reading collections through their interfaces. A dictionary's `Keys` and `Values` are LINQ sources too (as many
+as its count, each key one it has, each value its key's, in some order), and kept as a collection they are a view of
+the dictionary, read through its interface. `GetValueOrDefault` is the dictionary's value of the key where it has
+it. `IReadOnlyDictionary<K, V>` is a reference to something that maps keys: its members are library calls, which
+change nothing and say nothing of what they give.
 
 Also: delegates handed to library members (each element's precondition where the member calls it with the
 elements, Parallel.For's indices, totality otherwise), ref locals, `await foreach` over library streams, library
@@ -1440,7 +1481,8 @@ contract.
 Iterators (`yield`): the body runs at the first `MoveNext`, after the call, so at its start, and after each `yield
 return` (its value evaluated, with its checks), the caller's code may have changed anything; `yield break` returns,
 and what the call gives isn't null. An iterator's postconditions would be of the enumerable, made before its body
-runs: not translated. A `foreach` over any other `IEnumerable<T>` (an iterator's, a parameter's) evaluates it once (a
+runs: not translated. A `foreach` over any other `IEnumerable<T>` (an iterator's, a parameter's) evaluates it once,
+as the control flow graph has it (`xs ?? Enumerable.Empty<T>()`, which is a sequence of none) (a
 null one throws, CSV1013); each `MoveNext` may run the program's code, so may change anything, its answer unknown; each
 element is a value of its type; `Spec.Index` counts the edges back to the head.
 

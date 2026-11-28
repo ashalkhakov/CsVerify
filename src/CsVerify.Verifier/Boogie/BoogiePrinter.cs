@@ -314,6 +314,9 @@ namespace CsVerify.Verifier.Boogie
             Optional("$aempty(", "// Array.Empty<T>(): an array of none");
             Optional("$aempty(", "function $aempty(): Ref;");
             Optional("$aempty(", "axiom $aempty() != null && $arr($aempty()) && len($aempty()) == 0;");
+            Optional("$qempty(", "// Enumerable.Empty<T>(): a sequence of none (which object it is, a library's)");
+            Optional("$qempty(", "function $qempty(): Ref;");
+            Optional("$qempty(", "axiom $qempty() != null;");
             // (EF's entities: what type an object is, where the change tracker asks; Lowering.EfTracker)
             if (KernelTypes.Ef != null)
             {
@@ -952,6 +955,11 @@ namespace CsVerify.Verifier.Boogie
                     Line("  free ensures (forall r: Ref :: old($Alloc[r]) ==> $Alloc[r]);");
                 }
                 Line($"  free ensures {InRangeOfMemory};");
+                // (a delegate's code makes no object that exists: a field only its object's construction writes is as it was)
+                foreach (var map in modifies.Where(_fixedMaps.Contains))
+                {
+                    Line($"  free ensures (forall o: Ref :: {{ {map}[o] }} old($Alloc[o]) ==> {map}[o] == old({map}[o]));");
+                }
                 Line($"  free ensures $postS.{key}(d, old({State}){use}{(res == "void" ? "" : ", res")});");
                 // (only what's in its frame changes, of what was allocated: said of an object where the map is read
                 // of it after the call, not of every object known to be allocated, of every map)
@@ -981,12 +989,17 @@ namespace CsVerify.Verifier.Boogie
         public void Havoc(ISet<string> maps)
         {
             var modifies = Heap.Globals.Where(maps.Contains).Concat(maps.Where(x => x.StartsWith("$F.")).OrderBy(x => x, System.StringComparer.Ordinal)).ToList();
-            foreach (var (name, these) in new[] { ("$havoc", modifies), ("$havocProgram", modifies.Where(x => !x.StartsWith("$F.$M.")).ToList()) })
+            foreach (var (name, these) in new[] { ("$havoc", modifies), ("$havocProgram", modifies.Where(x => !x.StartsWith("$F.$M.")).ToList()), ("$havocCallers", modifies) })
             {
                 Line($"procedure {name}();");
                 if (these.Count > 0)
                 {
                     Line($"  modifies {string.Join(", ", these)};");
+                }
+                // (code called from here makes no object that exists: a field only its object's construction writes is as it was)
+                foreach (var map in these.Where(x => name != "$havocCallers" && _fixedMaps.Contains(x)))
+                {
+                    Line($"  free ensures (forall o: Ref :: {{ {map}[o] }} old($Alloc[o]) ==> {map}[o] == old({map}[o]));");
                 }
                 foreach (var l in StepsKept(these, true))
                 {
@@ -1289,12 +1302,16 @@ namespace CsVerify.Verifier.Boogie
 
         private string StepsKeptAt(string o, string map) => E(AtomicSteps[map].Substitute("x$old", new MLit($"old({map}[{o}])")).Substitute("x$now", new MLit($"{map}[{o}]")), InProcedure);
 
+        /// <summary>The maps of the fields only their object's construction writes.</summary>
+        private HashSet<string> _fixedMaps = new HashSet<string>();
+
         /// <summary>The memory's maps, with their types (once the fields and models are declared).</summary>
         public IReadOnlyList<(string name, string type)> StateMaps => _stateMaps;
 
         public void Fields(IEnumerable<ISymbol> fields)
         {
             _stateMaps.Clear();
+            _fixedMaps = fields.Where(KernelTypes.FixedOnceMade).Select(FieldMap).ToHashSet();
             foreach (var t in ElementTypes)
             {
                 _stateMaps.Add((ElementMap(t), "[Ref][int]" + ElementValue(t)));
@@ -1779,7 +1796,7 @@ namespace CsVerify.Verifier.Boogie
                 Line($"  {b.Label}:");
                 // (a block's leading assertions and assumptions are a loop's invariants where it is a head: kept whole there)
                 // (elsewhere a check not assumed after is on a side branch: inline, a failing one would make what follows vacuous)
-                int lead = !p.Source.LoopBodies.ContainsKey(b.Ordinal) || b.Label != $"b{b.Ordinal}" ? 0 : b.Stmts.TakeWhile(x => x is MAssert || x is MAssume || x is HLoopFrame || x is MAtomicSteps || x is HConfinedFrame).Count();
+                int lead = !p.Source.LoopBodies.ContainsKey(b.Ordinal) || b.Label != $"b{b.Ordinal}" ? 0 : b.Stmts.TakeWhile(x => x is MAssert || x is MAssume || x is HLoopFrame || x is MAtomicSteps || x is HConfinedFrame || x is HFixedFrame || x is HOwnFrame).Count();
                 for (int k = 0; k < b.Stmts.Count; k++)
                 {
                     _leading = k < lead;
@@ -2073,7 +2090,7 @@ namespace CsVerify.Verifier.Boogie
                     }
                     return;
                 case MHavocAll ha:
-                    var havoc = ha.ProgramState ? "$havocProgram" : "$havoc";
+                    var havoc = ha.Callers ? "$havocCallers" : ha.ProgramState ? "$havocProgram" : "$havoc";
                     Line(ha.Unless == null ? $"    call {havoc}();" : $"    if (!({E(ha.Unless, cx)})) {{ call {havoc}(); }}");
                     return;
                 case MKeep keep when !keep.After:
@@ -2255,6 +2272,32 @@ namespace CsVerify.Verifier.Boogie
                     foreach (var map in new[] { "$Alloc" }.Concat(snap.Frame.Maps))
                     {
                         Line($"    s${snap.Frame.Head}{map} := {map};");
+                    }
+                    return;
+                case HOwnSnapshot os:
+                    foreach (var map in os.Frame.Maps)
+                    {
+                        Line($"    ow{os.Frame.Head}{map} := {map}[this];");
+                    }
+                    return;
+                case HOwnFrame of:
+                    foreach (var map in of.Maps)
+                    {
+                        Line($"    assume {(of.Escapes ? $"!{Checks.BuiltFlag} ==> " : "")}{map}[this] == ow{of.Head}{map};");
+                    }
+                    return;
+                case HFixedSnapshot fs:
+                    foreach (var map in new[] { "$Alloc" }.Concat(fs.Frame.Maps))
+                    {
+                        Line($"    fx{fs.Frame.Head}{map} := {map};");
+                    }
+                    return;
+                case HFixedFrame ff:
+                    // (what was allocated on entry still is: the loop's havoc forgets it)
+                    Line($"    assume (forall o: Ref :: {{ $Alloc[o] }} fx{ff.Head}$Alloc[o] ==> $Alloc[o]);");
+                    foreach (var map in ff.Maps)
+                    {
+                        Line($"    assume (forall o: Ref :: {{ {map}[o] }} fx{ff.Head}$Alloc[o] ==> {map}[o] == fx{ff.Head}{map}[o]);");
                     }
                     return;
                 case HConfinedSnapshot cs:

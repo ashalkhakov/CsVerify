@@ -111,6 +111,10 @@ namespace CsVerify.Verifier.Boogie
             {
                 return srov;
             }
+            if (e is IPropertyReferenceOperation { Property: { IsStatic: true } spo } && StaticReadonly(spo) is KExpr spov)
+            {
+                return spov;
+            }
             // (a constant: its value; neither a delegate nor a lambda, the cases before it, is one)
             if (e.ConstantValue is { HasValue: true } cv && (Scalar(e.Type) || IsFloating(e.Type) || IsNullable(e.Type)))
             {
@@ -606,6 +610,10 @@ namespace CsVerify.Verifier.Boogie
                         case "Post": return steady ? new KOp("$post." + key, args.ToArray()) : new KOp("$postS." + key, stated);
                         case "ReadsOf": return new KOp("$readsS." + key, stated);
                         case "Total" when steady: return new KOp("$total." + key, args[0]);
+                        // (of a field its object never reassigns, as an invariant has it: that it accepts every argument
+                        // in every state, so wherever it is called later)
+                        case "Total" when f is IFieldReferenceOperation { Field: { IsReadOnly: true, IsStatic: false }, Instance: IInstanceReferenceOperation }:
+                            return AndAlso(new KOp("$steady", args[0]), new KOp("$total." + key, args[0]));
                         // (of one that may read state: that it accepts every argument in this one)
                         case "Total":
                         {
