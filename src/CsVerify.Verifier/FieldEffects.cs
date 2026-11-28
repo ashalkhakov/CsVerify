@@ -23,6 +23,8 @@ namespace CsVerify.Verifier
             /// <summary>A constructor's writes to fields of the object it builds (<c>this.F = ...</c>).</summary>
             public readonly HashSet<ISymbol> SelfWrites = new HashSet<ISymbol>(SymbolEqualityComparer.Default);
             public readonly HashSet<IMethodSymbol> Callees = new HashSet<IMethodSymbol>(SymbolEqualityComparer.Default);
+            /// <summary>A constructor's: the one it runs on the same object first (this(...), or base(...), written or not).</summary>
+            public IMethodSymbol Chained;
             /// <summary>May write any heap field (a virtual call, a library call handed a callback or an object).</summary>
             public bool All;
 
@@ -246,9 +248,12 @@ namespace CsVerify.Verifier
             {
                 return d;
             }
-            // a source class's implicit constructor only sets the new object's fields (defaults, initializers)
-            if (m.IsImplicitlyDeclared && m.MethodKind == MethodKind.Constructor && m.ContainingType.DeclaringSyntaxReferences.Length > 0)
+            // a constructor nobody wrote a body for (an implicit one, a primary one): its class's initializers, then its
+            // base's constructor
+            if (IsInstanceConstructor(m) && m.ContainingType.DeclaringSyntaxReferences.Length > 0 &&
+                (m.IsImplicitlyDeclared || m.DeclaringSyntaxReferences.Any(r => r.GetSyntax() is TypeDeclarationSyntax)))
             {
+                Walk(d, m, Construction(d, m, null));
                 return d;
             }
             // a virtual member may run any override: they are all reachable from it
@@ -268,16 +273,106 @@ namespace CsVerify.Verifier
                 LibraryModels(d, m, c);
                 return d;
             }
-            bool ctor = m.MethodKind == MethodKind.Constructor;
+            var bodies = new List<SyntaxNode> { c.Declaration };
+            if (IsInstanceConstructor(m))
+            {
+                bodies.AddRange(Construction(d, m, c.Declaration as ConstructorDeclarationSyntax));
+            }
+            Walk(d, m, bodies);
+            return d;
+        }
+
+        private static bool IsInstanceConstructor(IMethodSymbol m) => m.MethodKind == MethodKind.Constructor && !m.IsStatic;
+
+        /// <summary>The instance members of a class that have an initializer, each with it.</summary>
+        internal static IEnumerable<(ISymbol member, EqualsValueClauseSyntax init)> Initializers(INamedTypeSymbol type)
+        {
+            foreach (var member in type.GetMembers().Where(x => !x.IsStatic && (x is IFieldSymbol || x is IPropertySymbol)))
+            {
+                foreach (var syntax in member.DeclaringSyntaxReferences.Select(r => r.GetSyntax()))
+                {
+                    if (((syntax as VariableDeclaratorSyntax)?.Initializer ?? (syntax as PropertyDeclarationSyntax)?.Initializer) is EqualsValueClauseSyntax init)
+                    {
+                        yield return (member, init);
+                    }
+                }
+            }
+        }
+
+        /// <summary>The constructor an implicit base() runs: the base class's that takes no argument (none: object's, or none found).</summary>
+        internal static IMethodSymbol ImplicitBase(INamedTypeSymbol type)
+        {
+            var b = type.BaseType;
+            if (type.TypeKind != TypeKind.Class || b == null || b.SpecialType == SpecialType.System_Object)
+            {
+                return null;
+            }
+            return b.InstanceConstructors.FirstOrDefault(x => x.Parameters.Length == 0) ??
+                   b.InstanceConstructors.FirstOrDefault(x => x.Parameters.All(p => p.IsOptional || p.IsParams));
+        }
+
+        /// <summary>
+        /// What a constructor runs before its body, as C# has it: its class's initializers (which set the new object's
+        /// members), then its base's constructor on the same object (base(...), written or not); one that chains to
+        /// this(...) runs that one instead. Gives the code of it there is to read: the initializers' values, and a
+        /// primary constructor's base arguments.
+        /// </summary>
+        private List<SyntaxNode> Construction(Direct d, IMethodSymbol ctor, ConstructorDeclarationSyntax declared)
+        {
+            var code = new List<SyntaxNode>();
+            var type = ctor.ContainingType.OriginalDefinition;
+            IMethodSymbol chained = null;
+            bool toThis = false;
+            if (declared?.Initializer is ConstructorInitializerSyntax ci)
+            {
+                chained = _engine.ModelOf(ci.SyntaxTree).GetSymbolInfo(ci).Symbol as IMethodSymbol;
+                toThis = ci.ThisOrBaseKeyword.IsKind(SyntaxKind.ThisKeyword);
+            }
+            else
+            {
+                foreach (var based in ctor.DeclaringSyntaxReferences.Select(r => r.GetSyntax()).OfType<TypeDeclarationSyntax>()
+                             .SelectMany(td => td.BaseList?.Types.OfType<PrimaryConstructorBaseTypeSyntax>() ?? Enumerable.Empty<PrimaryConstructorBaseTypeSyntax>()))
+                {
+                    chained = _engine.ModelOf(based.SyntaxTree).GetSymbolInfo(based).Symbol as IMethodSymbol;
+                    code.Add(based.ArgumentList);
+                }
+                chained ??= ImplicitBase(type);
+            }
+            if (!toThis)
+            {
+                foreach (var (member, init) in Initializers(type))
+                {
+                    if (IsHeapField(member))
+                    {
+                        d.AddSelfWrite(Key(member));
+                    }
+                    code.Add(init.Value);
+                }
+            }
+            if (chained != null)
+            {
+                d.Chained = Normal(chained);
+                AddCallee(d, chained);
+            }
+            return code;
+        }
+
+        /// <summary>
+        /// What code does, read off it: the fields it reads and writes, and everything it calls, written as a call or
+        /// not (an accessor, an operator, a conversion, Deconstruct, an enumerator's members, Dispose, ToString).
+        /// </summary>
+        private void Walk(Direct d, IMethodSymbol m, List<SyntaxNode> bodies)
+        {
+            bool ctor = IsInstanceConstructor(m);
+            SemanticModel Model(SyntaxNode n) => _engine.ModelOf(n.SyntaxTree);
             // (its body, and the lambdas and methods it hands a library member: the member runs them, so what they
             // do, it does; the member itself is judged by what each call hands it)
-            var bodies = new List<SyntaxNode> { c.Declaration };
             var handed = new Dictionary<InvocationExpressionSyntax, IInvocationOperation>();
             for (int k = 0; k < bodies.Count; k++)
             {
-                foreach (var inv in Within(bodies[k]).OfType<InvocationExpressionSyntax>())
+                foreach (var inv in Within(bodies[k]).Prepend(bodies[k]).OfType<InvocationExpressionSyntax>())
                 {
-                    if (c.Model.GetOperation(inv) is IInvocationOperation op && DelegatesHanded(op) is List<IOperation> delegates)
+                    if (Model(inv).GetOperation(inv) is IInvocationOperation op && DelegatesHanded(op) is List<IOperation> delegates)
                     {
                         handed[inv] = op;
                         foreach (var made in delegates)
@@ -294,11 +389,12 @@ namespace CsVerify.Verifier
                     }
                 }
             }
-            foreach (var node in bodies.SelectMany(Within))
+            foreach (var node in bodies.SelectMany(b => Within(b).Prepend(b)))
             {
+                var model = Model(node);
                 switch (node)
                 {
-                    case SimpleNameSyntax name when c.Model.GetSymbolInfo(name).Symbol is ISymbol s && IsHeapField(s):
+                    case SimpleNameSyntax name when model.GetSymbolInfo(name).Symbol is ISymbol s && IsHeapField(s):
                     {
                         // the whole access (o.F or F) and whether it is assigned
                         ExpressionSyntax access = name.Parent is MemberAccessExpressionSyntax ma && ma.Name == name ? ma : (ExpressionSyntax)name;
@@ -311,7 +407,7 @@ namespace CsVerify.Verifier
                         // (reading an atomic field moves what the reader knows of it on, past the others' steps)
                         if (write || read && Atomics.IsAtomic(s))
                         {
-                            bool onThis = access is SimpleNameSyntax || access is MemberAccessExpressionSyntax mt && mt.Expression is ThisExpressionSyntax;
+                            bool onThis = !s.IsStatic && (access is SimpleNameSyntax || access is MemberAccessExpressionSyntax mt && mt.Expression is ThisExpressionSyntax);
                             if (ctor && onThis)
                             {
                                 d.AddSelfWrite(key);
@@ -322,13 +418,14 @@ namespace CsVerify.Verifier
                         }
                         break;
                     }
-                    // a stubbed property or indexer (list.Count, list[i]): its accessors run
+                    // a property or an indexer with accessors of its own (list.Count, list[i], a computed one): they run
                     case ExpressionSyntax pe when (pe is SimpleNameSyntax || pe is ElementAccessExpressionSyntax) &&
-                                                  c.Model.GetSymbolInfo(pe).Symbol is IPropertySymbol sp && sp.DeclaringSyntaxReferences.Length == 0:
+                                                  model.GetSymbolInfo(pe).Symbol is IPropertySymbol sp:
                     {
                         ExpressionSyntax access = pe.Parent is MemberAccessExpressionSyntax pm && pm.Name == pe ? pm : pe;
                         var (read, write) = Usage(access);
-                        if (read && sp.GetMethod != null && _engine.HasStub(sp.GetMethod))
+                        bool library = sp.OriginalDefinition.DeclaringSyntaxReferences.Length == 0;
+                        if (read && sp.GetMethod != null && (library ? _engine.HasStub(sp.GetMethod) : true))
                         {
                             AddCallee(d, sp.GetMethod);
                         }
@@ -338,7 +435,7 @@ namespace CsVerify.Verifier
                         }
                         break;
                     }
-                    case InvocationExpressionSyntax inv when c.Model.GetSymbolInfo(inv).Symbol is IMethodSymbol callee:
+                    case InvocationExpressionSyntax inv when model.GetSymbolInfo(inv).Symbol is IMethodSymbol callee:
                         if (SpecSymbols.IsModel(callee.ReducedFrom ?? callee.OriginalDefinition))
                         {
                             d.AddRead((callee.ReducedFrom ?? callee).OriginalDefinition);
@@ -355,15 +452,163 @@ namespace CsVerify.Verifier
                             AddCallee(d, callee);
                         }
                         break;
-                    case BaseObjectCreationExpressionSyntax oc when c.Model.GetSymbolInfo(oc).Symbol is IMethodSymbol ctorCallee:
+                    case BaseObjectCreationExpressionSyntax oc when model.GetSymbolInfo(oc).Symbol is IMethodSymbol ctorCallee:
                         AddCallee(d, ctorCallee);
                         break;
-                    case ConstructorInitializerSyntax ci when c.Model.GetSymbolInfo(ci).Symbol is IMethodSymbol baseCtor:
-                        AddCallee(d, baseCtor);
+                    // (the calls nobody wrote as calls)
+                    case CommonForEachStatementSyntax fe:
+                    {
+                        var info = model.GetForEachStatementInfo(fe);
+                        foreach (var run in new[] { info.GetEnumeratorMethod, info.MoveNextMethod, info.CurrentProperty?.GetMethod, info.DisposeMethod })
+                        {
+                            AddOwn(d, run);
+                        }
+                        if (fe is ForEachVariableStatementSyntax fv)
+                        {
+                            AddDeconstruct(d, model.GetDeconstructionInfo(fv));
+                        }
+                        break;
+                    }
+                    case AssignmentExpressionSyntax da when da.Left is TupleExpressionSyntax || da.Left is DeclarationExpressionSyntax:
+                        AddDeconstruct(d, model.GetDeconstructionInfo(da));
+                        break;
+                    case UsingStatementSyntax us:
+                        AddDispose(d, us.Expression != null ? model.GetTypeInfo(us.Expression).Type : us.Declaration != null ? model.GetTypeInfo(us.Declaration.Type).Type : null);
+                        break;
+                    case LocalDeclarationStatementSyntax ud when !ud.UsingKeyword.IsKind(SyntaxKind.None):
+                        AddDispose(d, model.GetTypeInfo(ud.Declaration.Type).Type);
+                        break;
+                    case PositionalPatternClauseSyntax pp:
+                        AddOwn(d, model.GetSymbolInfo(pp).Symbol as IMethodSymbol);
+                        break;
+                    case InterpolationSyntax hole:
+                        AddToString(d, model.GetOperation(hole.Expression));
                         break;
                 }
+                if (node is ExpressionSyntax e && model.GetOperation(e) is IOperation eo)
+                {
+                    Implied(d, eo);
+                    // (the conversions around it, and the calls an initializer's element stands for: operations without syntax of their own)
+                    for (var up = eo.Parent; up != null && up.IsImplicit && up.Syntax == e; up = up.Parent)
+                    {
+                        Implied(d, up);
+                    }
+                }
             }
-            return d;
+        }
+
+        /// <summary>The call an operation stands for, where it is one nobody wrote as a call.</summary>
+        private void Implied(Direct d, IOperation op)
+        {
+            switch (op)
+            {
+                case IBinaryOperation b:
+                    AddOwn(d, b.OperatorMethod);
+                    // (a string made of an object: its ToString)
+                    if (b.OperatorKind == BinaryOperatorKind.Add && b.Type?.SpecialType == SpecialType.System_String &&
+                        (b.OperatorMethod == null || b.OperatorMethod.ContainingType.SpecialType == SpecialType.System_String))
+                    {
+                        AddToString(d, b.LeftOperand);
+                        AddToString(d, b.RightOperand);
+                    }
+                    break;
+                case IUnaryOperation u:
+                    AddOwn(d, u.OperatorMethod);
+                    break;
+                case ICompoundAssignmentOperation ca:
+                    AddOwn(d, ca.OperatorMethod);
+                    break;
+                case IIncrementOrDecrementOperation id:
+                    AddOwn(d, id.OperatorMethod);
+                    break;
+                case IConversionOperation cv:
+                    AddOwn(d, cv.OperatorMethod);
+                    break;
+                case IEventAssignmentOperation ea when ea.EventReference is IEventReferenceOperation er:
+                    AddOwn(d, ea.Adds ? er.Event.AddMethod : er.Event.RemoveMethod);
+                    break;
+                // (an element of a collection's initializer: its Add)
+                case IInvocationOperation { IsImplicit: true } inv:
+                    if (inv.Parent is IObjectOrCollectionInitializerOperation)
+                    {
+                        AddCallee(d, inv.TargetMethod);
+                    }
+                    else
+                    {
+                        AddOwn(d, inv.TargetMethod);
+                    }
+                    break;
+                case IObjectCreationOperation { IsImplicit: true, Constructor: { } made }:
+                    AddCallee(d, made);
+                    break;
+            }
+        }
+
+        /// <summary>A member of the program's that code runs without naming it (a library's changes nothing of the program's by itself).</summary>
+        private void AddOwn(Direct d, IMethodSymbol run)
+        {
+            if (run != null && !run.IsImplicitlyDeclared && (run.ReducedFrom ?? run).OriginalDefinition.DeclaringSyntaxReferences.Length > 0)
+            {
+                AddCallee(d, run);
+            }
+        }
+
+        private void AddDeconstruct(Direct d, DeconstructionInfo info)
+        {
+            AddOwn(d, info.Method);
+            foreach (var nested in info.Nested)
+            {
+                AddDeconstruct(d, nested);
+            }
+        }
+
+        /// <summary>Leaving a using: the Dispose of what it holds (an object that may be of any class: any).</summary>
+        private void AddDispose(Direct d, ITypeSymbol held)
+        {
+            if (held == null)
+            {
+                return;
+            }
+            for (var b = held; b != null; b = b.BaseType)
+            {
+                if (b.GetMembers("Dispose").Concat(b.GetMembers("DisposeAsync")).OfType<IMethodSymbol>()
+                        .FirstOrDefault(x => x.Parameters.Length == 0 && x.DeclaringSyntaxReferences.Length > 0) is IMethodSymbol own)
+                {
+                    AddCallee(d, own);
+                    return;
+                }
+            }
+            d.All |= HandsOver(held);
+        }
+
+        /// <summary>May making a string of a value of this type (its ToString) change something of the program's?</summary>
+        public bool StringOfWrites(ITypeSymbol t) => t != null && t.SpecialType != SpecialType.System_String && HandsOver(t);
+
+        /// <summary>A value made a string: its ToString, the program's where its class has one, else whatever its object's class has.</summary>
+        private void AddToString(Direct d, IOperation value)
+        {
+            if (value == null)
+            {
+                return;
+            }
+            while (value is IConversionOperation { IsImplicit: true } boxed)
+            {
+                value = boxed.Operand;
+            }
+            var t = value.Type;
+            if (t == null || t.SpecialType == SpecialType.System_String)
+            {
+                return;
+            }
+            for (var b = t; b != null; b = b.BaseType)
+            {
+                if (b.GetMembers("ToString").OfType<IMethodSymbol>().FirstOrDefault(x => x.Parameters.Length == 0 && !x.IsImplicitlyDeclared && x.DeclaringSyntaxReferences.Length > 0) is IMethodSymbol own)
+                {
+                    AddCallee(d, own);
+                    return;
+                }
+            }
+            d.All |= HandsOver(t);
         }
 
         /// <summary>A body's nodes, but a lambda's or an anonymous method's inside it.</summary>
@@ -682,8 +927,19 @@ namespace CsVerify.Verifier
             {
                 e = p;
             }
+            // (a part of a tuple that is assigned: (a, o.F) = ...)
+            for (SyntaxNode part = e; part.Parent is ArgumentSyntax { Parent: TupleExpressionSyntax tuple }; part = tuple)
+            {
+                if (tuple.Parent is AssignmentExpressionSyntax ta && ta.Left == tuple || tuple.Parent is ForEachVariableStatementSyntax fv && fv.Variable == tuple)
+                {
+                    return (false, true);
+                }
+            }
             switch (e.Parent)
             {
+                // (taken by reference: whoever holds the reference may write it)
+                case RefExpressionSyntax:
+                    return (true, true);
                 case AssignmentExpressionSyntax a when a.Left == e:
                     return (!a.IsKind(SyntaxKind.SimpleAssignmentExpression), true);
                 case PrefixUnaryExpressionSyntax pre when pre.IsKind(SyntaxKind.PreIncrementExpression) || pre.IsKind(SyntaxKind.PreDecrementExpression):
@@ -735,8 +991,17 @@ namespace CsVerify.Verifier
             return (fields, all);
         }
 
-        /// <summary>The fields a constructor sets on the object it builds.</summary>
-        public HashSet<ISymbol> SelfWritesOf(IMethodSymbol ctor) => DirectOf(ctor).SelfWrites;
+        /// <summary>The fields a constructor sets on the object it builds: its own, and those of the constructors it runs on it first.</summary>
+        public HashSet<ISymbol> SelfWritesOf(IMethodSymbol ctor)
+        {
+            var fields = new HashSet<ISymbol>(SymbolEqualityComparer.Default);
+            var seen = new HashSet<IMethodSymbol>(SymbolEqualityComparer.Default);
+            for (var c = Normal(ctor); c != null && seen.Add(c); c = DirectOf(c).Chained)
+            {
+                fields.UnionWith(DirectOf(c).SelfWrites);
+            }
+            return fields;
+        }
 
         /// <summary>
         /// An invariant is assumed of objects nobody re-checks, so it may depend only on state that cannot change

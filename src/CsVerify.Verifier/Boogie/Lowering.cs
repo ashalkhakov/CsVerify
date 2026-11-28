@@ -31,7 +31,7 @@ namespace CsVerify.Verifier.Boogie
         private readonly IMethodSymbol _m;
         private readonly Contract _contract;
         private readonly SyntaxNode _decl;
-        private readonly SemanticModel _model;
+        private SemanticModel _model;
         private readonly Func<IMethodSymbol, bool> _isProcedure, _isFunction;
         private readonly Func<string, string> _literal;
         private readonly Func<IMethodSymbol, Contract> _contractOf;

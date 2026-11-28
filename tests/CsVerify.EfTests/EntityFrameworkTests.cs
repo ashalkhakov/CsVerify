@@ -2323,6 +2323,185 @@ public sealed class Store(Db db)
         }
 
         [Fact]
+        public void AFilteredUniqueIndex_CountsWhereTheQueryMeetsItsFilter()
+        {
+            // #137, AB: a unique index is one among the rows its filter keeps, so it fixes a row for a query whose rows
+            // all meet the filter: a conjunct [C] <> v where the query states C != v, or fixes C to a value that isn't v
+            // (v as a value of the property's type: what its converter reads v as; none where it reads none).
+            // AC: a column kept in a field written by hand, which EF maps its property to, through two one-to-one navigations
+            var r = VerifyEf(@"public enum JobState { Queued, Running, Done }
+public sealed record Code
+{
+    private Code(string value) { Value = value; }
+    public string Value { get; }
+    public static Code Parse(string value) => value.Length > 0 ? new Code(value) : throw new ArgumentException(""empty"", nameof(value));
+}
+public readonly record struct Tag(string Value);
+public readonly record struct ShipmentId(Guid Value);
+public sealed class Job
+{
+    public long Id { get; set; }
+    public long OwnerRowId { get; set; }
+    public JobState State { get; set; }
+}
+public sealed class Parcel
+{
+    public long Id { get; set; }
+    public Code? Code { get; set; }
+    public Tag Tag { get; set; }
+    public string Label { get; set; } = """";
+}
+public sealed class Shipment
+{
+    public long Id { get; set; }
+    public ShipmentId Made { get; set; }
+    public int Lane { get; set; }
+}
+public sealed class Licence
+{
+    private string? number;
+    public long Id { get; set; }
+    public string? Number { get => number; init => number = value; }
+    public bool IsDeleted { get; set; }
+}
+public sealed class Carrier
+{
+    public long Id { get; set; }
+    public Licence? Licence { get; set; }
+}
+public sealed class Driver
+{
+    public long Id { get; set; }
+    public Carrier Carrier { get; set; } = null!;
+}
+public sealed class Db(DbContextOptions<Db> options) : DbContext(options)
+{
+    protected override void OnModelCreating(ModelBuilder b)
+    {
+        b.Entity<Job>().Property(x => x.State).HasConversion<string>();
+        b.Entity<Job>().HasIndex(x => x.OwnerRowId).IsUnique().HasFilter(""[State] <> 'Done'"");
+        b.Entity<Parcel>().Property(x => x.Code).HasConversion(c => c!.Value, v => Code.Parse(v));
+        b.Entity<Parcel>().HasIndex(x => x.Code).IsUnique().HasFilter(""[Code] IS NOT NULL AND [Code] <> ''"");
+        b.Entity<Parcel>().Property(x => x.Tag).HasConversion(t => t.Value, v => new Tag(v));
+        b.Entity<Parcel>().HasIndex(x => x.Tag).IsUnique().HasFilter(""[Tag] <> ''"");
+        b.Entity<Parcel>().HasIndex(x => x.Label).IsUnique().HasFilter(""[Label] <> ''"");
+        b.Entity<Shipment>().Property(x => x.Made).HasConversion(m => m.Value, v => new ShipmentId(v));
+        b.Entity<Shipment>().HasIndex(x => x.Made).IsUnique().HasFilter(""[Made] <> '00000000-0000-0000-0000-000000000000'"");
+        b.Entity<Shipment>().HasIndex(x => x.Lane).IsUnique().HasFilter(""[Lane] <> 0"");
+        b.Entity<Licence>().HasQueryFilter(x => !x.IsDeleted);
+        b.Entity<Licence>().Property(x => x.Number).HasColumnName(""LicenceNo"");
+        b.Entity<Licence>().HasIndex(x => x.Number).IsUnique().HasFilter(""[LicenceNo] IS NOT NULL AND [IsDeleted] = 0"");
+        b.Entity<Carrier>().HasOne(c => c.Licence).WithOne().HasForeignKey<Licence>(""CarrierId"");
+        b.Entity<Driver>().HasOne(d => d.Carrier).WithOne().HasForeignKey<Driver>(""CarrierId"");
+    }
+}
+public sealed class Store(Db db)
+{
+    public async Task<Job?> Open(long owner, CancellationToken ct) =>
+        await db.Set<Job>().Where(j => j.OwnerRowId == owner && j.State != JobState.Done).SingleOrDefaultAsync(ct);
+    public async Task<Job?> Running(long owner, CancellationToken ct) =>
+        await db.Set<Job>().Where(j => j.OwnerRowId == owner && j.State == JobState.Running).SingleOrDefaultAsync(ct);
+    public async Task<Job?> InState(long owner, JobState state, CancellationToken ct)
+    {
+        Spec.Requires(state != JobState.Done);
+        return await db.Set<Job>().Where(j => j.OwnerRowId == owner && j.State == state).SingleOrDefaultAsync(ct);
+    }
+    public async Task<Job?> AnyOf(long owner, CancellationToken ct) =>
+        await db.Set<Job>().Where(j => j.OwnerRowId == owner).SingleOrDefaultAsync(ct);
+    public async Task<Job?> Finished(long owner, CancellationToken ct) =>
+        await db.Set<Job>().Where(j => j.OwnerRowId == owner && j.State == JobState.Done).SingleOrDefaultAsync(ct);
+    public async Task<Job?> InAnyState(long owner, JobState state, CancellationToken ct) =>
+        await db.Set<Job>().Where(j => j.OwnerRowId == owner && j.State == state).SingleOrDefaultAsync(ct);
+    public async Task<Parcel?> Labelled(string label, CancellationToken ct)
+    {
+        Spec.Requires(label.Length > 0);
+        return await db.Set<Parcel>().Where(p => p.Label == label).SingleOrDefaultAsync(ct);
+    }
+    public async Task<Parcel?> LabelledAny(string label, CancellationToken ct) =>
+        await db.Set<Parcel>().Where(p => p.Label == label).SingleOrDefaultAsync(ct);
+    public async Task<Parcel?> Coded(Code code, CancellationToken ct) =>
+        await db.Set<Parcel>().Where(p => p.Code == code).SingleOrDefaultAsync(ct);
+    public async Task<Parcel?> Tagged(Tag tag, CancellationToken ct) =>
+        await db.Set<Parcel>().Where(p => p.Tag == tag).SingleOrDefaultAsync(ct);
+    public async Task<Shipment?> Made(ShipmentId made, CancellationToken ct)
+    {
+        if (made.Value == Guid.Empty)
+        {
+            return null;
+        }
+        return await db.Set<Shipment>().Where(s => s.Made == made).SingleOrDefaultAsync(ct);
+    }
+    public async Task<Shipment?> MadeAny(ShipmentId made, CancellationToken ct) =>
+        await db.Set<Shipment>().Where(s => s.Made == made).SingleOrDefaultAsync(ct);
+    public async Task<Shipment?> InLane(int lane, CancellationToken ct)
+    {
+        Spec.Requires(lane > 0);
+        return await db.Set<Shipment>().Where(s => s.Lane == lane).SingleOrDefaultAsync(ct);
+    }
+    public async Task<Driver?> Licensed(string number, CancellationToken ct) =>
+        await db.Set<Driver>().Where(d => d.Carrier.Licence!.Number == number).SingleOrDefaultAsync(ct);
+}");
+            var wrong = new System.Collections.Generic.List<string>();
+            foreach (var ok in new[] { "Open", "Running", "InState", "Labelled", "Coded", "Made", "InLane", "Licensed" })
+            {
+                if (r.Errors("Store." + ok).Length != 0)
+                {
+                    wrong.Add(r.Explain("Store." + ok));
+                }
+            }
+            // (nothing said of the filter's column; fixed to the value the filter leaves out; to a value that may be it;
+            // a value the model can't name: its converter reads '' as one)
+            foreach (var bad in new[] { "AnyOf", "Finished", "InAnyState", "LabelledAny", "MadeAny", "Tagged" })
+            {
+                if (!r.Errors("Store." + bad).SequenceEqual(new[] { "CSV1001" }))
+                {
+                    wrong.Add(bad + " verifies: " + r.Explain("Store." + bad));
+                }
+            }
+            Assert.True(wrong.Count == 0, string.Join("\n", wrong));
+        }
+
+        [Fact]
+        public void AnAlternateKey_OfAnInternalProperty_OfAReferencedProject()
+        {
+            // #137, AD: a key column the entity's project keeps internal, which the program's assembly may read
+            var r = VerifyEfWithProjects(@"public sealed class Db(DbContextOptions<Db> options) : DbContext(options)
+{
+    protected override void OnModelCreating(ModelBuilder b)
+    {
+        b.Entity<Crate>().HasKey(x => x.RowId);
+        b.Entity<Crate>().Property(x => x.ExternalId).HasConversion(i => i.Value, v => new CrateId(v));
+        b.Entity<Crate>().HasAlternateKey(""ExternalId"");
+        b.Entity<Pallet>().Property(x => x.ExternalId).HasConversion(i => i.Value, v => new CrateId(v));
+        b.Entity<Pallet>().HasAlternateKey(""ExternalId"");
+    }
+}
+public sealed class Store(Db db)
+{
+    public async Task<Crate?> CrateOf(CrateId id, CancellationToken ct) => await db.Set<Crate>().SingleOrDefaultAsync(c => c.ExternalId == id, ct);
+    public async Task<Pallet?> PalletOf(CrateId id, CancellationToken ct) => await db.Set<Pallet>().SingleOrDefaultAsync(c => c.ExternalId == id, ct);
+    public async Task<Crate?> Labelled(string label, CancellationToken ct) => await db.Set<Crate>().SingleOrDefaultAsync(c => c.Label == label, ct);
+}",
+                new Project("Domain", @"[assembly: System.Runtime.CompilerServices.InternalsVisibleTo(""App"")]
+public readonly record struct CrateId(Guid Value);
+public sealed class Crate
+{
+    public long RowId { get; private set; }
+    public CrateId Id => ExternalId;
+    internal CrateId ExternalId { get; private set; }
+    public string Label { get; private set; } = """";
+}
+public sealed class Pallet
+{
+    public long Id { get; private set; }
+    public CrateId ExternalId { get; private set; }
+}", new string[0], Ef: false));
+            Assert.True(r.Errors("Store.CrateOf").Length == 0, r.Explain("Store.CrateOf"));
+            Assert.True(r.Errors("Store.PalletOf").Length == 0, r.Explain("Store.PalletOf"));
+            Assert.Equal(new[] { "CSV1001" }, r.Errors("Store.Labelled"));
+        }
+
+        [Fact]
         public void AnOrderByTheKey_IsKeptAcrossASelect()
         {
             // #130: a Select maps the rows one to one, in their order

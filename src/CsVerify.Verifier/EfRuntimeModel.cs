@@ -29,6 +29,12 @@ namespace CsVerify.Verifier
             public List<string> Properties;
             /// <summary>The filter's SQL, or null.</summary>
             public string Filter;
+            /// <summary>
+            /// The filter's conjuncts [C] &lt;&gt; v, each as C's property and the value of the property's type the model
+            /// stores as v: "none" (its converter reads v as no value: it throws), "null", "default" (a value type's),
+            /// "number:n" (an integer's, an enum member's), "string:" (the empty string).
+            /// </summary>
+            public List<(string Property, string Value)> Excluded = new List<(string, string)>();
         }
 
         internal sealed class ForeignKey
@@ -920,8 +926,10 @@ namespace CsVerify.Verifier
                 }
                 var e = new Entity { Type = clr.FullName };
                 Entities[e.Type] = e;
+                var mapped = new Dictionary<string, object>();
                 foreach (var p in Many(Call(et, "GetProperties")))
                 {
+                    mapped[(string)Get(p, "Name")] = p;
                     var type = (Type)Get(p, "ClrType");
                     var generated = Get(p, "ValueGenerated")?.ToString();
                     bool token = (bool)Get(p, "IsConcurrencyToken");
@@ -956,6 +964,7 @@ namespace CsVerify.Verifier
                         Properties = Names(Get(ix, "Properties")),
                         Filter = relational == null ? null : Extension(relational, "Microsoft.EntityFrameworkCore.RelationalIndexExtensions", "GetFilter", ix) as string,
                     });
+                    e.UniqueIndexes[^1].Excluded = Excluded(e.UniqueIndexes[^1].Filter, e, mapped);
                 }
                 foreach (var n in Many(Call(et, "GetNavigations")).Where(n => (bool)Get(n, "IsEagerLoaded")))
                 {
@@ -987,6 +996,89 @@ namespace CsVerify.Verifier
         }
 
         /// <summary>An entity type's query filters: EF Core 10's declared ones (named or not), or the one filter before it.</summary>
+        internal const string Unequal = @"^[\[""`]?(\w+)[\]""`]?\s*(?:<>|!=)\s*(N?'(?:[^']|'')*'|-?\d+)$";
+
+        /// <summary>
+        /// A filter's conjuncts [C] &lt;&gt; v, each as C's property and the value of its type that is stored as v: what
+        /// the property's converter reads v as. A converter's two directions are taken to be each other's inverse, as
+        /// EF takes them where it compares a column to a value: no value is stored as a v that it can't read.
+        /// </summary>
+        private static List<(string, string)> Excluded(string filter, Entity e, Dictionary<string, object> mapped)
+        {
+            var found = new List<(string, string)>();
+            if (string.IsNullOrWhiteSpace(filter))
+            {
+                return found;
+            }
+            foreach (var conjunct in System.Text.RegularExpressions.Regex.Split(filter, @"\s+AND\s+", System.Text.RegularExpressions.RegexOptions.IgnoreCase))
+            {
+                var m = System.Text.RegularExpressions.Regex.Match(conjunct.Trim().Trim('(', ')').Trim(), Unequal);
+                if (!m.Success || e.Properties.FirstOrDefault(p => p.Column == m.Groups[1].Value) is not Property column || !mapped.TryGetValue(column.Name, out var property))
+                {
+                    continue;
+                }
+                try
+                {
+                    if (StoredAs(property, m.Groups[2].Value) is string value)
+                    {
+                        found.Add((column.Name, value));
+                    }
+                }
+                catch (Exception x) when (x is FormatException or InvalidCastException or OverflowException or ArgumentException or MissingMemberException)
+                {
+                    // (a literal not of the column's type: nothing known of it)
+                }
+            }
+            return found;
+        }
+
+        /// <summary>The value of a property's type that the model stores as this SQL literal (see Index.Excluded); null: not one of those.</summary>
+        private static string StoredAs(object property, string literal)
+        {
+            var clr = (Type)Get(property, "ClrType");
+            var type = Nullable.GetUnderlyingType(clr) ?? clr;
+            var converter = Call(property, "GetValueConverter");
+            var provider = converter == null ? type : (Type)Get(converter, "ProviderClrType");
+            provider = Nullable.GetUnderlyingType(provider) ?? provider;
+            object stored;
+            if (literal.EndsWith("'"))
+            {
+                var text = literal.Substring(literal.IndexOf('\'') + 1, literal.Length - literal.IndexOf('\'') - 2).Replace("''", "'");
+                stored = provider == typeof(string) ? text : provider == typeof(Guid) ? Guid.Parse(text) : provider.IsEnum ? Enum.Parse(provider, text) : null;
+            }
+            else
+            {
+                long n = long.Parse(literal, System.Globalization.CultureInfo.InvariantCulture);
+                stored = provider.IsEnum ? Enum.ToObject(provider, n) : provider == typeof(bool) ? n != 0 : provider.IsPrimitive ? Convert.ChangeType(n, provider) : null;
+            }
+            if (stored == null)
+            {
+                return null;
+            }
+            object value = stored;
+            if (converter != null)
+            {
+                try
+                {
+                    value = ((Delegate)Get(converter, "ConvertFromProvider")).DynamicInvoke(stored);
+                }
+                catch (TargetInvocationException)
+                {
+                    return "none";
+                }
+            }
+            return value switch
+            {
+                null => "null",
+                Enum member => "number:" + Convert.ToInt64(member).ToString(System.Globalization.CultureInfo.InvariantCulture),
+                _ when value.GetType() != type => null,
+                _ when type.IsValueType && value.Equals(Activator.CreateInstance(type)) => "default",
+                string { Length: 0 } => "string:",
+                sbyte or byte or short or ushort or int or uint or long => "number:" + Convert.ToInt64(value).ToString(System.Globalization.CultureInfo.InvariantCulture),
+                _ => null,
+            };
+        }
+
         private static List<System.Linq.Expressions.LambdaExpression> QueryFilters(object entityType)
         {
             var filters = new List<System.Linq.Expressions.LambdaExpression>();

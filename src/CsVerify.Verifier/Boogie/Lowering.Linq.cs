@@ -2499,9 +2499,18 @@ namespace CsVerify.Verifier.Boogie
         private void AtMostOneRow(IInvocationOperation call, LSeq s, SyntaxNode at)
         {
             var args = call.Arguments.OrderBy(a => a.Parameter.Ordinal).ToList();
-            if (KernelTypes.Ef != null && args.Count >= 2 && Filtered(RelOf(args[0].Value), args[1].Value) is { AtMostOne: true })
+            if (KernelTypes.Ef == null || args.Count < 2 || Filtered(RelOf(args[0].Value), args[1].Value) is not Rel rows)
+            {
+                return;
+            }
+            if (rows.AtMostOne)
             {
                 ShapeFact(Le(s.Length, KLit.One), at);
+            }
+            // (by an index that is unique among the rows its filter keeps: where these are of them)
+            else if (AtMostOneWhen(rows) is KExpr when)
+            {
+                ShapeFact(Implies(when, Le(s.Length, KLit.One)), at);
             }
         }
 

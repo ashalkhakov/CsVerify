@@ -419,7 +419,7 @@ namespace CsVerify.Verifier.Boogie
     {
         public ISymbol Field;
         public MExpr Instance, Value;
-        public bool OnThis;
+        public bool OnThis, Initial;
         public SyntaxNode At, InstanceAt;
 
         /// <summary>A store in a container's own field (the ownership tree's: taking a child out, giving one in), at this syntax.</summary>
@@ -440,6 +440,7 @@ namespace CsVerify.Verifier.Boogie
             Instance = instance,
             Value = value,
             OnThis = fs.OnThis,
+            Initial = fs.Initial,
             At = fs.At,
             InstanceAt = fs.InstanceAt,
         };
@@ -463,10 +464,12 @@ namespace CsVerify.Verifier.Boogie
         public SyntaxNode[] ArgsAt;
         public SyntaxNode At;
         public Check Check;
+        public HashSet<ISymbol> Given;
 
         /// <summary>A kernel allocation at level 2: its constructor's arguments these, its precondition's check this.</summary>
         public static MNewObj Of(KNewObj n, MExpr[] args, Check check) => new MNewObj
         {
+            Given = n.Given,
             Var = n.Var,
             Type = n.Type,
             Ctor = n.Ctor,

@@ -301,8 +301,12 @@ type's says each value is null or one of the type's cases, by its tag.
 - An instance method is a procedure with `this` (not null, allocated) first; `o.M(...)` asserts `o != null`.
   A virtual call is a call of the static target's contract, which overrides are checked against (see Inheritance).
 - A constructor is a procedure on `this`, whose fields are their defaults at entry; it runs the field initializers,
-  then its body. `new C(args)` allocates the object, sets its fields to their defaults and calls the constructor. An
-  implicit constructor's initialized fields are unknown values at the call. A constructor that
+  then its body. `new C(args)` allocates the object, sets its fields to their defaults and calls the constructor. A
+  constructor nobody wrote has no contract to be called by, so what it does is done where the object is made (and
+  where a written constructor chains to it): each of its class's initializers stores its value in its member (a new
+  `List` is empty; a value that doesn't translate is unknown), then its base's constructor runs, called by its
+  contract where it is written and the same again where it isn't. A non-nullable member without an initializer is
+  unknown, as whoever makes the object sets it. The class's invariant is assumed after that. A constructor that
   chains to `this(...)` skips the initializers and calls the other constructor on `this`, as `base(...)` is called
   (its arguments evaluated first, branching or not). `this` may be handed over (`a[0] = this`, a call with it or on it, a
   property's accessor): whoever gets it takes it for an object of its class, so it must be built there, each
@@ -875,6 +879,15 @@ a new object is none of them.
 its contract alone for its callers (as an abstract member is), so they are Boogie's still; it may write what the
 effects analysis (`FieldEffects`) says it and its callees write (any field, where that says so), and every array
 unless it writes none (`MayWriteHeap`); a constructor, the fields of the new object it sets too, at that object only.
+The analysis reads what the code does, which is more than the calls written in it. A constructor runs its class's
+initializers and then the constructor it chains to (`this(...)`, or `base(...)`, written or not), so what those set
+and write, it sets and writes; a primary constructor and one nobody wrote are their initializers and their base's
+constructor. A property's or an indexer's accessor, an operator, a conversion, `Deconstruct` (in an assignment, a
+`foreach`, a pattern), an enumerator's members, a `using`'s `Dispose`, an event's accessor and the `ToString` of a
+value made a string (`$"{o}"`, `"a" + o`) are calls of those members, of the program's or (an object of any class)
+of anything. A part of a tuple that is assigned (`(a, o.F) = ...`) and a field taken by reference (`ref o.F`) are
+written. A translated body that makes a string of an object whose `ToString` may write forgets everything, as at
+any call that may run the program's code.
 A `[Pure]` one is a function of the state as any `[Pure]` member is: it writes no array and makes no object a caller
 sees (a field only where the analysis finds a write), so two reads of it with nothing it reads written between them
 give one value, and what a precondition says of it holds where the body reads it.
@@ -1011,8 +1024,9 @@ CSV1001): a key is one it has, never null; a value isn't known. `Keys.Count` and
 Through their interfaces (`IList<T>`, `IReadOnlyList<T>`, `ICollection<T>`, `IReadOnlyCollection<T>`, and a set's,
 `IReadOnlySet<T>` and `ISet<T>`, whose `Contains` is the `HashSet`'s where it is one), a collection is
 a reference of one of three kinds: an array (`$arr`), a modeled collection (`$coll`: a `List`'s, or another's whose
-`Count` is `Size`), or anything else; a conversion from an array or a collection says which, and an array (one made,
-or a parameter or result of an array type) is `$arr`. `Count` is
+`Count` is `Size`), or anything else; a conversion from an array or a collection says which, and a value of an array's
+or a modeled collection's type is one wherever it comes from: one made, a parameter, a result, a field (its map's
+`where`), so a getter that gives a list field as `IReadOnlyList<T>` reads that list in a specification too. `Count` is
 `if $arr(x) then len(x) else if $coll(x) then Size[x] else $ocount(x, $st(...))`, and `x[i]` the array's cell, the
 list's `Items`, or `$oitem(x, i, $st(...))`: a value of the whole state, so the same until something changes (an
 `l.Clear()` of a list that `x` may be changes `x.Count`). An array of `Guid`s has no element map (it is outside the
