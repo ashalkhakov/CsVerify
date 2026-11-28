@@ -240,8 +240,8 @@ public sealed class Ring : IReadOnlyList<int>
         {
             // (S08: a [Pure] getter whose expression is a LINQ query no specification reads is still a function of the
             // state: a specification reads it, and what it gives is what its body, verified as code, gives. It moves with
-            // what it reads; and one that reads a collection behind an interface is refused, as its value is of whatever
-            // is behind it)
+            // what it reads; one that reads a collection behind an interface is of the whole state, as its value is of
+            // whatever is behind it)
             var r = Harness.Verify(Owners + @"public sealed class Owner
 {
     private readonly List<Account> accounts = new();
@@ -261,10 +261,24 @@ public sealed class Ring : IReadOnlyList<int>
     public void AfterAdd(Account x) { var a = Main; accounts.Add(x); Spec.Assert(a == Main); }
     public void AfterSet(Account x) { var a = Mains; x.IsMain = true; Spec.Assert(a == Mains); }
     public void Known() { Spec.Assert(Main != null); }
+    public void Twice() { var a = Positive; var b = Positive; Spec.Assert(a == b); }
+    public void Behind(Ring r) { Spec.Requires(r.N < 100); var a = Positive; r.N = r.N + 1; var b = Positive; Spec.Assert(a == b); }
+}
+public sealed class Holder
+{
+    public Owner? Inner { get; private set; }
+    public int Visits { get; private set; }
+    public IReadOnlyList<Account> Accounts => Inner?.Accounts ?? Array.Empty<Account>();
+    [Pure] public Account? Main => Accounts.FirstOrDefault(a => a.IsMain);
+    public string? Refused()
+    {
+        Spec.Ensures<string?>(r => r != null || (Main != null && Main.Number != null));
+        if (Main is not { Number: not null }) { return ""no main account""; }
+        return null;
+    }
 }");
-            Verifies(r, "get_Main", "get_Mains", "Refusal", "Same");
-            Fails(r, "CSV1004", "AfterAdd", "AfterSet", "Known");
-            Fails(r, "CSV1902", "get_Positive");
+            Verifies(r, "Owner.get_Main", "get_Mains", "get_Positive", "Refusal", "Same", "Twice", "Holder.get_Main", "Refused");
+            Fails(r, "CSV1004", "AfterAdd", "AfterSet", "Known", "Behind");
         }
 
         [Fact]
@@ -518,6 +532,139 @@ public sealed class Silent
             Verifies(r, "Lookup..ctor", "ById", "FindIn", "Scale..ctor");
             Fails(r, "CSV1001", "Picky", "At");
             Fails(r, "CSV1015", "Loose..ctor");
+        }
+
+        [Fact]
+        public void AnArrayALibraryHandsBack_HoldsWhatItsTypeSays()
+        {
+            // (Split's string[]: no element null, as the library's type says of it, where it is handed back; an array the
+            // program makes, or stores a null in, holds what it holds)
+            var r = Harness.Verify(@"public static class Parts
+{
+    public static Guid Third(string column)
+    {
+        var parts = column.Split(':');
+        if (parts.Length != 3) { throw new ArgumentException(""not three""); }
+        return Guid.Parse(parts[2]);
+    }
+    public static Guid Stored(string column)
+    {
+        var parts = column.Split(':');
+        if (parts.Length != 3) { throw new ArgumentException(""not three""); }
+        parts[2] = null!;
+        return Guid.Parse(parts[2]);
+    }
+    public static Guid Made(int n) { Spec.Requires(n == 3); var parts = new string[n]; return Guid.Parse(parts[2]); }
+}");
+            Verifies(r, "Third");
+            Fails(r, "CSV1014", "Stored", "Made");
+        }
+
+        [Fact]
+        public void ASourceThatBranches_IsWhicheverItIs()
+        {
+            // (a ?? b, c ? a : b as a LINQ source: the flow graph keeps it in one capture written on each path, which was
+            // read as the last path's expression, so (c ? a : b).First() was b's first)
+            var r = Harness.Verify(@"using System.Collections.Generic;
+using System.Linq;
+public static class Either
+{
+    public static void Lists(List<int>? a, List<int> b) { var n = (a ?? b).Count(); Spec.Assert(n == b.Count); }
+    public static void Chosen(bool c, List<int> a, List<int> b) { var n = (c ? a : b).Count(); Spec.Assert(n == b.Count); }
+    public static void First(bool c, int[] a, int[] b) { Spec.Requires(a.Length > 0 && b.Length > 0); var n = (c ? a : b).First(); Spec.Assert(n == b[0]); }
+    public static void Given(IEnumerable<int>? xs) { var n = (xs ?? Enumerable.Empty<int>()).Count(); Spec.Assert(n == 0); }
+    public static void Both(bool c, List<int> a, List<int> b) { Spec.Requires(a.Count == 2 && b.Count == 2); var n = (c ? a : b).Count(); Spec.Assert(n == 2); }
+    public static int Counted(IEnumerable<int>? xs) { Spec.Ensures<int>(r => r >= 0); return (xs ?? Enumerable.Empty<int>()).Count(); }
+}");
+            Verifies(r, "Both", "Counted");
+            Fails(r, "CSV1004", "Lists", "Chosen", "First", "Given");
+        }
+
+        [Fact]
+        public void AQueryKeptAsAValue_IsSomeSequence_ReadWhenItIsEnumerated()
+        {
+            // (a query returned or handed to a method, not read here: an object of the library's; a lambda in it that
+            // takes a value by a var pattern, a library's call of values in its predicate. Sorted by the elements
+            // themselves, Order(); the greatest by a date)
+            var r = Harness.Verify(@"using System.Collections.Generic;
+using System.Linq;
+public sealed record Stamp(DateTime At, decimal Amount, int N);
+public sealed record Text(int Kind, DateOnly From);
+public static class Queries
+{
+    public static TimeZoneInfo Here { get; } = TimeZoneInfo.FindSystemTimeZoneById(""Europe/Paris"");
+    public static DateOnly DateAt(DateTime utc) => DateOnly.FromDateTime(TimeZoneInfo.ConvertTimeFromUtc(utc, Here));
+    public static int Of(IEnumerable<(DateTime, decimal)> made) => 0;
+    public static int In(IEnumerable<Stamp> stamps, DateTime now)
+    {
+        var month = DateAt(now);
+        return Of(stamps.Where(t => DateAt(t.At) is var day && day.Year == month.Year && day.Month == month.Month).Select(t => (t.At, t.Amount)));
+    }
+    public static IEnumerable<int> Numbers(IEnumerable<Stamp> stamps) => stamps.Select(t => t.N);
+    public static int Kept(IEnumerable<Stamp> stamps) { var q = stamps.Select(t => t.N); return Sum(q); }
+    public static int Sum(IEnumerable<int> xs) => 0;
+    public static void Known(List<Stamp> stamps) { Spec.Requires(stamps.Count == 1); var q = Numbers(stamps); var n = q.Count(); Spec.Assert(n == 1); }
+    public static List<int> Sorted(List<int> xs)
+    {
+        Spec.Ensures<List<int>>(r => r.Count == xs.Count && Spec.Forall(0, r.Count - 1, i => r[i] <= r[i + 1]));
+        return xs.Order().ToList();
+    }
+    public static List<int> Down(List<int> xs)
+    {
+        Spec.Ensures<List<int>>(r => Spec.Forall(0, r.Count - 1, i => r[i] <= r[i + 1]));
+        return xs.OrderDescending().ToList();
+    }
+    public static Text? Current(List<Text> texts, int kind, DateOnly today) => texts.Where(t => t.Kind == kind && t.From <= today).MaxBy(t => t.From);
+}");
+            Verifies(r, "In", "Numbers", "Kept", "Sorted", "Current");
+            Fails(r, "CSV1004", "Known");
+            Fails(r, "CSV1002", "Down");
+        }
+
+        [Fact]
+        public void ACollectionMadeOfAnother_IsACopy_AndASetterIsCalledWhereItsValueBranches()
+        {
+            // (new Dictionary<K, V>(other): of a dictionary, what that one holds; of anything else, what isn't said. A
+            // property with a setter of its own assigned x ?? throw; a typed id's equality in Distinct; a source that is
+            // xs ?? none in a foreach)
+            var r = Harness.Verify(@"using System.Collections.Generic;
+using System.Linq;
+public readonly record struct Year(int Start);
+public sealed record Fund(string Code);
+public sealed record Mark(Year Year);
+public sealed record Mail(string Value);
+public sealed class Book
+{
+    private Mail? mail;
+    private readonly List<Mark> marks = new();
+    private readonly Dictionary<string, Fund> funds;
+    private readonly Dictionary<int, int> goals;
+    public Book(Mail mail, IEnumerable<Fund>? funds = null, IEnumerable<Mark>? marks = null, IReadOnlyDictionary<int, int>? goals = null)
+    {
+        this.goals = new Dictionary<int, int>(goals ?? new Dictionary<int, int>());
+        var offered = new List<Fund>();
+        this.funds = new Dictionary<string, Fund>();
+        foreach (var fund in (funds ?? Enumerable.Empty<Fund>()).Concat(offered)) { this.funds[fund.Code] = fund; }
+        foreach (var mark in marks ?? Enumerable.Empty<Mark>()) { this.marks.Add(mark); }
+        if (this.marks.Select(a => a.Year).Distinct().Count() != this.marks.Count) { throw new ArgumentException(""a year twice""); }
+        Mail = mail ?? throw new ArgumentNullException(nameof(mail));
+    }
+    public Mail Mail
+    {
+        get => mail ?? throw new InvalidOperationException(""no mail"");
+        private set => mail = value;
+    }
+    public static void Same(Dictionary<int, int> d)
+    {
+        Spec.Requires(d.ContainsKey(1));
+        var e = new Dictionary<int, int>(d);
+        var has = e.ContainsKey(1);
+        Spec.Assert(has && e.Count == d.Count);
+    }
+    public static void Other(IReadOnlyDictionary<int, int> d) { var e = new Dictionary<int, int>(d); var has = e.ContainsKey(1); Spec.Assert(has); }
+}");
+            Verifies(r, "Book..ctor", "Same");
+            Fails(r, "CSV1004", "Other");
         }
 
         [Fact]

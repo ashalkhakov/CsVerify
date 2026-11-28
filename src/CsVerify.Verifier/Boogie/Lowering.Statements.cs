@@ -95,8 +95,9 @@ namespace CsVerify.Verifier.Boogie
             IDiscardOperation or ILocalReferenceOperation or IParameterReferenceOperation => true,
             IArrayElementReferenceOperation ae => ae.Indices.Length == 1 && Plain(ae.ArrayReference) && Plain(ae.Indices[0]),
             IFieldReferenceOperation fr => fr.Instance == null || Plain(fr.Instance),
-            // (an auto-property's: its field)
-            IPropertyReferenceOperation pr => (pr.Instance == null || Plain(pr.Instance)) && IsField(pr.Property.OriginalDefinition),
+            // (an auto-property's: its field; a property with a setter of its own: that is called where the value is assigned)
+            IPropertyReferenceOperation pr => (pr.Instance == null || Plain(pr.Instance)) &&
+                                              (IsField(pr.Property.OriginalDefinition) || IsComputed(pr.Property) && pr.Property.SetMethod != null && pr.Arguments.Length == 0),
             _ => false,
         };
 
@@ -670,10 +671,19 @@ namespace CsVerify.Verifier.Boogie
             return;
         }
 
+        /// <summary>The captures the flow graph writes on more than one path: none of them stands for one expression.</summary>
+        private HashSet<CaptureId> _branched = new HashSet<CaptureId>();
+
         private void FlowCapture(IFlowCaptureOperation fc)
         {
-
-            _captured[fc.Id] = fc.Value;
+            if (_branched.Contains(fc.Id))
+            {
+                _captured.Remove(fc.Id);
+            }
+            else
+            {
+                _captured[fc.Id] = fc.Value;
+            }
             // (a field or an auto-property captured as what an assignment writes, x.f = c ? a : b, P = P with { ... }: its
             // object, kept)
             if ((fc.Value is IFieldReferenceOperation { Field.IsStatic: false } || fc.Value is IPropertyReferenceOperation { Property: { IsStatic: false, IsIndexer: false } fp } && IsField(fp)) &&

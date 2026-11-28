@@ -314,6 +314,9 @@ namespace CsVerify.Verifier.Boogie
                 }
             }
             _cfg = cfg;
+            // (a capture written on more than one path, a ?? b, c ? a : b: a variable, and no name for what one path gave it)
+            _branched = cfg.Blocks.SelectMany(b => b.Operations).SelectMany(o => o.DescendantsAndSelf()).OfType<IFlowCaptureOperation>()
+                .GroupBy(c => c.Id).Where(g => g.Count() > 1).Select(g => g.Key).ToHashSet();
             // (a function's definition is its body: not one an override may answer, which is of its contract alone)
             bool ofContractAlone = false;
             if (_isFunction(_m) && _contract.PureBody != null && !Engine.IsOverridable(_m))
@@ -588,11 +591,11 @@ namespace CsVerify.Verifier.Boogie
             }
             FinallyEnds();
             LoopCauses();
-            // (a function of its contract alone is of the memory its declaration names: not one whose body reads a
-            // collection through an interface, whose value is of whatever is behind it)
-            if (ofContractAlone && _p.UsesState)
+            // (a function of its contract alone is of the memory it takes: where its body reads a collection through an
+            // interface, whose value is of whatever is behind it, that must be the whole state)
+            if (ofContractAlone && _p.UsesState && KernelTypes.WholeStateFunction?.Invoke(_m) != true)
             {
-                throw new NotTranslated("a [Pure] member whose expression reads a collection through an interface: a value of the whole state, which no function takes");
+                throw new NotTranslated("a [Pure] member whose expression reads a collection through an interface: a value of the whole state, which this function doesn't take");
             }
             return _p;
         }

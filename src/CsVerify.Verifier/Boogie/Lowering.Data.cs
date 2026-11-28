@@ -621,6 +621,9 @@ namespace CsVerify.Verifier.Boogie
             {
                 case IIsPatternOperation nip when IsNullableValue(Unconverted(nip.Value).Type):
                     return NullablePattern(nip.Pattern, Operand(Unconverted(nip.Value), mode), Unconverted(nip.Value).Type, mode);
+                // (x is var y, x is _: any value at all, named)
+                case IIsPatternOperation any when any.Pattern is IDiscardPatternOperation or IDeclarationPatternOperation { MatchesNull: true } && InSubset(Unconverted(any.Value).Type):
+                    return IsPattern(any, mode);
                 case IIsPatternOperation ip when IsData(Unconverted(ip.Value).Type) || Scalar(ip.Value.Type) ||
                                                  (IsRef(ip.Value.Type) || IsString(ip.Value.Type)) && NullPattern(ip.Pattern) ||
                                                  IsArray(Unconverted(ip.Value).Type) && ip.Pattern is IListPatternOperation ||

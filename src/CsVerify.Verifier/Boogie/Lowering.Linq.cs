@@ -589,6 +589,22 @@ namespace CsVerify.Verifier.Boogie
             return speculative.GetOperation(lambda) as IAnonymousFunctionOperation;
         }
 
+        /// <summary>x => x of a type, as a lambda read there: the key of a sort by the elements themselves. Null where it can't be read.</summary>
+        private (IOperation body, IParameterSymbol p1, IParameterSymbol p2)? Itself(ITypeSymbol type, SyntaxNode at)
+        {
+            if (_model == null)
+            {
+                return null;
+            }
+            var statement = Microsoft.CodeAnalysis.CSharp.SyntaxFactory.ParseStatement("var f = (" + type.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat) + " x0) => x0;");
+            if (!Microsoft.CodeAnalysis.CSharp.CSharpExtensions.TryGetSpeculativeSemanticModel(_model, at.SpanStart, statement, out var speculative))
+            {
+                return null;
+            }
+            var lambda = statement.DescendantNodes().OfType<Microsoft.CodeAnalysis.CSharp.Syntax.LambdaExpressionSyntax>().First();
+            return speculative.GetOperation(lambda) is IAnonymousFunctionOperation fn ? PureLambda(fn) : null;
+        }
+
         /// <summary>A lambda the control flow graph has as a flow anonymous function (a query clause's): found in the method's operations by its symbol.</summary>
         private IAnonymousFunctionOperation LambdaBySymbol(IOperation target)
         {
@@ -797,6 +813,22 @@ namespace CsVerify.Verifier.Boogie
                 }
                 return new LSeq { Length = count, Elem = KAbs.Of(at, Sel(values, at)), Type = kv[1] };
             }
+            // (xs ?? none, of a sequence one is given: that one's elements, not known, where there is one; else the other's)
+            if (src is ICoalesceOperation { Value: var maybe, WhenNull: var otherwise } && Unconverted(maybe) is IParameterReferenceOperation or ILocalReferenceOperation &&
+                IsSequence(Unconverted(maybe).Type.WithNullableAnnotation(NullableAnnotation.NotAnnotated)) && ElementOf(Unconverted(maybe).Type) is ITypeSymbol of && InSubset(of))
+            {
+                var given = Expr(Unconverted(maybe));
+                var none = Sequence(otherwise);
+                var items = new KVar(LinqMap("[int]" + TypeOf(of)));
+                var n = Declare("t$" + _temps++, KernelTypes.Compilation.GetSpecialType(SpecialType.System_Int32));
+                Emit(KHavoc.Of(n));
+                ShapeFact(Le(KLit.Zero, new KVar(n)), src.Syntax);
+                ShapeFact(Implies(IsNull(given), Eq(new KVar(n), none.Length)), src.Syntax);
+                var same = Atom();
+                ShapeFact(Implies(IsNull(given), Over(KLit.Zero, new KVar(n), same, Eq(Sel(items, same), none.Elem.At(same)))), src.Syntax);
+                var each = Atom();
+                return new LSeq { Length = new KVar(n), Elem = KAbs.Of(each, Sel(items, each)), Type = of };
+            }
             // (a property of the program's whose getter only returns a field that holds a collection: that collection)
             var type = Behind(src) ?? src.Type;
             var elem = ElementOf(type);
@@ -831,8 +863,9 @@ namespace CsVerify.Verifier.Boogie
             }
             // (a sequence one is given, a lambda's group of a GroupJoin say: some elements, not known)
             // (and a query passed in, #126: rows of which only what the caller's specification says is known)
+            // (and one of two, a ?? b, c ? a : b, as the flow graph keeps it: whichever it is)
             if (elem != null && InSubset(elem) && (IsSequence(type) || IsLinqGroup(type) || IsQueryHandle(type) && src is IParameterReferenceOperation) &&
-                src is IParameterReferenceOperation or ILocalReferenceOperation)
+                (src is IParameterReferenceOperation or ILocalReferenceOperation || src is IFlowCaptureReferenceOperation { Id: var either } && _branched.Contains(either) && IsSequence(type)))
             {
                 var given = Expr(src);
                 if (IsSequence(type) || IsQueryHandle(type))
@@ -1410,6 +1443,9 @@ namespace CsVerify.Verifier.Boogie
                     var src = Sequence(at.Arguments.OrderBy(a => a.Parameter.Ordinal).First().Value);
                     return Sort(src, keys, q.Syntax);
                 }
+                // (Order() and OrderDescending(): a stable sort by the elements themselves)
+                case "Order" or "OrderDescending" when args.Count == 1 && resultElem != null && Itself(resultElem, q.Syntax) is var (body, p1, p2):
+                    return Sort(Sequence(args[0].Value), new List<((IOperation, IParameterSymbol, IParameterSymbol) key, ITypeSymbol type, bool down)> { ((body, p1, p2), resultElem, m.Name == "OrderDescending") }, q.Syntax);
                 case "SelectMany" when args.Count is 2 or 3:
                 {
                     var src = Sequence(args[0].Value);
@@ -1993,7 +2029,8 @@ namespace CsVerify.Verifier.Boogie
                 }
                 return all;
             }
-            if (Scalar(t) || IsClass(t) || IsInterface(t) || t.SpecialType == SpecialType.System_Object)
+            // (a record struct whose equality is its value's, a typed id; a date's or a Guid's, the int kept for it)
+            if (Scalar(t) || IsClass(t) || IsInterface(t) || t.SpecialType == SpecialType.System_Object || IsComparedStruct(t) || IsOpaqueElement(t))
             {
                 return Eq(a, b);
             }
@@ -2353,7 +2390,8 @@ namespace CsVerify.Verifier.Boogie
                     return LinqValue(Ite(Eq(s.Length, KLit.One), s.Elem.At(KLit.Zero), sd), callType, at);
                 }
                 // (the first element whose key is least, or greatest: an integer key)
-                case "MinBy" or "MaxBy" when args.Count == 2 && _inDatabase == 0 && LambdaArg(call, 1) is var by && by.p2 == null && IsIntegral(by.body.Type):
+                // (or a date's or a time's, which its ticks order)
+                case "MinBy" or "MaxBy" when args.Count == 2 && _inDatabase == 0 && LambdaArg(call, 1) is var by && by.p2 == null && (IsIntegral(by.body.Type) || IsOpaqueTicks(by.body.Type)):
                 {
                     var s = Sequence(args[0].Value);
                     // (of no elements: null, where their type has one; it throws otherwise, as .NET's does)
@@ -2498,6 +2536,9 @@ namespace CsVerify.Verifier.Boogie
                     LinqFact(Over(KLit.Zero, s.Length, j2, Eq(Sel(sum, Plus(j2, KLit.One)), Plus(Sel(sum, j2), s.Elem.At(j2)))), at);
                     return LinqValue(new KOp("$fp.div64", new KOp("$fp.ofReal64", new KOp("$toreal", Sel(sum, s.Length))), count), callType, at);
                 }
+                // (a query kept as a value, returned or handed on: an object of the library's)
+                case var _ when QueryAsValue(call, callType) is KExpr kept:
+                    return kept;
                 default:
                     throw new NotTranslated("LINQ's " + name);
             }
@@ -2533,6 +2574,29 @@ namespace CsVerify.Verifier.Boogie
             var s = ByKey(call, () => Kept(src, f, at));
             AtMostOneRow(call, s, at);
             return s;
+        }
+
+        /// <summary>
+        /// A query of LINQ to Objects as a value (returned, handed to a method): some sequence, not null, which reads its
+        /// source and runs its lambdas when it is enumerated, wherever that is. So its lambdas are pure, and take any
+        /// element (none states a precondition); what it gives then isn't known here. Null where the call is no such query.
+        /// </summary>
+        private KExpr QueryAsValue(IInvocationOperation call, ITypeSymbol type)
+        {
+            if (_inDatabase > 0 || !IsSequence(type) || !IsEnumerableCall(call.TargetMethod))
+            {
+                return null;
+            }
+            if (call.DescendantsAndSelf().OfType<IAnonymousFunctionOperation>().Any(fn => _contractOf?.Invoke(fn.Symbol)?.Requires.Count > 0))
+            {
+                throw new NotTranslated("a query kept as a value whose lambda states a precondition: what it is called with, later, isn't known");
+            }
+            // (as it reads now: its source evaluated, each lambda one a query can read)
+            Sequence(call);
+            var q = Declare("t$" + _temps++, type);
+            Emit(KHavoc.Of(q));
+            Emit(KAssume.Of(NotNull(new KVar(q))));
+            return new KVar(q);
         }
 
         /// <summary>

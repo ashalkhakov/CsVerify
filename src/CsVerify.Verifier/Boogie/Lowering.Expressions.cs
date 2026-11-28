@@ -791,6 +791,10 @@ AndAlso(Eq(Sel(r, new KVar(t)), Sel(r, instance)), Ne(Sel(r, new KVar(t)), new K
         {
             switch (e)
             {
+                // (a query kept in a local, read as a value: the query, QueryAsValue)
+                case ILocalReferenceOperation lazy when _lazyQueries.TryGetValue(lazy.Local, out var kept) && kept is IInvocationOperation query && IsSequence(lazy.Local.Type) &&
+                                                        QueryAsValue(query, lazy.Local.Type) is KExpr asValue:
+                    return asValue;
                 case ILocalReferenceOperation l when InSubset(l.Local.Type) && l.Local.RefKind == RefKind.None: return new KVar(Declare(Local(l.Local), l.Local.Type));
                 case ILocalReferenceOperation rr when _refAlias.TryGetValue(rr.Local, out var ra):
                     if (ra.Var != null)
@@ -870,6 +874,10 @@ AndAlso(Eq(Sel(r, new KVar(t)), Sel(r, instance)), Ne(Sel(r, new KVar(t)), new K
             {
                 // (a new exception of the library's: its arguments' values aren't kept, only what is in the kernel is checked)
                 // (a list: its stub's constructor, which gives a new one)
+                // (a collection made of another's elements, new Dictionary<K, V>(other), where no stub says more)
+                case IObjectCreationOperation cc when IsCollection(cc.Type) && cc.Initializer == null && cc.Constructor != null && cc.Arguments.Length == 1 &&
+                                                      !(_contractOf?.Invoke(cc.Constructor.OriginalDefinition) is Contract { IsStub: true }) && Copied(cc.Arguments[0].Value) != null:
+                    return CollectionCopy(cc);
                 case IObjectCreationOperation lo when IsCollection(lo.Type) && lo.Initializer == null && lo.Constructor != null:
                     return Invoke(lo.Constructor, null, lo.Arguments, lo.Syntax, null);
                 // (a struct's constructor: the value it gives)
@@ -1476,6 +1484,47 @@ AndAlso(Eq(Sel(r, new KVar(t)), Sel(r, instance)), Ne(Sel(r, new KVar(t)), new K
                 NewContext(new KVar(t));
             }
             NewEntity(oc.Type, new KVar(t), oc.Syntax);
+            return new KVar(t);
+        }
+
+        /// <summary>What a collection's constructor copies: a collection, an array, a sequence or a dictionary behind its interface; else null.</summary>
+        private static IOperation Copied(IOperation argument) =>
+            Unconverted(argument) is { Type: { } t } source && (IsCollection(t) || IsArray(t) || IsCollectionInterface(t) || IsSequence(t) || IsReadOnlyDictionary(t)) ? source : null;
+
+        /// <summary>
+        /// A collection made of another's elements (new Dictionary&lt;K, V&gt;(other), new HashSet&lt;T&gt;(xs)): a new one. Of a
+        /// collection of its own type, what that one holds now; of anything else, what isn't said here, and it may throw
+        /// (a key given twice). A sequence that is no collection is enumerated: its code runs, which may change anything.
+        /// </summary>
+        private KExpr CollectionCopy(IObjectCreationOperation made)
+        {
+            var source = Copied(made.Arguments[0].Value);
+            var type = (INamedTypeSymbol)made.Type;
+            var from = Declare("t$" + _temps++, source.Type);
+            Emit(KAssign.Of(from, Expr(source)));
+            Emit(KCheck.Of(NotNull(new KVar(from)), "CSV1013", source.Syntax, $"'{source.Syntax}' might be null: '{made.Syntax}' would throw ArgumentNullException"));
+            bool same = SymbolEqualityComparer.Default.Equals(source.Type.WithNullableAnnotation(NullableAnnotation.None), type.WithNullableAnnotation(NullableAnnotation.None));
+            if (!same)
+            {
+                if (IsSequence(source.Type))
+                {
+                    _p.HavocsAll = true;
+                    _p.CallsDelegates = true;
+                    Emit(new KHavocAll());
+                }
+                MayThrow();
+            }
+            foreach (var model in ModelsOf(type))
+            {
+                _p.Models[model.Name] = model;
+            }
+            var t = Declare("t$" + _temps++, type);
+            Emit(KNewCollection.Of(t, ModelsOf(type).Select(model =>
+                (model.Name, same ? Sel(model.Name, new KVar(from)) : (KExpr)new KVar(LinqMap(model.Type.Substring("[Ref]".Length))))).ToArray()));
+            if (ModelsOf(type).Any(model => model.Name == SizeMap))
+            {
+                Emit(KAssume.Of(Ge(Sel(SizeMap, new KVar(t)), KLit.Zero)));
+            }
             return new KVar(t);
         }
 

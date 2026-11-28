@@ -1395,6 +1395,19 @@ is too). A switch expression over a tuple tests its parts in turn, a nullable va
 one. A function's definition is its expression converted to its type, as C# converts it (`int? F(bool b) => b ? 1 :
 default;` gives 0, an `int?`, where `b` is false).
 
+**Queries as values, and sources that branch.** A query of LINQ to Objects that isn't read where it is written
+(returned, handed to a method, kept in a local and passed on) is some sequence, not null, which reads its source and
+runs its lambdas when it is enumerated: its lambdas are pure and state no precondition, and what it gives isn't
+known here. A source that is one of two (`a ?? b`, `c ? a : b`) is whichever it is: the flow graph keeps it in a
+capture written on each path, which is a variable, and no name for what one path gave it. `Order()` and
+`OrderDescending()` are a stable sort by the elements themselves; `MinBy` and `MaxBy` take a date's or a time's key
+too; a typed id (a record struct) is compared by its value in `Distinct` and the like. A collection made of another
+(`new Dictionary<K, V>(other)`), where no stub says more, is a new one: of a collection of its own type, what that
+one holds; of anything else, what isn't said, and it may throw. `x is var y` names any value. An array of a
+non-nullable reference type that a library member without a stub hands back (`Split`'s) holds no null there, as the
+library's type says. A property with a
+setter of its own, assigned a value that branches (`P = x ?? throw ...`), has its setter called there.
+
 **Static auto-properties** are the static fields they are kept in: one without a setter a static readonly field (a
 value of the run's that never changes, not known which), one with a setter a static field.
 

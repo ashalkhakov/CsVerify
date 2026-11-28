@@ -773,6 +773,9 @@ namespace CsVerify.Verifier.Boogie
         [System.ThreadStatic] public static System.Func<IMethodSymbol, (IEnumerable<ISymbol> fields, bool all)> FieldEffectsOf;
         /// <summary>May a value of this type's ToString change something of the program's (the Engine's effects analysis)?</summary>
         [System.ThreadStatic] public static System.Func<ITypeSymbol, bool> StringOfWrites, HandsOver;
+
+        /// <summary>A function that reads a collection behind an interface, so takes the whole state (BoogieTranslator.ReadsWholeState).</summary>
+        [System.ThreadStatic] public static System.Func<IMethodSymbol, bool> WholeStateFunction;
         /// <summary>The semantic model of a tree of the program's (the Engine's, made once).</summary>
         [System.ThreadStatic] public static System.Func<SyntaxTree, SemanticModel> TreeModel;
         /// <summary>The fields of the new object a constructor sets (which FieldEffectsOf leaves out).</summary>
