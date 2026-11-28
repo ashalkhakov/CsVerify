@@ -1449,6 +1449,8 @@ nullable one).
 either is, else the operation of their values, checked as code's arithmetic is (the values 0 where either is null,
 which can't overflow). Static properties' getters and setters are methods, as instance ones are.
 
+`this` that the flow graph captures before a later operand that branches (`M(a ?? b)`, the receiver taken before
+the argument) is `this` where it is read, in a constructor and anywhere else.
 **Constructors' `this` as a value** (passed, stored, a call's receiver) is handed over: the object must be built
 there, its non-nullable fields set and its invariant holding (CSV1015), and is an object like any other after.
 **Deconstruction** into array cells, fields and variables, `(a[i], a[j]) = (a[j], a[i])`, reads every value first,

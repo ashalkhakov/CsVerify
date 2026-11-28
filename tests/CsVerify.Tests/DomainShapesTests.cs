@@ -535,6 +535,47 @@ public sealed class Silent
         }
 
         [Fact]
+        public void ThisCapturedBeforeAnArgumentThatBranches_IsThis()
+        {
+            // (#141: M(a ?? b) in a constructor. The flow graph captures the receiver, this, before the argument's branch;
+            // the capture was kept and never read back, so the call's receiver was a variable nothing had set)
+            var r = Harness.Verify(@"public sealed record Part(int N);
+public sealed class Late
+{
+    public string Name { get; private set; }
+    private int n;
+    private string? label;
+    public Late(string name, Part? part, string? label)
+    {
+        Name = name;
+        Set(part ?? new Part(7));
+        Label(label ?? throw new ArgumentNullException(nameof(label)));
+        Spec.Assert(part != null || n == 7);
+    }
+    private void Set(Part part) { Spec.Ensures(n == part.N); n = part.N; }
+    private void Label(string label) { this.label = label; }
+    public void Again(Part? part) { Set(part ?? new Part(7)); Spec.Assert(part != null || n == 7); }
+    public void Other(Part? part) { Set(part ?? new Part(7)); Spec.Assert(n == 7); }
+}
+public sealed class Early
+{
+    public string Name { get; private set; }
+    private int n;
+    public Early(string name, Part? part) { Set(part ?? new Part(0)); Name = name; }
+    private void Set(Part part) { n = part.N; }
+}
+public sealed class Passed
+{
+    public int Limit { get; private set; }
+    public Passed(int limit, Part? part) { Limit = limit; Keep(this, part ?? new Part(1)); Spec.Assert(Limit == limit); }
+    private static void Keep(Passed p, Part part) { p.Limit = part.N; }
+}");
+            Verifies(r, "Late..ctor", "Again");
+            Fails(r, "CSV1004", "Other", "Passed..ctor");
+            Fails(r, "CSV1015", "Early..ctor");
+        }
+
+        [Fact]
         public void AnArrayALibraryHandsBack_HoldsWhatItsTypeSays()
         {
             // (Split's string[]: no element null, as the library's type says of it, where it is handed back; an array the

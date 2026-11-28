@@ -1336,6 +1336,8 @@ namespace CsVerify.Verifier.Boogie
         {
             var outer = _cause;
             _cause = CallCause(callee) ?? outer;
+            // (this, which the flow graph captured before an argument that branches, M(a ?? b): this)
+            instance = CapturedThis(instance) ?? instance;
             try
             {
                 return InvokeCore(callee, instance, arguments, at, value);
