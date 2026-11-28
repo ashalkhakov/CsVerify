@@ -15,13 +15,18 @@ namespace CsVerify.Verifier.Boogie
     /// <summary>Expressions in code: operators, conversions, fields, strings, tuples, collections through their interfaces.</summary>
     internal sealed partial class Lowering
     {
-        /// <summary>A static readonly field of the program's that the kernel doesn't have as a field: its value, a constant of the run's ($sf).</summary>
-        private static KExpr StaticReadonly(IFieldSymbol f)
+        /// <summary>
+        /// A static readonly field of the program's that the kernel doesn't have as a field, or a static auto-property
+        /// without a setter (the readonly field the compiler keeps it in): its value, a constant of the run's ($sf).
+        /// </summary>
+        private static KExpr StaticReadonly(ISymbol s)
         {
-            if (f.DeclaringSyntaxReferences.Length == 0 || f.IsConst || IsField(f) || IsLockObject(f) || !InSubset(f.Type))
+            if (!FieldEffects.IsStaticFixed(s) || s.DeclaringSyntaxReferences.Length == 0 || s is IFieldSymbol { IsConst: true } || IsField(s) || IsLockObject(s) ||
+                !InSubset(s is IFieldSymbol sf ? sf.Type : ((IPropertySymbol)s).Type))
             {
                 return null;
             }
+            var f = (Type: s is IFieldSymbol tf ? tf.Type : ((IPropertySymbol)s).Type, OriginalDefinition: s.OriginalDefinition);
             var kind = TypeOf(f.Type) switch { "Ref" => "Ref", "int" => "Int", "bool" => "Bool", _ => null };
             if (kind == null)
             {
@@ -34,7 +39,7 @@ namespace CsVerify.Verifier.Boogie
                 ids[key] = k = ids.Count;
             }
             (KernelTypes.StaticReadonlyTypes ??= new Dictionary<int, ITypeSymbol>())[k] = f.Type;
-            if (kind == "Ref" && IsNullable(f.Type) && NotNullable(f.Type) && StaticStartsWithObject(f))
+            if (kind == "Ref" && IsNullable(f.Type) && NotNullable(f.Type) && StaticStartsWithObject(s))
             {
                 (KernelTypes.StaticReadonlyNonNull ??= new HashSet<int>()).Add(k);
             }
@@ -448,6 +453,20 @@ namespace CsVerify.Verifier.Boogie
         {
             switch (e)
             {
+                // (a static auto-property without a setter: the static readonly field it is kept in, a value that never
+                // changes, not known which; not null where its type says so)
+                case IPropertyReferenceOperation { Property: { IsStatic: true } fixedOnce } spr when StaticReadonly(fixedOnce) is KExpr spv:
+                {
+                    if (IsNullable(spr.Type) && NotNullable(spr.Type))
+                    {
+                        Emit(KAssume.Of(NotNull(spv)));
+                    }
+                    if (IsIntegral(spr.Type))
+                    {
+                        Emit(KAssume.Of(InRange(spv, spr.Type)));
+                    }
+                    return spv;
+                }
                 // (a cancellation token's state: cancelled may change at any moment, so each read is a value of its own; whether it
                 // can be is fixed)
                 case IPropertyReferenceOperation tk when tk.Instance != null && IsToken(tk.Instance.Type) && tk.Property.Name == "CanBeCanceled":
@@ -619,6 +638,9 @@ AndAlso(Eq(Sel(r, new KVar(t)), Sel(r, instance)), Ne(Sel(r, new KVar(t)), new K
         {
             switch (e)
             {
+                // (a with expression's copy of an object of a sealed record class)
+                case IInvocationOperation { TargetMethod.Name: "<Clone>$", Instance: { } original } copy when IsValueObject(original.Type) && IsClass(original.Type):
+                    return CopyOf(copy);
                 case IInvocationOperation { TargetMethod.Name: "Set", Instance: { } dbs, Arguments.Length: 0 } when KernelTypes.Ef != null && DbSetEntity(e.Type) != null && KernelTypes.Ef.IsContextType(dbs.Type):
                     return ContextTable(e, dbs);
                 // (Math.Max, Min and Abs of integers: Abs(MinValue) throws, as checked negation does)
@@ -626,6 +648,15 @@ AndAlso(Eq(Sel(r, new KVar(t)), Sel(r, instance)), Ne(Sel(r, new KVar(t)), new K
                     return IntegerMathCall(im);
                 case IInvocationOperation own when SpecSymbols.IsCsVerifyType(own.TargetMethod.ContainingType, "Own"):
                     return Own(own);
+                // (a dictionary's value of a key, or a default: of its models, as its TryGetValue's contract has them)
+                case IInvocationOperation { TargetMethod: { Name: "GetValueOrDefault", IsStatic: true, ContainingType.Name: "CollectionExtensions" } } gv
+                    when gv.Arguments.Length is 2 or 3 && Unconverted(gv.Arguments.OrderBy(a => a.Parameter.Ordinal).First().Value).Type is INamedTypeSymbol held &&
+                         CollectionKind(held) == "Dictionary" && IsCollection(held):
+                    return ValueOrDefault(gv, held);
+                // (what a delegate accepts, in a [Pure] function's body, an invariant's: mathematics, as a specification reads it)
+                case IInvocationOperation dp when SpecSymbols.IsSpecClass(dp.TargetMethod.ContainingType) && dp.TargetMethod.Name is "Total" && dp.Arguments.Length == 1 &&
+                                                  (_contract.IsPure || _p.Ghost) && IsFunc(Unconverted(dp.Arguments[0].Value).Type):
+                    return Spec(dp, null);
                 // (a quantifier in code, a [Pure] or ghost function's body: mathematics, its reads checked over its range)
                 case IInvocationOperation q when SpecSymbols.IsSpecClass(q.TargetMethod.ContainingType) && q.TargetMethod.Name is "Forall" or "Exists" && q.Arguments.Length == 3:
                     // (read as the source has it: the graph lowers its lambda)
@@ -682,6 +713,21 @@ AndAlso(Eq(Sel(r, new KVar(t)), Sel(r, instance)), Ne(Sel(r, new KVar(t)), new K
                 {
                     Emit(KAssume.Of(KLit.False));
                     return Unknown(null, th.Type, false);
+                }
+                // (a dictionary's keys or its values, kept as a collection: a view of it, one object for the dictionary, neither
+                // an array nor a list; what it holds is read where it is read, through its interface)
+                case IConversionOperation { IsImplicit: true, Conversion.IsReference: true, Operand: IPropertyReferenceOperation { Property.Name: "Keys" or "Values", Instance: { } whole } part } vc
+                    when CollectionKind(whole.Type) == "Dictionary" && IsCollection(whole.Type) && (IsCollectionInterface(vc.Type) || IsSequence(vc.Type)):
+                {
+                    var d = Expr(whole);
+                    Emit(KCheck.Of(NotNull(d), "CSV1013", whole.Syntax, $"'{whole.Syntax}' might be null in '{part.Syntax}'"));
+                    var of = "$dview." + part.Property.Name;
+                    _p.AddFunction($"function {of}(d: Ref): Ref;");
+                    _p.AddFunction($"axiom (forall d: Ref :: {{ {of}(d) }} {of}(d) != null && !$arr({of}(d)) && !$coll({of}(d)));");
+                    var view = Declare("t$" + _temps++, vc.Type);
+                    Emit(KHavoc.Of(view));
+                    Emit(KAssume.Of(Eq(new KVar(view), new KOp(of, d))));
+                    return new KVar(view);
                 }
                 // (a transaction as an object, compared with null: itself)
                 case IConversionOperation { IsImplicit: true, Conversion.IsReference: true } txc when IsEfTransaction(txc.Operand.Type):
@@ -745,6 +791,10 @@ AndAlso(Eq(Sel(r, new KVar(t)), Sel(r, instance)), Ne(Sel(r, new KVar(t)), new K
         {
             switch (e)
             {
+                // (a query kept in a local, read as a value: the query, QueryAsValue)
+                case ILocalReferenceOperation lazy when _lazyQueries.TryGetValue(lazy.Local, out var kept) && kept is IInvocationOperation query && IsSequence(lazy.Local.Type) &&
+                                                        QueryAsValue(query, lazy.Local.Type) is KExpr asValue:
+                    return asValue;
                 case ILocalReferenceOperation l when InSubset(l.Local.Type) && l.Local.RefKind == RefKind.None: return new KVar(Declare(Local(l.Local), l.Local.Type));
                 case ILocalReferenceOperation rr when _refAlias.TryGetValue(rr.Local, out var ra):
                     if (ra.Var != null)
@@ -824,6 +874,10 @@ AndAlso(Eq(Sel(r, new KVar(t)), Sel(r, instance)), Ne(Sel(r, new KVar(t)), new K
             {
                 // (a new exception of the library's: its arguments' values aren't kept, only what is in the kernel is checked)
                 // (a list: its stub's constructor, which gives a new one)
+                // (a collection made of another's elements, new Dictionary<K, V>(other), where no stub says more)
+                case IObjectCreationOperation cc when IsCollection(cc.Type) && cc.Initializer == null && cc.Constructor != null && cc.Arguments.Length == 1 &&
+                                                      !(_contractOf?.Invoke(cc.Constructor.OriginalDefinition) is Contract { IsStub: true }) && Copied(cc.Arguments[0].Value) != null:
+                    return CollectionCopy(cc);
                 case IObjectCreationOperation lo when IsCollection(lo.Type) && lo.Initializer == null && lo.Constructor != null:
                     return Invoke(lo.Constructor, null, lo.Arguments, lo.Syntax, null);
                 // (a struct's constructor: the value it gives)
@@ -1028,7 +1082,46 @@ AndAlso(Eq(Sel(r, new KVar(t)), Sel(r, instance)), Ne(Sel(r, new KVar(t)), new K
                 Emit(KAssume.Of(NotNull(new KVar(q))));
                 return new KVar(q);
             }
+            // (a library's own operator of values, which the kernel has no model of: TimeSpan * double)
+            if (e is IBinaryOperation { IsLifted: false, OperatorMethod: { } binary } lb && LibraryOperatorOfValues(binary, lb.LeftOperand, lb.RightOperand))
+            {
+                return LibraryOperator(binary, lb.LeftOperand, lb.RightOperand);
+            }
+            if (e is IUnaryOperation { IsLifted: false, OperatorMethod: { } unary } lu && LibraryOperatorOfValues(unary, lu.Operand))
+            {
+                return LibraryOperator(unary, lu.Operand);
+            }
             throw new NotTranslated(e.Kind + " '" + e.Syntax + "'");
+        }
+
+        /// <summary>A library's operator given values and strings only, which gives one: it reaches none of the program's objects.</summary>
+        private static bool LibraryOperatorOfValues(IMethodSymbol op, params IOperation[] operands) =>
+            op.MethodKind == MethodKind.UserDefinedOperator && op.DeclaringSyntaxReferences.Length == 0 &&
+            operands.Select(x => x.Type).Append(op.ReturnType).All(t => t != null && (t.IsValueType || IsString(t)) && InSubset(t));
+
+        /// <summary>
+        /// Such an operator applied: its operands evaluated; it changes nothing the program reads, what it gives is a
+        /// value not known (nor that it gives the same again), and it may throw.
+        /// </summary>
+        private KExpr LibraryOperator(IMethodSymbol op, params IOperation[] operands)
+        {
+            var values = Operands(operands);
+            for (int k = 0; k < values.Length; k++)
+            {
+                // (each kept in a variable: a value nothing reads is checked of nothing)
+                if (!(values[k] is KLit || values[k] is KVar))
+                {
+                    Emit(KAssign.Of(Declare("t$" + _temps++, operands[k].Type), values[k]));
+                }
+            }
+            MayThrow();
+            var r = Declare("t$" + _temps++, op.ReturnType);
+            Emit(KHavoc.Of(r));
+            if (IsNullable(op.ReturnType) && NotNullable(op.ReturnType))
+            {
+                Emit(KAssume.Of(NotNull(new KVar(r))));
+            }
+            return new KVar(r);
         }
 
         /// <summary>A lock's object read as a value: some object, not null where declared so (no state of the kernel's).</summary>
@@ -1394,6 +1487,119 @@ AndAlso(Eq(Sel(r, new KVar(t)), Sel(r, instance)), Ne(Sel(r, new KVar(t)), new K
             return new KVar(t);
         }
 
+        /// <summary>What a collection's constructor copies: a collection, an array, a sequence or a dictionary behind its interface; else null.</summary>
+        private static IOperation Copied(IOperation argument) =>
+            Unconverted(argument) is { Type: { } t } source && (IsCollection(t) || IsArray(t) || IsCollectionInterface(t) || IsSequence(t) || IsReadOnlyDictionary(t)) ? source : null;
+
+        /// <summary>
+        /// A collection made of another's elements (new Dictionary&lt;K, V&gt;(other), new HashSet&lt;T&gt;(xs)): a new one. Of a
+        /// collection of its own type, what that one holds now; of anything else, what isn't said here, and it may throw
+        /// (a key given twice). A sequence that is no collection is enumerated: its code runs, which may change anything.
+        /// </summary>
+        private KExpr CollectionCopy(IObjectCreationOperation made)
+        {
+            var source = Copied(made.Arguments[0].Value);
+            var type = (INamedTypeSymbol)made.Type;
+            var from = Declare("t$" + _temps++, source.Type);
+            Emit(KAssign.Of(from, Expr(source)));
+            Emit(KCheck.Of(NotNull(new KVar(from)), "CSV1013", source.Syntax, $"'{source.Syntax}' might be null: '{made.Syntax}' would throw ArgumentNullException"));
+            bool same = SymbolEqualityComparer.Default.Equals(source.Type.WithNullableAnnotation(NullableAnnotation.None), type.WithNullableAnnotation(NullableAnnotation.None));
+            if (!same)
+            {
+                if (IsSequence(source.Type))
+                {
+                    _p.HavocsAll = true;
+                    _p.CallsDelegates = true;
+                    Emit(new KHavocAll());
+                }
+                MayThrow();
+            }
+            foreach (var model in ModelsOf(type))
+            {
+                _p.Models[model.Name] = model;
+            }
+            var t = Declare("t$" + _temps++, type);
+            Emit(KNewCollection.Of(t, ModelsOf(type).Select(model =>
+                (model.Name, same ? Sel(model.Name, new KVar(from)) : (KExpr)new KVar(LinqMap(model.Type.Substring("[Ref]".Length))))).ToArray()));
+            if (ModelsOf(type).Any(model => model.Name == SizeMap))
+            {
+                Emit(KAssume.Of(Ge(Sel(SizeMap, new KVar(t)), KLit.Zero)));
+            }
+            return new KVar(t);
+        }
+
+        /// <summary>d.GetValueOrDefault(key) and d.GetValueOrDefault(key, otherwise): the dictionary's value of the key where it has it.</summary>
+        private KExpr ValueOrDefault(IInvocationOperation call, INamedTypeSymbol dictionary)
+        {
+            var args = call.Arguments.OrderBy(a => a.Parameter.Ordinal).ToList();
+            var (keyType, valueType) = (dictionary.TypeArguments[0], dictionary.TypeArguments[1]);
+            var values = Operands(new[] { Unconverted(args[0].Value) }.Concat(args.Skip(1).Select(a => a.Value)).ToArray());
+            Emit(KCheck.Of(NotNull(values[0]), "CSV1013", args[0].Value.Syntax, $"'{args[0].Value.Syntax}' might be null in '{call.Syntax}'"));
+            if (IsNullable(keyType))
+            {
+                Emit(KCheck.Of(NotNull(values[1]), "CSV1013", args[1].Value.Syntax, $"'{args[1].Value.Syntax}' might be null: '{call.TargetMethod.Name}' would throw ArgumentNullException"));
+            }
+            foreach (var m in ModelsOf(dictionary))
+            {
+                _p.Models[m.Name] = m;
+            }
+            var otherwise = args.Count == 3 ? values[2] : Default(valueType) ?? throw new NotTranslated("a default of " + valueType);
+            var key = Keyed(values[1], keyType);
+            return Ite(Sel(ModelOf("Domain", dictionary).Name, values[0], key), Sel(ModelOf("Entries", dictionary).Name, values[0], key), otherwise);
+        }
+
+        /// <summary>
+        /// A with expression's copy of an object of a sealed record class: a new object of that class, each member the
+        /// original's, as the copy constructor C# writes makes it. What the expression sets is stored in it after.
+        /// </summary>
+        private KExpr CopyOf(IInvocationOperation copy)
+        {
+            var type = (INamedTypeSymbol)copy.Instance.Type.WithNullableAnnotation(NullableAnnotation.NotAnnotated);
+            // (a copy constructor the program wrote may do anything)
+            if (type.InstanceConstructors.Any(c => !c.IsImplicitlyDeclared && c.Parameters.Length == 1 && SymbolEqualityComparer.Default.Equals(c.Parameters[0].Type.OriginalDefinition, type.OriginalDefinition)))
+            {
+                throw new NotTranslated("a with expression of " + type.Name + ", which has a copy constructor of its own");
+            }
+            var from = Declare("t$" + _temps++, type);
+            Emit(KAssign.Of(from, Expr(copy.Instance)));
+            Emit(KCheck.Of(NotNull(new KVar(from)), "CSV1013", copy.Instance.Syntax, $"'{copy.Instance.Syntax}' might be null in a with expression"));
+            var t = Declare("t$" + _temps++, type);
+            var fields = InstanceFields(type).ToList();
+            foreach (var f in fields)
+            {
+                _p.AddField(f);
+            }
+            Emit(new KNewObj
+            {
+                Var = t,
+                Type = type,
+                Ctor = null,
+                Args = new KExpr[0],
+                ArgsAt = new SyntaxNode[0],
+                At = copy.Syntax,
+                Given = new HashSet<ISymbol>(fields, SymbolEqualityComparer.Default),
+            });
+            foreach (var f in fields)
+            {
+                Emit(new KFieldStore
+                {
+                    Field = f,
+                    Instance = new KVar(t),
+                    Value = new KField { Field = f, Instance = new KVar(from), NoNull = true, At = copy.Syntax, InstanceAt = copy.Instance.Syntax },
+                    Initial = true,
+                    At = copy.Syntax,
+                    InstanceAt = copy.Syntax,
+                });
+            }
+            Emit(new KConstructed { Var = t, Type = type });
+            if (IsModeledClass(type))
+            {
+                _p.AddClassType(type.OriginalDefinition);
+                Emit(KAssume.Of(Eq(new KOp("dtype", new KVar(t)), new KLit(TypeConst(type)))));
+            }
+            return new KVar(t);
+        }
+
         private KExpr NewLibraryObject(IObjectCreationOperation lob)
         {
             foreach (var x in lob.Arguments.OrderBy(x => x.Parameter.Ordinal))
@@ -1492,7 +1698,8 @@ AndAlso(Eq(Sel(r, new KVar(t)), Sel(r, instance)), Ne(Sel(r, new KVar(t)), new K
                 Emit(KCheck.Of(KLit.False, "CSV1015", ti.Syntax, notAssumedAfter: true,
                     message: $"'this' escapes the constructor of {type.Name} before the constructor of {derived.Name}, which derives from it, has built the object"));
             }
-            else if (HasObjectInvariant(type) || InstanceFields(type).Any(f => IsNullable(FieldType(f)) && NotNullable(FieldType(f))))
+            // (where there is something to have built, or the constructor keeps its object to itself till then, OwnTillHanded)
+            else if (HasObjectInvariant(type) || InstanceFields(type).Any(f => IsNullable(FieldType(f)) && NotNullable(FieldType(f))) || _p.OwnTillHanded)
             {
                 _p.ThisEscapes = true;
                 Emit(new KBuilt { Type = type, At = ti.Syntax });
@@ -1525,7 +1732,10 @@ AndAlso(Eq(Sel(r, new KVar(t)), Sel(r, instance)), Ne(Sel(r, new KVar(t)), new K
 
         private KExpr MoveNextOfAnyEnumerable(IInvocationOperation om)
         {
-            CallersRun();
+            // (the sequence's code runs, called from here: it may change anything code called may)
+            _p.HavocsAll = true;
+            _p.CallsDelegates = true;
+            Emit(new KHavocAll());
             var more = Declare("t$" + _temps++, _model.Compilation.GetSpecialType(SpecialType.System_Boolean));
             Emit(KHavoc.Of(more));
             return new KVar(more);

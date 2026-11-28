@@ -66,6 +66,13 @@ namespace CsVerify.Verifier.Boogie
                 ListCtor = m.MethodKind == MethodKind.Constructor && IsCollection(m.ContainingType),
                 ThisIsView = !m.IsStatic && SpecSymbols.IsOwned(m.ContainingType) && (m.MethodKind == MethodKind.Constructor || !contract.IsPure),
             };
+            // (nor names a method of its object without calling it: a delegate of it keeps this)
+            _p.OwnTillHanded = _p.IsCtor && m.ContainingType.BaseType?.SpecialType == SpecialType.System_Object && model != null &&
+                               decl is ConstructorDeclarationSyntax { Initializer: null } own &&
+                               !own.DescendantNodes().Any(n => n is AnonymousFunctionExpressionSyntax || n is LocalFunctionStatementSyntax ||
+                                   n is SimpleNameSyntax name && !(name.Parent is InvocationExpressionSyntax called && called.Expression == name) &&
+                                   !(name.Parent is MemberAccessExpressionSyntax of && of.Name == name && of.Parent is InvocationExpressionSyntax) &&
+                                   model.GetSymbolInfo(name).Symbol is IMethodSymbol { IsStatic: false });
             // (a constructor knows its object's fields are their defaults: their maps are declared)
             if (_p.IsCtor)
             {
@@ -307,10 +314,23 @@ namespace CsVerify.Verifier.Boogie
                 }
             }
             _cfg = cfg;
+            // (a capture written on more than one path, a ?? b, c ? a : b: a variable, and no name for what one path gave it)
+            _branched = cfg.Blocks.SelectMany(b => b.Operations).SelectMany(o => o.DescendantsAndSelf()).OfType<IFlowCaptureOperation>()
+                .GroupBy(c => c.Id).Where(g => g.Count() > 1).Select(g => g.Key).ToHashSet();
             // (a function's definition is its body: not one an override may answer, which is of its contract alone)
+            bool ofContractAlone = false;
             if (_isFunction(_m) && _contract.PureBody != null && !Engine.IsOverridable(_m))
             {
-                DefinedBy(Spec(_contract.PureBody, null));
+                // (an expression no specification reads, a query's say: the function is of its contract alone, as its
+                // callers have it (Signature), and its body is verified as the code it is)
+                try
+                {
+                    DefinedBy(Spec(_contract.PureBody, null));
+                }
+                catch (NotTranslated) when (!SpecSymbols.IsPredicate(_m))
+                {
+                    ofContractAlone = true;
+                }
             }
             else if (_isFunction(_m) && _contract.PureStatements != null && !Engine.IsOverridable(_m))
             {
@@ -571,6 +591,12 @@ namespace CsVerify.Verifier.Boogie
             }
             FinallyEnds();
             LoopCauses();
+            // (a function of its contract alone is of the memory it takes: where its body reads a collection through an
+            // interface, whose value is of whatever is behind it, that must be the whole state)
+            if (ofContractAlone && _p.UsesState && KernelTypes.WholeStateFunction?.Invoke(_m) != true)
+            {
+                throw new NotTranslated("a [Pure] member whose expression reads a collection through an interface: a value of the whole state, which this function doesn't take");
+            }
             return _p;
         }
 

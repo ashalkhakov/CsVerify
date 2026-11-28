@@ -806,6 +806,8 @@ namespace CsVerify.Verifier.Boogie
         public KExpr Unless;
         /// <summary>The program's fields and arrays only: not the collections' models (code an Equals runs, not the collection's).</summary>
         public bool ProgramState;
+        /// <summary>The code that runs is this method's caller, which may be a constructor still making its object.</summary>
+        public bool Callers;
     }
 
     /// <summary>Around a call of an async method: the objects of these (confined) locals, which no code can reach, are as they were.</summary>
@@ -1065,6 +1067,12 @@ namespace CsVerify.Verifier.Boogie
         public bool IsCtor;
         /// <summary>A constructor that hands this over (KBuilt): Checks.BuiltFlag says whether it has, at each point.</summary>
         public bool ThisEscapes;
+        /// <summary>
+        /// A constructor whose object nobody else can reach until it hands this over: a class derived from object, a
+        /// constructor that chains to no other and makes no lambda, local function or delegate of a method of its own
+        /// (which could keep this). Until then, no code it calls changes any of the object's fields.
+        /// </summary>
+        public bool OwnTillHanded;
         /// <summary>A list's constructor, from its stub: a procedure that returns the new list.</summary>
         public bool ListCtor;
         /// <summary>A struct's constructor: it gives the value it makes (this, a value it writes, its default to begin with).</summary>

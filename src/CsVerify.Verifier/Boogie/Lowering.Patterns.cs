@@ -295,7 +295,8 @@ namespace CsVerify.Verifier.Boogie
                     var parts = PartsOf(type).ToList();
                     for (int k = 0; k < parts.Count; k++)
                     {
-                        cond = AndAlso(cond, Pattern(tup.DeconstructionSubpatterns[k], TupleItem(v, type, k), parts[k], mode));
+                        // (a part that is a nullable value, (int?, Guid?): its pattern is of its value where it has one)
+                        cond = AndAlso(cond, PartPattern(tup.DeconstructionSubpatterns[k], TupleItem(v, type, k), parts[k], mode));
                     }
                     return cond;
                 }

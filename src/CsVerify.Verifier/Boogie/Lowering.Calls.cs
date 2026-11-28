@@ -515,7 +515,8 @@ namespace CsVerify.Verifier.Boogie
 
         /// <summary>A library's method or getter, not a collection's, not a [Pure] stub's, not generic, not async.</summary>
         private bool PlainLibraryMember(IMethodSymbol m) =>
-            m.DeclaringSyntaxReferences.Length == 0 && !IsCollection(m.ContainingType) && !IsStub(m) && !m.IsGenericMethod && m.ContainingType is INamedTypeSymbol { IsGenericType: false } &&
+            m.DeclaringSyntaxReferences.Length == 0 && !IsCollection(m.ContainingType) && !IsStub(m) && !m.IsGenericMethod &&
+            (m.ContainingType is INamedTypeSymbol { IsGenericType: false } || IsReadOnlyDictionary(m.ContainingType)) &&
             m.MethodKind is MethodKind.Ordinary or MethodKind.PropertyGet && !m.IsAsync;
 
         /// <summary>
@@ -773,6 +774,13 @@ namespace CsVerify.Verifier.Boogie
             if (IsNullable(call.Type) && (StaticChecks.IsNonNullableReturn(m) || argumentNotNull))
             {
                 Emit(KAssume.Of(NotNull(new KVar(r))));
+                // (an array of a type not nullable that the library hands back, Split's: none of what it holds is null, as it
+                // says; as it is now, whatever is stored in it after)
+                if (call.Type is IArrayTypeSymbol { Rank: 1, ElementType: { IsReferenceType: true, NullableAnnotation: NullableAnnotation.NotAnnotated } } filled && IsArray(filled))
+                {
+                    var each = Atom();
+                    ShapeFact(Over(KLit.Zero, new KOp("len", new KVar(r)), each, NotNull(Sel(Elements(filled), new KVar(r), each))), call.Syntax);
+                }
             }
             foreach (var (value, when) in whenNotNull)
             {

@@ -82,6 +82,10 @@ namespace CsVerify.Verifier
                     // an explicit constructor may only be an abstract record's: an empty, parameterless one, or one that
                     // only stores its parameters
                     case IMethodSymbol c when c.MethodKind == MethodKind.Constructor && !IsPrimary(c):
+                        if (Delegates(c))
+                        {
+                            break;
+                        }
                         if (Stored(t) != null)
                         {
                             break;
@@ -198,6 +202,15 @@ namespace CsVerify.Verifier
         /// <summary>An init property's initializer, if it has one.</summary>
         public static ExpressionSyntax InitializerOf(IPropertySymbol p) =>
             p.DeclaringSyntaxReferences.Select(r => r.GetSyntax()).OfType<PropertyDeclarationSyntax>().FirstOrDefault()?.Initializer?.Value;
+
+        /// <summary>
+        /// A positional record's other constructor that only chains to one of its own (public Mark(int at) : this(at, 0) { }):
+        /// a value it builds is the primary constructor's, of the arguments handed on.
+        /// </summary>
+        public static bool Delegates(IMethodSymbol ctor) =>
+            ctor.MethodKind == MethodKind.Constructor && !ctor.IsStatic && ctor.DeclaringSyntaxReferences.Length == 1 &&
+            ctor.DeclaringSyntaxReferences[0].GetSyntax() is ConstructorDeclarationSyntax { Initializer: { } chained, ExpressionBody: null, Body: { Statements.Count: 0 } } &&
+            chained.IsKind(Microsoft.CodeAnalysis.CSharp.SyntaxKind.ThisConstructorInitializer) && ctor.ContainingType.InstanceConstructors.Any(IsPrimary);
 
         private static bool IsPrimary(IMethodSymbol ctor) =>
             ctor.DeclaringSyntaxReferences.Any(r => r.GetSyntax() is RecordDeclarationSyntax);

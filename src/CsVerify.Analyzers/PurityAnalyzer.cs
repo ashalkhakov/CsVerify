@@ -116,12 +116,38 @@ namespace CsVerify.Analyzers
             {
                 return;
             }
+            // (a query of LINQ to Objects, which its comprehension defines: it reads its source and calls what it is
+            // handed, so it has the effects of those. A lambda's body is checked where it is written; a method handed
+            // over by name is called, so it is checked as a call of it would be)
+            if (ContractStubs.For(op.SemanticModel.Compilation).QueryOf(op.TargetMethod) != null)
+            {
+                foreach (var handed in op.Arguments.Select(a => Unconverted(a.Value)).OfType<IDelegateCreationOperation>().Select(d => d.Target).OfType<IMethodReferenceOperation>())
+                {
+                    if (!Function(handed.Method, op))
+                    {
+                        Report(context, handed, $"'{handed.Method.Name}' handed to '{op.TargetMethod.Name}', which calls it, is not a lemma or [Pure]");
+                    }
+                }
+                return;
+            }
             // (or a method of one expression with no effects: a function without saying so)
-            if (!SpecSymbols.IsPureCallee(op.TargetMethod) && SpecSymbols.GenericLaw(op, out _) == null && !ContractStubs.For(op.SemanticModel.Compilation).IsPureMember(op.TargetMethod) &&
-                !EntryRead(op.TargetMethod) && !ExpressionFunctions.Inferred(op.TargetMethod, op.SemanticModel.Compilation))
+            if (!Function(op.TargetMethod, op) && SpecSymbols.GenericLaw(op, out _) == null && !EntryRead(op.TargetMethod))
             {
                 Report(context, op, $"call to '{op.TargetMethod.Name}', which is not a lemma or [Pure]");
             }
+        }
+
+        private static bool Function(IMethodSymbol m, IOperation at) =>
+            SpecSymbols.IsPureCallee(m) || ContractStubs.For(at.SemanticModel.Compilation).IsPureMember(m) || SpecSymbols.IsTickArithmetic(m) ||
+            ExpressionFunctions.Inferred(m, at.SemanticModel.Compilation);
+
+        private static IOperation Unconverted(IOperation o)
+        {
+            while (o is IConversionOperation c)
+            {
+                o = c.Operand;
+            }
+            return o;
         }
 
         /// <summary>EF's DbContext.Entry and an entry's Property: an entry read, as the verifier models them (Lowering.EfEntries).</summary>

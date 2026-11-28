@@ -123,16 +123,24 @@ namespace CsVerify.Verifier.Boogie
                 return m.MethodKind is MethodKind.Ordinary or MethodKind.StaticConstructor or MethodKind.PropertyGet or MethodKind.PropertySet or MethodKind.UserDefinedOperator;
             }
             var ofItsType = OwnerTakesInstanceMember(m) && InstanceKindInSubset(m);
-            return ofItsType || StructConstructor(m) || StructReader(m);
+            return ofItsType || StructConstructor(m) || StructReader(m) || IsData(m.ContainingType) && Verifier.DataTypes.Delegates(m);
         }
 
         /// <summary>A member of a class, an interface's abstract one, or a data type's plain method or getter.</summary>
         private static bool OwnerTakesInstanceMember(IMethodSymbol m)
         {
             var t = m.ContainingType;
-            var plainMethod = m.MethodKind is MethodKind.Ordinary or MethodKind.PropertyGet && !m.IsVirtual && !m.IsAbstract && !m.IsOverride && !m.IsImplicitlyDeclared;
+            var plainMethod = m.MethodKind is MethodKind.Ordinary or MethodKind.PropertyGet && !m.IsVirtual && !m.IsAbstract && (!m.IsOverride || Formats(m)) && !m.IsImplicitlyDeclared;
             return IsClass(t) || IsInterface(t) && m.IsAbstract || IsData(t) && plainMethod;
         }
+
+        /// <summary>
+        /// A value type's or a data type's own ToString: it says how a value is written, and nothing of what the value
+        /// is (as its Equals or GetHashCode would), so it is a method like its others.
+        /// </summary>
+        private static bool Formats(IMethodSymbol m) =>
+            m.IsOverride && m.Name == "ToString" && m.Parameters.Length == 0 &&
+            m.OverriddenMethod?.ContainingType.SpecialType is SpecialType.System_Object or SpecialType.System_ValueType;
 
         /// <summary>A method or a property's accessor; a constructor or an explicit interface implementation only of a class.</summary>
         private static bool InstanceKindInSubset(IMethodSymbol m)
@@ -151,7 +159,7 @@ namespace CsVerify.Verifier.Boogie
         private static bool StructReader(IMethodSymbol m)
         {
             var reads = m.MethodKind is MethodKind.Ordinary or MethodKind.PropertyGet;
-            return IsStruct(m.ContainingType) && reads && !m.IsVirtual && !m.IsOverride;
+            return IsStruct(m.ContainingType) && reads && !m.IsVirtual && (!m.IsOverride || Formats(m));
         }
 
         /// <summary>Not async, or async returning a task, and code (not [Pure], not a lemma).</summary>
@@ -305,6 +313,7 @@ namespace CsVerify.Verifier.Boogie
             {
                 _procedures.Add(p.method.OriginalDefinition);
             }
+            KernelTypes.WholeStateFunction = ReadsWholeState;
             var calls = new Dictionary<IMethodSymbol, HashSet<IMethodSymbol>>(SymbolEqualityComparer.Default);
             foreach (var (m, decl, model) in list)
             {
@@ -315,6 +324,12 @@ namespace CsVerify.Verifier.Boogie
                     .Where(x => x != null && _procedures.Contains(x)), SymbolEqualityComparer.Default);
                 var named = decl.DescendantNodes().OfType<SimpleNameSyntax>().Select(n => model.GetSymbolInfo(n).Symbol).Where(x => x != null).ToList();
                 _fieldsRead[m.OriginalDefinition] = new HashSet<ISymbol>(named.Where(IsField).Select(x => x.OriginalDefinition), SymbolEqualityComparer.Default);
+                // (one that names a collection behind an interface, or a sequence: what it reads of it is of whatever is
+                // behind it, the whole state)
+                if (named.Select(TypeNamed).Any(t => t != null && (IsCollectionInterface(t) || IsSequence(t) || IsReadOnlyDictionary(t))))
+                {
+                    _wholeState.Add(m.OriginalDefinition);
+                }
                 // (the collections it names, by their types: their models are memory a function of it reads, as fields are)
                 _modelsRead[m.OriginalDefinition] = named.Select(TypeNamed).Concat(m.Parameters.Select(x => x.Type)).Append(m.ContainingType)
                     .SelectMany(ModelsNamed).GroupBy(x => x.Name).Select(g => g.First()).ToList();
@@ -390,6 +405,29 @@ namespace CsVerify.Verifier.Boogie
         /// <summary>[Pure]: the method, or (a getter) its property.</summary>
         private static bool Pure(IMethodSymbol m, Contract c) => c.IsPure || m.MethodKind == MethodKind.PropertyGet && m.AssociatedSymbol != null && SpecSymbols.IsPure(m.AssociatedSymbol);
 
+        /// <summary>The procedures whose declarations read a collection behind an interface: a function of one is of the whole state.</summary>
+        private readonly HashSet<IMethodSymbol> _wholeState = new HashSet<IMethodSymbol>(SymbolEqualityComparer.Default);
+
+        /// <summary>
+        /// Does a function read the whole state: it, or a function it calls, is of its contract alone (no definition says
+        /// what it reads) and names a collection behind an interface?
+        /// </summary>
+        public bool ReadsWholeState(IMethodSymbol m) =>
+            new[] { m.OriginalDefinition }.Concat(_reaches.TryGetValue(m.OriginalDefinition, out var r) ? r : Enumerable.Empty<IMethodSymbol>())
+                .Any(x => _wholeState.Contains(x) && IsFunction(x) && OfContractAlone(x));
+
+        private bool OfContractAlone(IMethodSymbol m)
+        {
+            try
+            {
+                return ((IProgramFacts)this).Signature(m).FunctionBody == null;
+            }
+            catch (NotTranslated)
+            {
+                return true;
+            }
+        }
+
         /// <summary>The fields each procedure's declaration names.</summary>
         private readonly Dictionary<IMethodSymbol, HashSet<ISymbol>> _fieldsRead = new Dictionary<IMethodSymbol, HashSet<ISymbol>>(SymbolEqualityComparer.Default);
 
@@ -419,7 +457,7 @@ namespace CsVerify.Verifier.Boogie
         private IEnumerable<string> ModelsRead(IMethodSymbol m)
         {
             m = m.OriginalDefinition;
-            var of = Engine.IsOverridable(m) ? _modelsRead.Values.SelectMany(x => x)
+            var of = Engine.IsOverridable(m) || ReadsWholeState(m) ? _modelsRead.Values.SelectMany(x => x)
                 : new[] { m }.Concat(_reaches.TryGetValue(m, out var r) ? r : Enumerable.Empty<IMethodSymbol>()).SelectMany(x => _modelsRead.TryGetValue(x, out var ms) ? ms : Enumerable.Empty<ModelMap>());
             foreach (var model in of.Where(x => x != null))
             {
@@ -433,8 +471,9 @@ namespace CsVerify.Verifier.Boogie
         {
             m = m.OriginalDefinition;
             var all = new HashSet<ISymbol>(SymbolEqualityComparer.Default);
-            // (one an override may answer reads what any of them might: every field the program names)
-            if (Engine.IsOverridable(m))
+            // (one an override may answer reads what any of them might: every field the program names; so does one that
+            // reads a collection behind an interface)
+            if (Engine.IsOverridable(m) || ReadsWholeState(m))
             {
                 foreach (var f in _fieldsRead.Values)
                 {
@@ -783,6 +822,8 @@ namespace CsVerify.Verifier.Boogie
             _printer.Recursive = (a, b) => Recursive(a.OriginalDefinition, b.OriginalDefinition);
             foreach (var p in _pending.Where(p => IsFunction(p.Source.Method) && !p.Source.IsPredicate))
             {
+                // (its lines are its method's: a definition Boogie doesn't type check leaves that method out, not all)
+                var from = _printer.NextLine;
                 if (OverPredicate(p.Source.Method) != null)
                 {
                     _printer.FunctionOverPredicate(p);
@@ -792,6 +833,7 @@ namespace CsVerify.Verifier.Boogie
                     _printer.Function(p, FunctionFields(p.Source.Method), fields,
                                            ((IProgramFacts)this).Signature(p.Source.Method).Requires.SelectMany(r => r.Expr.Atoms()).Any(a => a is KInst));
                 }
+                Spans.Add((from, _printer.NextLine - 1, p.Source.Result));
             }
             // (a [Pure] override, of an object whose dynamic type is exactly its class: the base member's value is its)
             foreach (var p in _pending.Where(p => IsFunction(p.Source.Method) && !p.Source.IsPredicate && OverPredicate(p.Source.Method) == null && p.Source.Method.IsOverride))

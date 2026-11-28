@@ -99,6 +99,33 @@ namespace CsVerify.Verifier.Boogie
 
         private void Statement(KStmt s, List<MExpr> decreases)
         {
+            // (in its constructor, an object nobody was handed is nobody else's: no code called changes any of it. One
+            // that is given this, a receiver or an argument, was handed it just before, Built)
+            if (!_keepingOwn && s is KCall or KInvoke or KHavocAll or KNewObj { Ctor: not null } && OwnFields() is { Count: > 0 } mine)
+            {
+                var kept = mine.Select(f =>
+                {
+                    var was = "own$" + _own++;
+                    _p.AddLocal(KLocal.Of(was, TypeOf(FieldType(f))));
+                    Emit(MAssign.Of(was, Sel(FieldMap(f), new MVar("this"))));
+                    return (map: FieldMap(f), was);
+                }).ToList();
+                _keepingOwn = true;
+                try
+                {
+                    Statement(s, decreases);
+                }
+                finally
+                {
+                    _keepingOwn = false;
+                }
+                foreach (var (map, was) in kept)
+                {
+                    var same = Eq(Sel(map, new MVar("this")), new MVar(was));
+                    Emit(MAssume.Of(_p.ThisEscapes ? Implies(Not(new MVar(BuiltFlag)), same) : same));
+                }
+                return;
+            }
             switch (s)
             {
                 case KAssign a:
@@ -170,6 +197,7 @@ namespace CsVerify.Verifier.Boogie
                     {
                         Unless = Code(ha.Unless),
                         ProgramState = ha.ProgramState,
+                        Callers = ha.Callers,
                     });
                     return;
                 case KCheck ck:
@@ -362,7 +390,7 @@ namespace CsVerify.Verifier.Boogie
                     Emit(MHavoc.Of(h.Var));
                     return;
                 case KHavocAll ha:
-                    Emit(new MHavocAll { ProgramState = ha.ProgramState });
+                    Emit(new MHavocAll { ProgramState = ha.ProgramState, Callers = ha.Callers });
                     return;
                 case KKeep k:
                     Emit(MKeep.Of(k));
@@ -429,7 +457,14 @@ namespace CsVerify.Verifier.Boogie
         }
 
         /// <summary>In a constructor that hands this over: has it yet? (A built object's non-nullable fields are set, as any object's.)</summary>
-        private const string BuiltFlag = "built$";
+        internal const string BuiltFlag = "built$";
+
+        private int _own;
+        private bool _keepingOwn;
+
+        /// <summary>The fields of the object a constructor is making, where nobody else can reach it till it is handed over.</summary>
+        private List<ISymbol> OwnFields() =>
+            _p.OwnTillHanded && _inBody ? InstanceFields(_p.Method.ContainingType).Where(IsField).ToList() : new List<ISymbol>();
 
         /// <summary>Within the body's statements (not the contract's clauses, which no local is in scope of).</summary>
         private bool _inBody;

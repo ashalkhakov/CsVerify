@@ -302,6 +302,11 @@ namespace CsVerify.Analyzers
                 {
                     return model.GetDeclaredSymbol(cur) as IMethodSymbol;
                 }
+                // (a property or an indexer written as one expression, => e: its getter)
+                if (cur is ArrowExpressionClauseSyntax && cur.Parent is BasePropertyDeclarationSyntax written)
+                {
+                    return (model.GetDeclaredSymbol(written) as IPropertySymbol)?.GetMethod;
+                }
             }
             return null;
         }

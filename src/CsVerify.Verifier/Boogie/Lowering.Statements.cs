@@ -95,8 +95,9 @@ namespace CsVerify.Verifier.Boogie
             IDiscardOperation or ILocalReferenceOperation or IParameterReferenceOperation => true,
             IArrayElementReferenceOperation ae => ae.Indices.Length == 1 && Plain(ae.ArrayReference) && Plain(ae.Indices[0]),
             IFieldReferenceOperation fr => fr.Instance == null || Plain(fr.Instance),
-            // (an auto-property's: its field)
-            IPropertyReferenceOperation pr => (pr.Instance == null || Plain(pr.Instance)) && IsField(pr.Property.OriginalDefinition),
+            // (an auto-property's: its field; a property with a setter of its own: that is called where the value is assigned)
+            IPropertyReferenceOperation pr => (pr.Instance == null || Plain(pr.Instance)) &&
+                                              (IsField(pr.Property.OriginalDefinition) || IsComputed(pr.Property) && pr.Property.SetMethod != null && pr.Arguments.Length == 0),
             _ => false,
         };
 
@@ -632,6 +633,7 @@ namespace CsVerify.Verifier.Boogie
         private void ForEachCapture(IFlowCaptureOperation en, ForEach fe)
         {
             // the collection, evaluated once (a null one throws), and the index at its start
+            // (as the control flow graph has it, where its expression branches: xs ?? none)
             var coll = Expr(fe.Of ?? Unconverted(((IInvocationOperation)en.Value).Instance ?? ((IInvocationOperation)en.Value).Arguments[0].Value));
             Emit(KAssign.Of(fe.Array, coll));
             Emit(KAssign.Of(fe.Index, KLit.Zero));
@@ -669,10 +671,19 @@ namespace CsVerify.Verifier.Boogie
             return;
         }
 
+        /// <summary>The captures the flow graph writes on more than one path: none of them stands for one expression.</summary>
+        private HashSet<CaptureId> _branched = new HashSet<CaptureId>();
+
         private void FlowCapture(IFlowCaptureOperation fc)
         {
-
-            _captured[fc.Id] = fc.Value;
+            if (_branched.Contains(fc.Id))
+            {
+                _captured.Remove(fc.Id);
+            }
+            else
+            {
+                _captured[fc.Id] = fc.Value;
+            }
             // (a field or an auto-property captured as what an assignment writes, x.f = c ? a : b, P = P with { ... }: its
             // object, kept)
             if ((fc.Value is IFieldReferenceOperation { Field.IsStatic: false } || fc.Value is IPropertyReferenceOperation { Property: { IsStatic: false, IsIndexer: false } fp } && IsField(fp)) &&
@@ -742,6 +753,32 @@ namespace CsVerify.Verifier.Boogie
         {
             // base(...): the base class's constructor, on this object
             var ctor = chain.TargetMethod.OriginalDefinition;
+            // (a data type's: the value built is that constructor's, of these arguments, wherever it is built (NewData);
+            // here they are evaluated, for what they check)
+            if (IsData(ctor.ContainingType))
+            {
+                var handed = chain.Arguments.OrderBy(a => a.Parameter.Ordinal).ToList();
+                var values = Operands(handed.Select(a => a.Value).ToArray());
+                for (int k = 0; k < handed.Count; k++)
+                {
+                    // (each kept in a variable: a value nothing reads is checked of nothing)
+                    if (InSubset(handed[k].Value.Type) && !(values[k] is KLit || values[k] is KVar))
+                    {
+                        var kept = Declare("t$" + _temps++, handed[k].Value.Type);
+                        Emit(KAssign.Of(kept, values[k]));
+                        values[k] = new KVar(kept);
+                    }
+                    if (IsNullable(handed[k].Parameter.Type) && NotNullable(handed[k].Parameter.Type))
+                    {
+                        Emit(KCheck.Of(
+                            NotNull(values[k]),
+                            "CSV1014",
+                            handed[k].Value.Syntax,
+                            $"'{handed[k].Value.Syntax}' might be null, but parameter '{handed[k].Parameter.Name}' of '{ctor.ContainingType.Name}' is not nullable"));
+                    }
+                }
+                return;
+            }
             // (one nobody wrote: what it does, here)
             if (ctor.IsImplicitlyDeclared && ctor.ContainingType.DeclaringSyntaxReferences.Length > 0)
             {
@@ -1168,6 +1205,8 @@ namespace CsVerify.Verifier.Boogie
                     return;
                 // (a static readonly field the kernel doesn't have, set where it's initialized: its value, not kept)
                 case IFieldReferenceOperation { Field: { IsStatic: true, IsReadOnly: true } srw } when StaticReadonly(srw) != null:
+                    return;
+                case IPropertyReferenceOperation { Property: { IsStatic: true } spw } when StaticReadonly(spw) != null:
                     return;
                 case IFieldReferenceOperation _: case IPropertyReferenceOperation _:
                 {

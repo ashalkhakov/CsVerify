@@ -227,9 +227,9 @@ namespace CsVerify.Verifier.Boogie
         private KExpr _applyIndex;
 
         /// <summary>
-        /// A library's method the program has no contract of, static or of a value or a string, given only values and
-        /// strings: it reaches none of the program's objects, so it changes nothing the program reads. What it gives
-        /// isn't known, nor that it gives the same again; it may throw.
+        /// A library's method the program has no contract of, static or of a value or a string, given only values,
+        /// strings and the library's own objects (a TimeZoneInfo): it reaches none of the program's objects, so it
+        /// changes nothing the program reads. What it gives isn't known, nor that it gives the same again; it may throw.
         /// </summary>
         private bool QuietLibraryCall(IInvocationOperation inv)
         {
@@ -239,19 +239,29 @@ namespace CsVerify.Verifier.Boogie
                    !_isFunction(m.OriginalDefinition) && !IsStub(m.OriginalDefinition) && !SpecSymbols.IsSpecClass(m.ContainingType) &&
                    !IsEnumerableCall(m) && !IsQueryableMethod(m) && !(KernelTypes.Ef != null && IsEfMethod(m)) &&
                    (inv.Instance == null || inv.Instance.Type is { IsValueType: true } || IsString(inv.Instance.Type)) &&
-                   m.Parameters.All(p => p.RefKind == RefKind.None && (p.Type.IsValueType || IsString(p.Type)) && !IsFunc(p.Type)) &&
+                   m.Parameters.All(p => p.RefKind == RefKind.None && (p.Type.IsValueType || IsString(p.Type) || LibraryOwn(p.Type)) && !IsFunc(p.Type)) &&
                    new[] { inv.Instance }.Concat(inv.Arguments.Select(a => a.Value)).Where(x => x != null).All(PlainRead);
         }
 
         /// <summary>
-        /// What a quiet library call is given, read as a specification reads it: parameters, locals, constants, and the
-        /// fields and auto-properties of the program's objects (a library's property isn't one: not known there).
+        /// An object of a library's sealed class, not generic, that no code of the program's runs through (FieldEffects'
+        /// HandsOver): the library's own, which holds nothing of the program's.
         /// </summary>
-        private static bool PlainRead(IOperation x) => x.DescendantsAndSelf().All(o => o switch
+        private static bool LibraryOwn(ITypeSymbol t) =>
+            t is INamedTypeSymbol { TypeKind: TypeKind.Class, IsSealed: true, Arity: 0, SpecialType: SpecialType.None } c && c.DeclaringSyntaxReferences.Length == 0 &&
+            c.ContainingType == null && KernelTypes.HandsOver?.Invoke(c) == false;
+
+        /// <summary>
+        /// What a quiet library call is given, read as a specification reads it: parameters, locals, constants, the
+        /// fields and auto-properties of the program's objects (a library's property isn't one: not known there), and
+        /// what another such call gives.
+        /// </summary>
+        private bool PlainRead(IOperation x) => x.DescendantsAndSelf().All(o => o switch
         {
+            IInvocationOperation inner => QuietLibraryCall(inner),
             IParameterReferenceOperation or ILocalReferenceOperation or ILiteralOperation or IConversionOperation or IInstanceReferenceOperation or IArgumentOperation => true,
             IFieldReferenceOperation f => f.Field.DeclaringSyntaxReferences.Length > 0 || f.Field.IsConst,
-            IPropertyReferenceOperation p => IsField(p.Property) && p.Property.DeclaringSyntaxReferences.Length > 0,
+            IPropertyReferenceOperation p => (IsField(p.Property) || FieldEffects.IsStaticFixed(p.Property)) && p.Property.DeclaringSyntaxReferences.Length > 0,
             _ => o.ConstantValue.HasValue,
         });
 
@@ -579,6 +589,22 @@ namespace CsVerify.Verifier.Boogie
             return speculative.GetOperation(lambda) as IAnonymousFunctionOperation;
         }
 
+        /// <summary>x => x of a type, as a lambda read there: the key of a sort by the elements themselves. Null where it can't be read.</summary>
+        private (IOperation body, IParameterSymbol p1, IParameterSymbol p2)? Itself(ITypeSymbol type, SyntaxNode at)
+        {
+            if (_model == null)
+            {
+                return null;
+            }
+            var statement = Microsoft.CodeAnalysis.CSharp.SyntaxFactory.ParseStatement("var f = (" + type.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat) + " x0) => x0;");
+            if (!Microsoft.CodeAnalysis.CSharp.CSharpExtensions.TryGetSpeculativeSemanticModel(_model, at.SpanStart, statement, out var speculative))
+            {
+                return null;
+            }
+            var lambda = statement.DescendantNodes().OfType<Microsoft.CodeAnalysis.CSharp.Syntax.LambdaExpressionSyntax>().First();
+            return speculative.GetOperation(lambda) is IAnonymousFunctionOperation fn ? PureLambda(fn) : null;
+        }
+
         /// <summary>A lambda the control flow graph has as a flow anonymous function (a query clause's): found in the method's operations by its symbol.</summary>
         private IAnonymousFunctionOperation LambdaBySymbol(IOperation target)
         {
@@ -748,7 +774,63 @@ namespace CsVerify.Verifier.Boogie
             {
                 return Query(q);
             }
-            var type = src.Type;
+            // (a dictionary's keys or its values, in some order: as many as its Size; each key one it has, no two the
+            // same, never null; each value its key's)
+            if (src is IPropertyReferenceOperation { Property.Name: "Keys" or "Values", Instance: { } whole } part && CollectionKind(whole.Type) == "Dictionary" && IsCollection(whole.Type) &&
+                whole.Type is INamedTypeSymbol { TypeArguments: { Length: 2 } kv } dictionary && InSubset(kv[0]) && InSubset(kv[1]))
+            {
+                var d = Declare("t$" + _temps++, dictionary);
+                Emit(KAssign.Of(d, Expr(whole)));
+                Emit(KCheck.Of(NotNull(new KVar(d)), "CSV1013", whole.Syntax, $"'{whole.Syntax}' might be null in '{part.Syntax}'"));
+                foreach (var m in ModelsOf(dictionary))
+                {
+                    _p.Models[m.Name] = m;
+                }
+                var count = Sel(SizeMap, new KVar(d));
+                var keys = new KVar(LinqMap("[int]" + TypeOf(kv[0])));
+                var k1 = Atom();
+                ShapeFact(Over(KLit.Zero, count, k1, Sel(ModelOf("Domain", dictionary).Name, new KVar(d), Keyed(Sel(keys, k1), kv[0]))), src.Syntax);
+                var (k2, k3) = (Atom(), Atom());
+                ShapeFact(Over(KLit.Zero, count, k2, Over(KLit.Zero, k2, k3, Ne(Sel(keys, k3), Sel(keys, k2)))), src.Syntax);
+                if (IsNullable(kv[0]))
+                {
+                    var k4 = Atom();
+                    ShapeFact(Over(KLit.Zero, count, k4, NotNull(Sel(keys, k4))), src.Syntax);
+                }
+                var at = Atom();
+                if (part.Property.Name == "Keys")
+                {
+                    return new LSeq { Length = count, Elem = KAbs.Of(at, Sel(keys, at)), Type = kv[0] };
+                }
+                var values = new KVar(LinqMap("[int]" + TypeOf(kv[1])));
+                var v1 = Atom();
+                ShapeFact(Over(KLit.Zero, count, v1, Eq(Sel(ModelOf("Entries", dictionary).Name, new KVar(d), Keyed(Sel(keys, v1), kv[0])), Sel(values, v1))), src.Syntax);
+                // (a value of a type not nullable isn't null, as what the dictionary was given wasn't)
+                if (IsNullable(kv[1]) && NotNullable(kv[1]))
+                {
+                    var v2 = Atom();
+                    ShapeFact(Over(KLit.Zero, count, v2, NotNull(Sel(values, v2))), src.Syntax);
+                }
+                return new LSeq { Length = count, Elem = KAbs.Of(at, Sel(values, at)), Type = kv[1] };
+            }
+            // (xs ?? none, of a sequence one is given: that one's elements, not known, where there is one; else the other's)
+            if (src is ICoalesceOperation { Value: var maybe, WhenNull: var otherwise } && Unconverted(maybe) is IParameterReferenceOperation or ILocalReferenceOperation &&
+                IsSequence(Unconverted(maybe).Type.WithNullableAnnotation(NullableAnnotation.NotAnnotated)) && ElementOf(Unconverted(maybe).Type) is ITypeSymbol of && InSubset(of))
+            {
+                var given = Expr(Unconverted(maybe));
+                var none = Sequence(otherwise);
+                var items = new KVar(LinqMap("[int]" + TypeOf(of)));
+                var n = Declare("t$" + _temps++, KernelTypes.Compilation.GetSpecialType(SpecialType.System_Int32));
+                Emit(KHavoc.Of(n));
+                ShapeFact(Le(KLit.Zero, new KVar(n)), src.Syntax);
+                ShapeFact(Implies(IsNull(given), Eq(new KVar(n), none.Length)), src.Syntax);
+                var same = Atom();
+                ShapeFact(Implies(IsNull(given), Over(KLit.Zero, new KVar(n), same, Eq(Sel(items, same), none.Elem.At(same)))), src.Syntax);
+                var each = Atom();
+                return new LSeq { Length = new KVar(n), Elem = KAbs.Of(each, Sel(items, each)), Type = of };
+            }
+            // (a property of the program's whose getter only returns a field that holds a collection: that collection)
+            var type = Behind(src) ?? src.Type;
             var elem = ElementOf(type);
             // (a set's members, in some order: as many as its Size, each a member, no two the same)
             if (elem != null && InSubset(elem) && CollectionKind(type) == "HashSet" && IsCollection(type))
@@ -781,8 +863,9 @@ namespace CsVerify.Verifier.Boogie
             }
             // (a sequence one is given, a lambda's group of a GroupJoin say: some elements, not known)
             // (and a query passed in, #126: rows of which only what the caller's specification says is known)
+            // (and one of two, a ?? b, c ? a : b, as the flow graph keeps it: whichever it is)
             if (elem != null && InSubset(elem) && (IsSequence(type) || IsLinqGroup(type) || IsQueryHandle(type) && src is IParameterReferenceOperation) &&
-                src is IParameterReferenceOperation or ILocalReferenceOperation)
+                (src is IParameterReferenceOperation or ILocalReferenceOperation || src is IFlowCaptureReferenceOperation { Id: var either } && _branched.Contains(either) && IsSequence(type)))
             {
                 var given = Expr(src);
                 if (IsSequence(type) || IsQueryHandle(type))
@@ -916,9 +999,19 @@ namespace CsVerify.Verifier.Boogie
         private (IOperation body, IParameterSymbol p1, IParameterSymbol p2) LambdaArg(IInvocationOperation q, int ordinal)
         {
             var arg = q.Arguments.First(a => a.Parameter.Ordinal == ordinal).Value;
-            if (PureLambda(arg) is { } lambda)
+            // (a library's call of values in it, QuietLibraryCall: a value of each element, where the lambda is applied
+            // to the element at an index, Apply)
+            _quietCalls += _inDatabase == 0 ? 1 : 0;
+            try
             {
-                return lambda;
+                if (PureLambda(arg) is { } lambda)
+                {
+                    return lambda;
+                }
+            }
+            finally
+            {
+                _quietCalls -= _inDatabase == 0 ? 1 : 0;
             }
             // (the lambda as written, on one line and cut short: which one, of a query with several)
             var written = string.Join(" ", arg.Syntax.ToString().Split((char[])null, StringSplitOptions.RemoveEmptyEntries));
@@ -1047,6 +1140,9 @@ namespace CsVerify.Verifier.Boogie
             }
             switch (m.Name)
             {
+                // (Enumerable.Empty<T>(): a sequence of none)
+                case "Empty" when args.Count == 0 && resultElem != null && InSubset(resultElem):
+                    return new LSeq { Length = KLit.Zero, Elem = KAbs.Of(Atom(), Default(resultElem)), Type = resultElem };
                 // (a selector that makes an object: a new object of each element, #129)
                 case "Select" when args.Count == 2 && MadeSelector(args[1].Value) is var (made, mp, members, through):
                     return MadeSequence(Sequence(args[0].Value), made, mp, members, through, q.Syntax);
@@ -1120,8 +1216,7 @@ namespace CsVerify.Verifier.Boogie
                         var j = Atom();
                         return _inDatabase > 0 ? throw new NotTranslated("Where with an index, in a database") : FilterAt(src, KAbs.Of(j, Apply(f, src.Elem.At(j), j)), q.Syntax);
                     }
-                    var x = Atom();
-                    var w = ByKey(q, () => Filter(src, KAbs.Of(x, Apply(f, x)), q.Syntax));
+                    var w = ByKey(q, () => Kept(src, f, q.Syntax));
                     AtMostOneRow(q, w, q.Syntax);
                     return w;
                 }
@@ -1348,6 +1443,9 @@ namespace CsVerify.Verifier.Boogie
                     var src = Sequence(at.Arguments.OrderBy(a => a.Parameter.Ordinal).First().Value);
                     return Sort(src, keys, q.Syntax);
                 }
+                // (Order() and OrderDescending(): a stable sort by the elements themselves)
+                case "Order" or "OrderDescending" when args.Count == 1 && resultElem != null && Itself(resultElem, q.Syntax) is var (body, p1, p2):
+                    return Sort(Sequence(args[0].Value), new List<((IOperation, IParameterSymbol, IParameterSymbol) key, ITypeSymbol type, bool down)> { ((body, p1, p2), resultElem, m.Name == "OrderDescending") }, q.Syntax);
                 case "SelectMany" when args.Count is 2 or 3:
                 {
                     var src = Sequence(args[0].Value);
@@ -1931,7 +2029,8 @@ namespace CsVerify.Verifier.Boogie
                 }
                 return all;
             }
-            if (Scalar(t) || IsClass(t) || IsInterface(t) || t.SpecialType == SpecialType.System_Object)
+            // (a record struct whose equality is its value's, a typed id; a date's or a Guid's, the int kept for it)
+            if (Scalar(t) || IsClass(t) || IsInterface(t) || t.SpecialType == SpecialType.System_Object || IsComparedStruct(t) || IsOpaqueElement(t))
             {
                 return Eq(a, b);
             }
@@ -2082,11 +2181,11 @@ namespace CsVerify.Verifier.Boogie
             {
                 case "Exists":
                     var i2 = Atom();
-                    ShapeFact(Eq(v, Over(KLit.Zero, s.Length, i2, Apply(f, s.Elem.At(i2)), forall: false)), at);
+                    ShapeFact(Eq(v, Over(KLit.Zero, s.Length, i2, Apply(f, s.Elem.At(i2), i2), forall: false)), at);
                     break;
                 case "TrueForAll":
                     var i3 = Atom();
-                    ShapeFact(Eq(v, Over(KLit.Zero, s.Length, i3, Apply(f, s.Elem.At(i3)))), at);
+                    ShapeFact(Eq(v, Over(KLit.Zero, s.Length, i3, Apply(f, s.Elem.At(i3), i3))), at);
                     break;
                 case "Find":
                 {
@@ -2094,8 +2193,7 @@ namespace CsVerify.Verifier.Boogie
                     {
                         throw new NotTranslated("a default of " + call.Type);
                     }
-                    var x = Atom();
-                    var m = Filter(s, KAbs.Of(x, Apply(f, x)), at);
+                    var m = Kept(s, f, at);
                     ShapeFact(Eq(v, Ite(Gt(m.Length, KLit.Zero), m.Elem.At(KLit.Zero), dflt)), at);
                     break;
                 }
@@ -2225,7 +2323,7 @@ namespace CsVerify.Verifier.Boogie
                     var s = Sequence(args[0].Value);
                     var f = LambdaArg(call, 1);
                     var i = Atom();
-                    return LinqValue(Over(KLit.Zero, s.Length, i, Apply(f, s.Elem.At(i))), callType, at);
+                    return LinqValue(Over(KLit.Zero, s.Length, i, Apply(f, s.Elem.At(i), i)), callType, at);
                 }
                 // (a dictionary, of the library's: only where it throws, a key that's null or an earlier one's, as its definition says)
                 case "ToDictionary" when args.Count is 2 or 3 && _inDatabase == 0 && IsCollection(callType) && LambdaArg(call, 1) is var kf && kf.p2 == null:
@@ -2292,20 +2390,27 @@ namespace CsVerify.Verifier.Boogie
                     return LinqValue(Ite(Eq(s.Length, KLit.One), s.Elem.At(KLit.Zero), sd), callType, at);
                 }
                 // (the first element whose key is least, or greatest: an integer key)
-                case "MinBy" or "MaxBy" when args.Count == 2 && _inDatabase == 0 && LambdaArg(call, 1) is var by && by.p2 == null && IsIntegral(by.body.Type):
+                // (or a date's or a time's, which its ticks order)
+                case "MinBy" or "MaxBy" when args.Count == 2 && _inDatabase == 0 && LambdaArg(call, 1) is var by && by.p2 == null && (IsIntegral(by.body.Type) || IsOpaqueTicks(by.body.Type)):
                 {
                     var s = Sequence(args[0].Value);
-                    CheckPrecondition(Gt(s.Length, KLit.Zero), "Q.Count(source) > 0", at, name);
+                    // (of no elements: null, where their type has one; it throws otherwise, as .NET's does)
+                    bool nullOfNone = s.Type.IsReferenceType || IsNullableValue(s.Type);
+                    var some = Gt(s.Length, KLit.Zero);
+                    if (!nullOfNone)
+                    {
+                        CheckPrecondition(some, "Q.Count(source) > 0 || default(T) == null", at, name);
+                    }
                     var ix = Declare("t$" + _temps++, KernelTypes.Compilation.GetSpecialType(SpecialType.System_Int32));
                     Emit(KHavoc.Of(ix));
                     var iv = new KVar(ix);
                     var better = name == "MinBy" ? "<" : ">";
-                    LinqFact(AndAlso(Le(KLit.Zero, iv), Lt(iv, s.Length)), at);
+                    LinqFact(Implies(some, AndAlso(Le(KLit.Zero, iv), Lt(iv, s.Length))), at);
                     var i2 = Atom();
-                    LinqFact(Over(KLit.Zero, s.Length, i2, Not(new KOp(better, Apply(by, s.Elem.At(i2)), Apply(by, s.Elem.At(iv))))), at);
+                    LinqFact(Implies(some, Over(KLit.Zero, s.Length, i2, Not(new KOp(better, Apply(by, s.Elem.At(i2)), Apply(by, s.Elem.At(iv)))))), at);
                     var i = Atom();
-                    LinqFact(Over(KLit.Zero, iv, i, new KOp(better == "<" ? ">" : "<", Apply(by, s.Elem.At(i)), Apply(by, s.Elem.At(iv)))), at);
-                    return LinqValue(s.Elem.At(iv), callType, at);
+                    LinqFact(Implies(some, Over(KLit.Zero, iv, i, new KOp(better == "<" ? ">" : "<", Apply(by, s.Elem.At(i)), Apply(by, s.Elem.At(iv))))), at);
+                    return LinqValue(nullOfNone ? Ite(some, s.Elem.At(iv), KLit.Null) : s.Elem.At(iv), callType, at);
                 }
                 // (of doubles: Min is NaN where one is; Max passes NaNs over, NaN only where all are, as .NET compares them)
                 case "Max" or "Min" when args.Count <= 2 && IsFloating(callType) && _inDatabase == 0:
@@ -2431,6 +2536,9 @@ namespace CsVerify.Verifier.Boogie
                     LinqFact(Over(KLit.Zero, s.Length, j2, Eq(Sel(sum, Plus(j2, KLit.One)), Plus(Sel(sum, j2), s.Elem.At(j2)))), at);
                     return LinqValue(new KOp("$fp.div64", new KOp("$fp.ofReal64", new KOp("$toreal", Sel(sum, s.Length))), count), callType, at);
                 }
+                // (a query kept as a value, returned or handed on: an object of the library's)
+                case var _ when QueryAsValue(call, callType) is KExpr kept:
+                    return kept;
                 default:
                     throw new NotTranslated("LINQ's " + name);
             }
@@ -2463,10 +2571,76 @@ namespace CsVerify.Verifier.Boogie
                 return src;
             }
             var f = LambdaArg(call, 1);
-            var x = Atom();
-            var s = ByKey(call, () => Filter(src, KAbs.Of(x, Apply(f, x)), at));
+            var s = ByKey(call, () => Kept(src, f, at));
             AtMostOneRow(call, s, at);
             return s;
+        }
+
+        /// <summary>
+        /// A query of LINQ to Objects as a value (returned, handed to a method): some sequence, not null, which reads its
+        /// source and runs its lambdas when it is enumerated, wherever that is. So its lambdas are pure, and take any
+        /// element (none states a precondition); what it gives then isn't known here. Null where the call is no such query.
+        /// </summary>
+        private KExpr QueryAsValue(IInvocationOperation call, ITypeSymbol type)
+        {
+            if (_inDatabase > 0 || !IsSequence(type) || !IsEnumerableCall(call.TargetMethod))
+            {
+                return null;
+            }
+            if (call.DescendantsAndSelf().OfType<IAnonymousFunctionOperation>().Any(fn => _contractOf?.Invoke(fn.Symbol)?.Requires.Count > 0))
+            {
+                throw new NotTranslated("a query kept as a value whose lambda states a precondition: what it is called with, later, isn't known");
+            }
+            // (as it reads now: its source evaluated, each lambda one a query can read)
+            Sequence(call);
+            var q = Declare("t$" + _temps++, type);
+            Emit(KHavoc.Of(q));
+            Emit(KAssume.Of(NotNull(new KVar(q))));
+            return new KVar(q);
+        }
+
+        /// <summary>
+        /// The collection a property of the program's is, where its getter only returns a field of its object that holds
+        /// one (public IReadOnlyList&lt;T&gt; Items => items;): the field's type, a List's or an array's. Else null.
+        /// </summary>
+        private static ITypeSymbol Behind(IOperation src)
+        {
+            if (!(src is IPropertyReferenceOperation { Property: { IsStatic: false, IsVirtual: false, IsAbstract: false, IsOverride: false } p }) ||
+                p.ContainingType.TypeKind != TypeKind.Class || p.DeclaringSyntaxReferences.Length != 1 ||
+                !(p.DeclaringSyntaxReferences[0].GetSyntax() is Microsoft.CodeAnalysis.CSharp.Syntax.PropertyDeclarationSyntax declared))
+            {
+                return null;
+            }
+            var get = declared.AccessorList?.Accessors.FirstOrDefault(a => a.IsKind(Microsoft.CodeAnalysis.CSharp.SyntaxKind.GetAccessorDeclaration));
+            var returned = declared.ExpressionBody?.Expression ?? get?.ExpressionBody?.Expression ??
+                           (get?.Body is { Statements: { Count: 1 } only } && only[0] is Microsoft.CodeAnalysis.CSharp.Syntax.ReturnStatementSyntax ret ? ret.Expression : null);
+            if (returned is Microsoft.CodeAnalysis.CSharp.Syntax.MemberAccessExpressionSyntax { Expression: Microsoft.CodeAnalysis.CSharp.Syntax.ThisExpressionSyntax } own)
+            {
+                returned = own.Name;
+            }
+            if (!(returned is Microsoft.CodeAnalysis.CSharp.Syntax.IdentifierNameSyntax) ||
+                !(KernelTypes.Compilation.ModelOf(returned.SyntaxTree).GetSymbolInfo(returned).Symbol is ISymbol { IsStatic: false } field) || !IsField(field) ||
+                !SymbolEqualityComparer.Default.Equals(field.ContainingType, p.ContainingType))
+            {
+                return null;
+            }
+            var held = FieldType(field);
+            return IsArray(held) || IsCollection(held) && CollectionKind(held) == "List" ? held : null;
+        }
+
+        /// <summary>
+        /// The elements a predicate keeps: by what each is, or, where the predicate calls a library's method whose value
+        /// is of the element as it is read there (QuietLibraryCall), by its place.
+        /// </summary>
+        private LSeq Kept(LSeq src, (IOperation body, IParameterSymbol p1, IParameterSymbol p2) f, SyntaxNode at)
+        {
+            if (_inDatabase == 0 && f.p2 == null && HasQuietCalls(f.body, 0))
+            {
+                var j = Atom();
+                return FilterAt(src, KAbs.Of(j, Apply(f, src.Elem.At(j), j)), at);
+            }
+            var x = Atom();
+            return Filter(src, KAbs.Of(x, Apply(f, x)), at);
         }
 
         /// <summary>

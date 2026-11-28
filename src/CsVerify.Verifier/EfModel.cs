@@ -507,6 +507,22 @@ namespace CsVerify.Verifier
 
         public bool IsOwned(ITypeSymbol t) => t != null && _owned.Contains(t.OriginalDefinition);
 
+        /// <summary>A type whose members EF may write in an object that exists: an entity or an owned type, or a base of one.</summary>
+        public bool Fills(ITypeSymbol t)
+        {
+            foreach (var mapped in _entities.Keys.Concat(_owned))
+            {
+                for (var b = mapped; b != null; b = b.BaseType)
+                {
+                    if (SymbolEqualityComparer.Default.Equals(b.OriginalDefinition, t.OriginalDefinition))
+                    {
+                        return true;
+                    }
+                }
+            }
+            return false;
+        }
+
         private static readonly HashSet<string> OwningCalls = new HashSet<string>
         { "OwnsOne", "OwnsMany", "Owned", "ComplexProperty", "ComplexCollection", "ComplexProperties" };
 

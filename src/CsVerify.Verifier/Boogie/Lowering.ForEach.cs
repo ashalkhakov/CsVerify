@@ -20,7 +20,7 @@ namespace CsVerify.Verifier.Boogie
         {
             _p.HavocsAll = true;
             _p.CallsDelegates = true;
-            Emit(new KHavocAll());
+            Emit(new KHavocAll { Callers = true });
         }
 
         // ------------------------------------------------------------------ foreach
@@ -38,7 +38,7 @@ namespace CsVerify.Verifier.Boogie
             public string Version;
             /// <summary>Through an enumerator: the collection's Count where the loop began.</summary>
             public string Size0;
-            /// <summary>An IEnumerable the kernel doesn't look into (Of, the sequence): its MoveNext may change anything.</summary>
+            /// <summary>An IEnumerable the kernel doesn't look into: its MoveNext may change anything.</summary>
             public bool Opaque;
             /// <summary>A dictionary's Keys or Values (null: the collection itself), enumerated as the dictionary is; Of, the dictionary.</summary>
             public string View;
@@ -202,7 +202,6 @@ namespace CsVerify.Verifier.Boogie
                 Element = element,
                 At = fs.Expression,
                 Opaque = true,
-                Of = collection,
             };
             _forEach[capture.Id] = fe;
             _forEachAt[head.Ordinal] = fe;
@@ -373,7 +372,14 @@ namespace CsVerify.Verifier.Boogie
                     Emit(KAssume.Of(NotNull(new KVar(v))));
                 }
             }
-            else if (fe.View == "Values") { } // (a value it has: not modeled)
+            // (a value it has: which isn't modeled; of a type not nullable, not null, as what the dictionary was given wasn't)
+            else if (fe.View == "Values")
+            {
+                if (IsNullable(fe.Element) && NotNullable(fe.Element))
+                {
+                    Emit(KAssume.Of(NotNull(new KVar(v))));
+                }
+            }
             else if (CollectionKind(fe.Collection) == "Dictionary")
             {
                 var key = Pair(new KVar(v), fe.Element, "Key");

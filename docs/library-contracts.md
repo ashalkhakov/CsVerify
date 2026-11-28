@@ -295,8 +295,8 @@ These make views too, read the same way:
 
 `Single` and `SingleOrDefault` (with or without a predicate or a default) need exactly one, or at most one, element;
 `SequenceEqual` is element by element; `MinBy` and `MaxBy` are the first element with the least or greatest key (a
-stable sort's first), and need a non-empty source, which is more than .NET asks of a source of a reference type (it
-gives null) and says only "some element" for keys the verifier does not order. `ToDictionary` is a precondition only:
+stable sort's first): of an empty source they give null where the elements' type has one (a reference, a nullable
+value) and throw otherwise, as .NET's do, and they say only "some element" for keys the verifier does not order. `ToDictionary` is a precondition only:
 no key is null, and none repeats (else it throws); the dictionary is a library value. `ToHashSet` is a new
 `HashSet<T>` whose members are the elements: `Contains` is whether some element is that value, and `Count` is the
 number of elements where no two are the same, at most that otherwise.

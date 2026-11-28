@@ -68,7 +68,8 @@ namespace CsVerify.Verifier
             }
             if (s.IsStatic)
             {
-                return s is IFieldSymbol sf && !sf.IsConst && !sf.IsReadOnly && !sf.IsImplicitlyDeclared;
+                // (a static auto-property is the static field the compiler keeps it in: mutable where it has a setter)
+                return s is IFieldSymbol sf ? !sf.IsConst && !sf.IsReadOnly && !sf.IsImplicitlyDeclared : s is IPropertySymbol { SetMethod: not null } sp && IsAutoProperty(sp);
             }
             switch (s)
             {
@@ -79,13 +80,24 @@ namespace CsVerify.Verifier
                     {
                         return false;
                     }
-                    // an auto-property: accessors without bodies, declared as a property (positional ones are values)
-                    return p.DeclaringSyntaxReferences.All(r => r.GetSyntax() is PropertyDeclarationSyntax pd && pd.AccessorList != null &&
-                                                               pd.AccessorList.Accessors.All(a => a.Body == null && a.ExpressionBody == null));
+                    return IsAutoProperty(p);
                 default:
                     return false;
             }
         }
+
+        /// <summary>An auto-property: accessors without bodies, declared as a property (positional ones are values).</summary>
+        public static bool IsAutoProperty(IPropertySymbol p) =>
+            !p.IsIndexer && p.DeclaringSyntaxReferences.Length > 0 &&
+            p.DeclaringSyntaxReferences.All(r => r.GetSyntax() is PropertyDeclarationSyntax pd && pd.AccessorList != null &&
+                                                 pd.AccessorList.Accessors.All(a => a.Body == null && a.ExpressionBody == null));
+
+        /// <summary>
+        /// A static member set once, where its class is initialized, and read ever after: a static readonly field, or a
+        /// static auto-property without a setter (the readonly field the compiler keeps it in).
+        /// </summary>
+        public static bool IsStaticFixed(ISymbol s) =>
+            s is IFieldSymbol { IsStatic: true, IsReadOnly: true } || s is IPropertySymbol { IsStatic: true, SetMethod: null } p && IsAutoProperty(p);
 
         /// <summary>
         /// A virtual property of an entity class nothing overrides: a source class, and EF's proxies, where the program
@@ -244,7 +256,8 @@ namespace CsVerify.Verifier
                 d.All = true;
             }
             // a data value's constructor builds a value: it changes no state (its header's computed base arguments are pure)
-            if (m.MethodKind == MethodKind.Constructor && _engine.Data.IsData(m.ContainingType))
+            // (but one that chains to another computes what it hands on: its arguments are read as any code is)
+            if (m.MethodKind == MethodKind.Constructor && _engine.Data.IsData(m.ContainingType) && !DataTypes.Delegates(m))
             {
                 return d;
             }
@@ -818,7 +831,7 @@ namespace CsVerify.Verifier
         /// an object of a source class that overrides something (Equals, GetHashCode, ToString) or implements an
         /// interface (IComparable), or of a library class that a source class derives from?
         /// </summary>
-        private bool HandsOver(ITypeSymbol t)
+        internal bool HandsOver(ITypeSymbol t)
         {
             switch (t)
             {
@@ -833,6 +846,13 @@ namespace CsVerify.Verifier
             {
                 return HandsOver(list.TypeArguments[0]) ||
                        _engine.SourceTypes.Any(s => s.AllInterfaces.Any(i => SymbolEqualityComparer.Default.Equals(i.OriginalDefinition, list.OriginalDefinition)) && RunsUserCode(s));
+            }
+            // (a dictionary read through its interface: a library's, trusted likewise; or the program's own)
+            if (Boogie.KernelTypes.IsReadOnlyDictionary(t))
+            {
+                var map = (INamedTypeSymbol)t;
+                return map.TypeArguments.Any(HandsOver) ||
+                       _engine.SourceTypes.Any(s => s.AllInterfaces.Any(i => SymbolEqualityComparer.Default.Equals(i.OriginalDefinition, map.OriginalDefinition)) && RunsUserCode(s));
             }
             if (t.TypeKind == TypeKind.Delegate || t.TypeKind == TypeKind.Interface || t.SpecialType == SpecialType.System_Object)
             {
