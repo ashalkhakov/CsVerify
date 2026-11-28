@@ -605,8 +605,9 @@ namespace CsVerify.Verifier.Boogie
                                                    wi.Expression.ToString().EndsWith("WhenAll"):
                     StartCaptured(wa.Id, wc);
                     return;
-                // (this, captured as the receiver of a this(...) or base(...) whose arguments branch: nothing to evaluate)
-                case IFlowCaptureOperation ft when ft.Value is IInstanceReferenceOperation && _p.IsCtor:
+                // (this, captured as the receiver of a call whose arguments branch, M(a ?? b), this(...), base(...): nothing to
+                // evaluate; it is this where it is read, CapturedThis)
+                case IFlowCaptureOperation ft when ft.Value is IInstanceReferenceOperation { ReferenceKind: InstanceReferenceKind.ContainingTypeInstance } && !_branched.Contains(ft.Id):
                     _captured[ft.Id] = ft.Value;
                     return;
                 // (a collection's element captured as what an assignment writes, d[k] = c ? a : b: written by its setter

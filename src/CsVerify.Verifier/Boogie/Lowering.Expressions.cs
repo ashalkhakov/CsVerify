@@ -828,10 +828,20 @@ AndAlso(Eq(Sel(r, new KVar(t)), Sel(r, instance)), Ne(Sel(r, new KVar(t)), new K
         {
             switch (e)
             {
+                // (this, captured: this, read where it is used (handed over there, in its constructor))
+                case IFlowCaptureReferenceOperation self when CapturedThis(self) is IOperation instance: return Expr(instance);
                 case IFlowCaptureReferenceOperation r: return new KVar(Capture(r.Id, r.Type));
                 default: return ExprOther(e);
             }
         }
+
+        /// <summary>
+        /// this, where an operand is the flow graph's capture of it (taken before a later operand that branches): it
+        /// never changes, so the capture is no variable of its own. Else null.
+        /// </summary>
+        private IOperation CapturedThis(IOperation operand) =>
+            operand is IFlowCaptureReferenceOperation r && _captured.TryGetValue(r.Id, out var kept) &&
+            kept is IInstanceReferenceOperation { ReferenceKind: InstanceReferenceKind.ContainingTypeInstance } ? kept : null;
 
         /// <summary>What a property pattern matches, while its getter's call is lowered (the call's receiver).</summary>
         private KExpr _patternInput;
